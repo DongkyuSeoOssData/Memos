@@ -1,0 +1,39 @@
+# [Python / OS]
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+bin/
+build/
+dist/
+*.spec
+
+# [Windows Artifacts]
+Thumbs.db
+desktop.ini
+
+# [Project Specific - Data & Settings]
+# 사용자의 개인 메모 및 로컬 설정은 커밋하지 않습니다.
+memos/
+memos/trash_bin/
+settings.json
+memo.lock
+.memoit_custom/
+
+# [Development Assets]
+# 개발용 프롬프트/룰 폴더는 깃에 올리지 않습니다.
+rules/
+imgs/
+
+# [Logs]
+*.log
+crash.log
+final_*.log
+
+# [IDE - VS Code / PyCharm]
+.vscode/
+.idea/
+.project
+.settings/
