@@ -27,7 +27,9 @@ class ConflictDialog(QDialog):
 
 class MemoExplorerWindow(QWidget):
     def __init__(self, ui_manager: Any):
-        super().__init__(); self.ui_manager = ui_manager; self.current_page = 1; self.items_per_page = 10; self.filtered_memos = []; self.is_trash_mode = False; self._old_pos = None; self.init_ui()
+        super().__init__(); self.ui_manager = ui_manager; self.current_page = 1; self.items_per_page = 10; self.filtered_memos = []; self.is_trash_mode = False; self._old_pos = None
+        self._is_loading_preview = False
+        self.init_ui()
     
     def apply_text_stroke(self, widget):
         eff = QGraphicsDropShadowEffect()
@@ -37,7 +39,13 @@ class MemoExplorerWindow(QWidget):
         widget.setGraphicsEffect(eff)
     
     def init_ui(self) -> None:
-        self.setWindowTitle("메모 탐색기"); self.resize(900, 750)
+        self.setWindowTitle("메모 탐색기")
+        geom = self.ui_manager.sync_manager.settings.get('explorer_geom')
+        if geom and len(geom) == 4:
+            self.setGeometry(geom[0], geom[1], geom[2], geom[3])
+        else:
+            self.resize(900, 750)
+            
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint) 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         main_l = QVBoxLayout(self); main_l.setContentsMargins(15, 15, 15, 15)
@@ -111,8 +119,10 @@ class MemoExplorerWindow(QWidget):
         for b in [self.p_b, self.n_b]: b.setStyleSheet("QPushButton { border: none; color: #000000; font-weight: bold; } QPushButton:hover { background-color: #E2E8F0; border-radius: 15px; }")
         pg_l.addStretch(); pg_l.addWidget(self.p_b); pg_l.addWidget(self.p_l); pg_l.addWidget(self.n_b); pg_l.addStretch(); bg_l.addLayout(pg_l)
         
-        bg_l.addWidget(QLabel("<b>📄 본문 미리보기</b>")); self.pv = QTextEdit(); self.pv.setReadOnly(True); self.pv.setFixedHeight(110)
+        bg_l.addWidget(QLabel("<b>📄 본문 미리보기 및 빠른 수정</b>")); self.pv = QTextEdit(); self.pv.setFixedHeight(110)
+        self.pv.setReadOnly(False) 
         self.pv.setStyleSheet("background-color: white; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px; color: #000000; font-size: 10pt;"); bg_l.addWidget(self.pv)
+        self.pv.textChanged.connect(self.on_preview_changed)
         
         self.btn_box = QWidget(); self.btn_l = QHBoxLayout(self.btn_box); self.btn_l.setContentsMargins(0, 15, 0, 0); bg_l.addWidget(self.btn_box); self.setup_btns(); self.refresh()
         
@@ -120,9 +130,14 @@ class MemoExplorerWindow(QWidget):
         
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # 창 여백(Margin)을 고려하여 핸들을 하얀색 테두리 내부에 완벽히 안착시킴
         self.grip.move(self.width() - 35, self.height() - 35)
         self.grip.resize(16, 16)
+
+    def closeEvent(self, event):
+        geom = [self.x(), self.y(), self.width(), self.height()]
+        self.ui_manager.sync_manager.settings['explorer_geom'] = geom
+        self.ui_manager.sync_manager.save_settings(self.ui_manager.sync_manager.settings)
+        super().closeEvent(event)
 
     def show_toast(self, m: str): 
         self.toast.setText(f"✓ {m}")
@@ -153,9 +168,29 @@ class MemoExplorerWindow(QWidget):
         if m_item:
             m = m_item.data(Qt.ItemDataRole.UserRole)
             if m: 
+                self._is_loading_preview = True 
                 content = m.get('content', '')
                 if "<html" in content or "<body" in content: self.pv.setHtml(content)
                 else: self.pv.setPlainText(content)
+                self._is_loading_preview = False
+                
+    def on_preview_changed(self):
+        if self._is_loading_preview or self.is_trash_mode: return
+        r = self.table.currentRow()
+        if r < 0: return
+        m_item = self.table.item(r, 2)
+        if m_item:
+            m = m_item.data(Qt.ItemDataRole.UserRole)
+            m['content'] = self.pv.toHtml()
+            m['updated_at'] = datetime.datetime.now().isoformat()
+            self.ui_manager.sync_manager.save_memo_locally(m)
+            title = m.get('title')
+            if title in self.ui_manager.memo_windows:
+                w = self.ui_manager.memo_windows[title]
+                w._is_updating_from_explorer = True
+                w.text_edit.setHtml(m['content'])
+                w._is_updating_from_explorer = False
+            self.table.item(r, 3).setText(datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
             
     def on_cell_double_click(self, r, c):
         if not self.is_trash_mode:
@@ -173,7 +208,12 @@ class MemoExplorerWindow(QWidget):
         else:
             self.btn_l.addWidget(self.b_ref); self.btn_l.addWidget(self.b_res); self.btn_l.addStretch()
             
-    def toggle_trash(self): self.is_trash_mode = self.t_btn.isChecked(); self.t_btn.setText("⎌ 목록으로 돌아가기" if self.is_trash_mode else "ⓧ 휴지통 보기"); self.current_page = 1; self.refresh()
+    def toggle_trash(self): 
+        self.is_trash_mode = self.t_btn.isChecked()
+        self.t_btn.setText("⎌ 목록으로 돌아가기" if self.is_trash_mode else "ⓧ 휴지통 보기")
+        self.pv.setReadOnly(self.is_trash_mode) 
+        self.current_page = 1; self.refresh()
+        
     def toggle_max(self): [self.showNormal() or self.btn_max.setText("□") if self.isMaximized() else self.showMaximized() or self.btn_max.setText("❐")]
     def toggle_pin(self):
         f = self.windowFlags()
@@ -241,7 +281,12 @@ class MemoExplorerWindow(QWidget):
 
 class MemoWindow(QWidget):
     def __init__(self, m: Dict[str, Any], sc: Any, dc: Any, rc: Any, cc: Any):
-        super().__init__(); self.memo_data = m; self.save_callback = sc; self.delete_callback = dc; self.rename_callback = rc; self.close_callback = cc; self._old_pos = None; self._is_max = False; self.setup_ui(); self.apply_data(); self.setMouseTracking(True); self.text_edit.setMouseTracking(True); QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.manual_save)
+        super().__init__()
+        self.memo_data = m; self.save_callback = sc; self.delete_callback = dc; self.rename_callback = rc; self.close_callback = cc; self._old_pos = None
+        self._is_updating_from_explorer = False
+        self._is_rolled_up = False 
+        self._normal_height = 400
+        self.setup_ui(); self.apply_data(); self.setMouseTracking(True); self.text_edit.setMouseTracking(True); QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self.manual_save)
     
     def apply_text_stroke(self, widget):
         eff = QGraphicsDropShadowEffect(self)
@@ -257,37 +302,41 @@ class MemoWindow(QWidget):
         ctrl = QHBoxLayout(); self.title_edit = QLineEdit(); self.title_edit.setStyleSheet("border:none; background:transparent; color:#000000; font-weight:bold; font-size:12pt; font-family: 'Malgun Gothic';")
         self.title_edit.editingFinished.connect(self.handle_rename); self.title_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu); self.title_edit.customContextMenuRequested.connect(self.show_menu)
         
-        self.btn_pin = QPushButton("⚲"); self.btn_min = QPushButton("_"); self.btn_max = QPushButton("□"); self.btn_close = QPushButton("✕")
-        for b in [self.btn_pin, self.btn_min, self.btn_max, self.btn_close]:
+        self.btn_pin = QPushButton("⚲"); self.btn_min = QPushButton("_"); self.btn_close = QPushButton("✕")
+        for b in [self.btn_pin, self.btn_min, self.btn_close]:
             b.setFixedSize(26, 26)
             b.setStyleSheet("border:none; color:#000000; background:transparent; font-weight:bold; font-size:14pt;")
             self.apply_text_stroke(b)
             
-        self.btn_pin.clicked.connect(self.toggle_pin); self.btn_min.clicked.connect(self.showMinimized); self.btn_max.clicked.connect(self.toggle_max); self.btn_close.clicked.connect(self.close)
-        ctrl.addWidget(self.title_edit); ctrl.addStretch(); ctrl.addWidget(self.btn_pin); ctrl.addWidget(self.btn_min); ctrl.addWidget(self.btn_max); ctrl.addWidget(self.btn_close); bg_l.addLayout(ctrl)
+        self.btn_pin.clicked.connect(self.toggle_pin); self.btn_min.clicked.connect(self.toggle_rollup); self.btn_close.clicked.connect(self.close)
+        ctrl.addWidget(self.title_edit); ctrl.addStretch(); ctrl.addWidget(self.btn_pin); ctrl.addWidget(self.btn_min); ctrl.addWidget(self.btn_close); bg_l.addLayout(ctrl)
+        
+        self.content_container = QWidget()
+        cc_layout = QVBoxLayout(self.content_container); cc_layout.setContentsMargins(0,0,0,0)
         
         self.text_edit = QTextEdit(); self.text_edit.setStyleSheet("border:none; background:transparent; color:#000000; font-size:11pt; font-family: 'Malgun Gothic';")
-        self.text_edit.textChanged.connect(self.update_content); self.text_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu); self.text_edit.customContextMenuRequested.connect(self.show_menu); bg_l.addWidget(self.text_edit)
+        self.text_edit.textChanged.connect(self.update_content); self.text_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu); self.text_edit.customContextMenuRequested.connect(self.show_menu)
+        cc_layout.addWidget(self.text_edit)
         
         self.fmt_bar = QHBoxLayout()
         self.btn_bullet = QPushButton("•"); self.btn_num = QPushButton("1."); self.btn_indent = QPushButton("⇥"); self.btn_outdent = QPushButton("⇤")
         for b in [self.btn_bullet, self.btn_num, self.btn_indent, self.btn_outdent]:
-            b.setFixedSize(26, 26); b.setStyleSheet("border:none; color:#475569; font-weight:bold; font-size:12pt; background: transparent;")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            self.fmt_bar.addWidget(b)
+            b.setFixedSize(26, 26); b.setStyleSheet("border:none; color:#475569; font-weight:bold; font-size:12pt; background: transparent;"); b.setCursor(Qt.CursorShape.PointingHandCursor); self.fmt_bar.addWidget(b)
         self.fmt_bar.addStretch()
         
-        self.btn_bullet.clicked.connect(self.apply_bullet); self.btn_num.clicked.connect(self.apply_number)
-        self.btn_indent.clicked.connect(self.apply_indent); self.btn_outdent.clicked.connect(self.apply_outdent)
+        self.btn_bullet.clicked.connect(self.apply_bullet); self.btn_num.clicked.connect(self.apply_number); self.btn_indent.clicked.connect(self.apply_indent); self.btn_outdent.clicked.connect(self.apply_outdent)
+        cc_layout.addLayout(self.fmt_bar)
+        bg_l.addWidget(self.content_container)
         
-        bottom_layout = QHBoxLayout(); bottom_layout.addLayout(self.fmt_bar)
-        
+        # --- [중요 픽스] 창 조절 핸들을 레이아웃 밖, 창 전체의 우측 하단에 고정 배치 ---
         self.grip = QSizeGrip(self)
-        bottom_layout.addWidget(self.grip, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
-        bg_l.addLayout(bottom_layout)
         
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # 언제나 창 우측 하단 끄트머리에 핸들이 오도록 위치 보정
+        if hasattr(self, 'grip'):
+            self.grip.move(self.width() - 20, self.height() - 20)
+            self.grip.resize(12, 12)
         
     def show_menu(self, pos):
         menu = QMenu(self); menu.setStyleSheet("QMenu { background: white; color: #000000; border: 1px solid #CBD5E1; border-radius: 4px; } QMenu::item:selected { background-color: #F1F5F9; }")
@@ -295,7 +344,34 @@ class MemoWindow(QWidget):
         for n, c in {"하늘색": "#E0F2FE", "연두색": "#DCFCE7", "노란색": "#FEF9C3", "분홍색": "#FCE7F3", "흰색": "#FFFFFF"}.items(): cm.addAction(n).triggered.connect(lambda checked, code=c: self.change_color(code))
         menu.addSeparator(); menu.addAction("고정 토글").triggered.connect(self.toggle_pin); menu.addAction("삭제 (휴지통)").triggered.connect(lambda: self.delete_callback(self)); menu.exec(self.sender().mapToGlobal(pos))
         
-    def toggle_max(self): [self.showNormal() or self.btn_max.setText("□") if self.isMaximized() else self.showMaximized() or self.btn_max.setText("❐")]
+    def toggle_rollup(self):
+        # --- [중요 픽스] 접었을 때 딱 글씨 크기(40px)로만 세로 높이 고정 및 가로 조절 개방 ---
+        if not self._is_rolled_up:
+            self._normal_height = self.height()
+            self.content_container.hide()
+            
+            # 높이 제한을 풀고 40px로 축소
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self.resize(self.width(), 50)
+            
+            # 접힌 상태에서는 세로 고정, 가로만 조절되도록 제약 조건 부여
+            self.setMinimumHeight(50)
+            self.setMaximumHeight(50)
+            
+            self._is_rolled_up = True
+            self.btn_min.setText("□") 
+        else:
+            # 펼칠 때 가로/세로 모두 조절되도록 제약 해제
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self.content_container.show()
+            self.resize(self.width(), self._normal_height)
+            self.setMinimumSize(200, 150)
+            
+            self._is_rolled_up = False
+            self.btn_min.setText("_")
+            
     def manual_save(self): self.update_content(); self.save_callback(self.memo_data)
     
     def apply_bullet(self): self.text_edit.textCursor().createList(QTextListFormat.Style.ListDisc); self.manual_save()
@@ -317,9 +393,11 @@ class MemoWindow(QWidget):
         self.title_edit.setText(self.memo_data.get('title',''))
         self.title_edit.setCursorPosition(0)
         
+        self._is_updating_from_explorer = True
         content = self.memo_data.get('content','')
         if "<html" in content or "<body" in content: self.text_edit.setHtml(content)
         else: self.text_edit.setPlainText(content)
+        self._is_updating_from_explorer = False
             
         self.setGeometry(self.memo_data.get('position_x',100), self.memo_data.get('position_y',100), self.memo_data.get('width',500), self.memo_data.get('height',400))
         
@@ -330,7 +408,20 @@ class MemoWindow(QWidget):
             self.btn_pin.setStyleSheet("border:none; color:#000000; background:transparent; font-weight:bold; font-size:14pt;")
         self.apply_text_stroke(self.btn_pin)
         
-    def closeEvent(self, e): self.close_callback(self); super().closeEvent(e)
+    def closeEvent(self, e):
+        self.memo_data['position_x'], self.memo_data['position_y'] = self.x(), self.y()
+        self.memo_data['width'] = self.width()
+        # 접힌 상태로 끄더라도 펼쳐졌을 때의 정상 높이를 기억하게 처리
+        if not self._is_rolled_up:
+            self.memo_data['height'] = self.height()
+        else:
+            self.memo_data['height'] = self._normal_height
+            
+        self.memo_data['is_visible'] = False
+        self.save_callback(self.memo_data)
+        self.close_callback(self)
+        super().closeEvent(e)
+        
     def handle_rename(self):
         nt = self.title_edit.text().strip(); ot = self.memo_data.get('title','')
         if not nt or nt == ot: return
@@ -343,7 +434,8 @@ class MemoWindow(QWidget):
         
     def toggle_pin(self): self.memo_data['is_pinned'] = not self.memo_data.get('is_pinned', False); self.apply_data(); self.show(); self.save_callback(self.memo_data)
     
-    def update_content(self): 
+    def update_content(self):
+        if self._is_updating_from_explorer: return
         self.memo_data['content'] = self.text_edit.toHtml()
         self.memo_data['updated_at'] = datetime.datetime.now().isoformat(); self.save_callback(self.memo_data)
         
@@ -360,6 +452,10 @@ class MemoWindow(QWidget):
             
     def mouseReleaseEvent(self, e): 
         self._old_pos = None
+        self.memo_data['position_x'], self.memo_data['position_y'] = self.x(), self.y()
+        self.memo_data['width'] = self.width()
+        if not self._is_rolled_up:
+            self.memo_data['height'] = self.height()
         self.save_callback(self.memo_data)
 
 class UIManager:
@@ -381,44 +477,78 @@ class UIManager:
         painter.end()
         
         self.tray_icon = QSystemTrayIcon(QIcon(pixmap))
-        self.tray_icon.activated.connect(lambda r: self.open_memo_explorer() if r == QSystemTrayIcon.ActivationReason.Trigger else None)
+        self.tray_icon.activated.connect(self.on_tray_activated)
         
         menu = QMenu(); menu.setStyleSheet("background: white; color: #000000; border: 1px solid #CBD5E1;"); menu.addAction("➕ 새 메모").triggered.connect(self.create_empty_memo); menu.addAction("📄 메모 탐색기").triggered.connect(self.open_memo_explorer); menu.addAction("⇄ 지금 동기화").triggered.connect(self.sync_manager.sync_push); self.toggle_action = menu.addAction("모두 숨기기"); self.toggle_action.triggered.connect(self.toggle_all); menu.addSeparator(); menu.addAction("⚙ 환경설정").triggered.connect(self.open_settings); menu.addSeparator(); menu.addAction("✕ 종료").triggered.connect(QApplication.quit); self.tray_icon.setContextMenu(menu); self.tray_icon.show()
         
+    def on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            if self.explorer_window and self.explorer_window.isVisible():
+                self.explorer_window.hide()
+            else:
+                self.open_memo_explorer()
+
     def toggle_all(self):
         for w in self.memo_windows.values(): [w.hide() if self._all_visible else (w.show() or w.raise_())]
         self.toggle_action.setText("모두 보이기" if self._all_visible else "모두 숨기기"); self._all_visible = not self._all_visible
         
     def open_memo_explorer(self):
-        if not self.explorer_window or not self.explorer_window.isVisible(): 
+        if not self.explorer_window: 
             self.explorer_window = MemoExplorerWindow(self)
-            self.explorer_window.show()
-        else: 
-            self.explorer_window.setWindowState(self.explorer_window.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)
-            self.explorer_window.show()
-            self.explorer_window.raise_()
-            self.explorer_window.activateWindow()
+        self.explorer_window.setWindowState(self.explorer_window.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)
+        self.explorer_window.show()
+        self.explorer_window.raise_()
+        self.explorer_window.activateWindow()
 
     def open_settings(self):
         self.settings_window = SettingsWindow(self.sync_manager); self.settings_window.show()
+        
     def show_all_memos(self):
-        ms = self.sync_manager.load_local_memos(); [self.create_empty_memo() if not ms else [self.create_new_memo(m) for m in ms]]
+        ms = self.sync_manager.load_local_memos()
+        if not ms:
+            self.create_empty_memo()
+        else:
+            for m in ms:
+                self.create_new_memo(m, show_on_create=m.get('is_visible', True))
+                
     def show_specific_memo(self, title: str):
-        if title in self.memo_windows: self.memo_windows[title].show(); self.memo_windows[title].raise_(); self.memo_windows[title].activateWindow()
+        if title in self.memo_windows: 
+            w = self.memo_windows[title]
+            w.memo_data['is_visible'] = True
+            self.notify_save(w.memo_data)
+            w.show(); w.raise_(); w.activateWindow()
         else:
             for m in self.sync_manager.load_local_memos():
-                if m.get('title') == title: self.create_new_memo(m); break
+                if m.get('title') == title: 
+                    m['is_visible'] = True
+                    self.sync_manager.save_memo_locally(m)
+                    self.create_new_memo(m, show_on_create=True)
+                    break
+                    
     def create_empty_memo(self):
         t = f"Memo_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"; c = self.sync_manager.settings.get("default_memo_color","#E0F2FE"); c = random.choice(["#E0F2FE","#DCFCE7","#FEF9C3","#FCE7F3","#FFFFFF"]) if c=="random" else c
         self._last_pos += QPoint(30, 30); [setattr(self, '_last_pos', QPoint(100, 100)) if self._last_pos.x() > 500 else None]
-        m = {"title": t, "content": "", "position_x": self._last_pos.x(), "position_y": self._last_pos.y(), "width": 500, "height": 400, "bg_color": c, "is_pinned": True, "updated_at": datetime.datetime.now().isoformat()}
-        self.create_new_memo(m); self.sync_manager.save_memo_locally(m); [self.explorer_window.refresh() if self.explorer_window else None]
-    def create_new_memo(self, m):
+        m = {"title": t, "content": "", "position_x": self._last_pos.x(), "position_y": self._last_pos.y(), "width": 500, "height": 400, "bg_color": c, "is_pinned": True, "is_visible": True, "updated_at": datetime.datetime.now().isoformat()}
+        self.sync_manager.save_memo_locally(m)
+        self.create_new_memo(m, show_on_create=True)
+        if self.explorer_window: self.explorer_window.refresh()
+        
+    def create_new_memo(self, m, show_on_create=False):
         t = m.get('title','Unknown')
-        if t in self.memo_windows: self.memo_windows[t].show(); self.memo_windows[t].raise_()
-        else: w = MemoWindow(m, self.notify_save, self.delete_memo, self.sync_manager.rename_memo_locally, self.on_close); w.show(); self.memo_windows[t] = w
+        if t in self.memo_windows: 
+            if show_on_create: self.memo_windows[t].show(); self.memo_windows[t].raise_()
+        else: 
+            w = MemoWindow(m, self.notify_save, self.delete_memo, self.sync_manager.rename_memo_locally, self.on_close)
+            self.memo_windows[t] = w
+            if show_on_create: w.show()
+            
     def close_memo_window(self, t): [self.memo_windows[t].close() if t in self.memo_windows else None]
-    def notify_save(self, m): self.sync_manager.save_memo_locally(m)
+    
+    def notify_save(self, m): 
+        self.sync_manager.save_memo_locally(m)
+        if self.explorer_window and self.explorer_window.isVisible():
+            self.explorer_window.refresh()
+            
     def on_close(self, w): t = w.memo_data.get('title'); [self.memo_windows.pop(t) if t in self.memo_windows else None]
     def delete_memo(self, w): t = w.memo_data.get('title','Unknown'); w.close(); self.sync_manager.delete_memo_locally(t); [self.explorer_window.refresh() if self.explorer_window else None]
 
