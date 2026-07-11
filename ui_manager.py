@@ -46,7 +46,12 @@ class MemoExplorerWindow(QWidget):
         else:
             self.resize(900, 750)
             
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint) 
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | 
+            Qt.WindowType.WindowStaysOnTopHint | 
+            Qt.WindowType.WindowSystemMenuHint | 
+            Qt.WindowType.WindowMinimizeButtonHint
+        )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         main_l = QVBoxLayout(self); main_l.setContentsMargins(15, 15, 15, 15)
         
@@ -556,8 +561,14 @@ class SettingsWindow(QWidget):
     def __init__(self, sm: Any):
         super().__init__(); self.sm = sm; self.colors = {"하늘색": "#E0F2FE", "연두색": "#DCFCE7", "노란색": "#FEF9C3", "분홍색": "#FCE7F3", "흰색": "#FFFFFF", "랜덤": "random"}; self.init_ui(); self.load()
     def init_ui(self):
-        self.setWindowTitle("환경설정"); self.setFixedSize(450, 520); self.setStyleSheet("background: white; color: #000000; font-family: 'Malgun Gothic';")
+        self.setWindowTitle("환경설정"); self.setFixedSize(450, 560); self.setStyleSheet("background: white; color: #000000; font-family: 'Malgun Gothic';")
         l = QVBoxLayout(self); l.setContentsMargins(20, 20, 20, 20)
+        
+        # --- [추가] 동기화 ON/OFF 옵션 ---
+        self.sync_cb = QCheckBox("☁️ 구글 드라이브 동기화 사용 (해제 시 완벽한 로컬 모드)")
+        self.sync_cb.setStyleSheet("font-weight: bold; color: #2563EB; margin-bottom: 10px;")
+        l.addWidget(self.sync_cb)
+        
         l.addWidget(QLabel("<b>GAS URL:</b>")); self.u = QLineEdit(); self.u.setStyleSheet("padding: 8px; border: 1px solid #CBD5E1; border-radius: 4px; color: #000000;"); l.addWidget(self.u)
         l.addWidget(QLabel("<b>저장 경로:</b>")); ph = QHBoxLayout(); self.p = QLineEdit(); self.p.setReadOnly(True); self.p.setStyleSheet("padding: 8px; border: 1px solid #CBD5E1; border-radius: 4px; background: #F8FAFC; color: #000000;")
         b = QPushButton("선택"); b.setStyleSheet("padding: 8px; background: #F1F5F9; border: 1px solid #CBD5E1; border-radius: 4px; color: #000000;"); b.clicked.connect(self.sel)
@@ -576,8 +587,17 @@ class SettingsWindow(QWidget):
         sb = QPushButton("설정 저장"); sb.setStyleSheet("background:#F0F9FF; color:#0369A1; padding:12px; font-weight:bold; border-radius:8px; border:1px solid #BAE6FD;"); sb.clicked.connect(self.save); l.addWidget(sb)
     def sel(self): p = QFileDialog.getExistingDirectory(self, "선택", self.p.text()); [self.p.setText(p) if p else None]
     def load(self):
-        s = self.sm.settings; self.u.setText(s.get("drive_folder_id","")); self.p.setText(str(self.sm.local_path)); self.s.setCurrentIndex(s.get("sync_interval_index",0)); self.a.setChecked(s.get("auto_start",False))
+        s = self.sm.settings
+        self.sync_cb.setChecked(s.get("use_sync", True))
+        self.u.setText(s.get("drive_folder_id","")); self.p.setText(str(self.sm.local_path)); self.s.setCurrentIndex(s.get("sync_interval_index",0)); self.a.setChecked(s.get("auto_start",False))
         curr = s.get("default_memo_color","#E0F2FE"); [self.c.setCurrentIndex(i) for i, (n, c) in enumerate(self.colors.items()) if c == curr]
     def save(self):
-        ns = {"drive_folder_id": self.u.text().strip(), "local_memo_path": self.p.text().strip(), "sync_interval_index": self.s.currentIndex(), "auto_start": self.a.isChecked(), "default_memo_color": list(self.colors.values())[self.c.currentIndex()]}
+        ns = {
+            "use_sync": self.sync_cb.isChecked(),
+            "drive_folder_id": self.u.text().strip(), 
+            "local_memo_path": self.p.text().strip(), 
+            "sync_interval_index": self.s.currentIndex(), 
+            "auto_start": self.a.isChecked(), 
+            "default_memo_color": list(self.colors.values())[self.c.currentIndex()]
+        }
         self.sm.save_settings(ns); QMessageBox.information(self, "알림", "저장되었습니다.")

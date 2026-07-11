@@ -102,7 +102,7 @@ class SyncManager(QObject):
         self.ui_manager = ui_manager
 
     def load_settings(self) -> Dict[str, Any]:
-        defaults = {"drive_folder_id": "", "local_memo_path": str(Path.home() / ".memoit_custom" / "memos"), "sync_interval_index": 0, "auto_start": False, "default_memo_color": "#E0F2FE"}
+        defaults = {"use_sync": True, "drive_folder_id": "", "local_memo_path": str(Path.home() / ".memoit_custom" / "memos"), "sync_interval_index": 0, "auto_start": False, "default_memo_color": "#E0F2FE"}
         self.base_path.mkdir(parents=True, exist_ok=True)
         if self.settings_path.exists():
             try:
@@ -130,8 +130,11 @@ class SyncManager(QObject):
         self.sync_timer.stop()
         try: self.sync_timer.timeout.disconnect()
         except: pass
-        self.sync_timer.timeout.connect(self.sync_push)
-        self.sync_timer.start(intervals[idx] * 1000)
+        
+        # 동기화 옵션이 켜져 있을 때만 타이머 작동
+        if self.settings.get("use_sync", True):
+            self.sync_timer.timeout.connect(self.sync_push)
+            self.sync_timer.start(intervals[idx] * 1000)
 
     def load_local_memos(self) -> List[Dict[str, Any]]:
         memos = []
@@ -187,17 +190,24 @@ class SyncManager(QObject):
             except: pass
 
     def delete_memos_cloud(self, titles: List[str]):
+        if not self.settings.get("use_sync", True): return # 로컬 모드면 클라우드 삭제 무시
         worker = SyncWorker(self)
         worker.target_method = "run_delete_batch"
         worker.titles_to_delete = titles
         self._start_worker(worker)
 
     def sync_push(self) -> None:
+        if not self.settings.get("use_sync", True):
+            self.on_sync_finished(True, "로컬 모드로 작동 중입니다. (동기화 OFF)")
+            return
         worker = SyncWorker(self)
         worker.target_method = "run_push"
         self._start_worker(worker)
 
     def sync_pull(self) -> None:
+        if not self.settings.get("use_sync", True):
+            self.on_sync_finished(True, "로컬 모드로 작동 중입니다. (동기화 OFF)")
+            return
         worker = SyncWorker(self)
         worker.target_method = "run_pull"
         self._start_worker(worker)
