@@ -21,6 +21,7 @@ memos/trash_bin/
 settings.json
 memo.lock
 .memoit_custom/
+secrets.json
 
 # [Development Assets]
 # 개발용 프롬프트/룰 폴더는 깃에 올리지 않습니다.
@@ -37,3 +38,6 @@ final_*.log
 .idea/
 .project
 .settings/
+
+#[암호화로직]
+secure_vault.py
