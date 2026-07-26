@@ -27,6 +27,7 @@ secrets.json
 # 개발용 프롬프트/룰 폴더는 깃에 올리지 않습니다.
 rules/
 imgs/
+icons/
 
 # [Logs]
 *.log

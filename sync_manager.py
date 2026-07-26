@@ -1,63 +1,178 @@
 import os
+import sys
 import json
-import winreg
-import random
 import shutil
-import traceback
+import uuid
+import winreg
+import ctypes
+import ctypes.wintypes
 import base64
-import hashlib
-from typing import Any, List, Dict
+import re
+import traceback
+import html
+from datetime import datetime
+from typing import Any, List, Dict, Optional, Tuple
 from pathlib import Path
 from PyQt6.QtCore import QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import QSystemTrayIcon
-from cryptography.fernet import Fernet
 
-# [보안] 로컬에만 존재하고 깃에는 올라가지 않는 비상용 마스터 키 볼트 연동 (선택적)
-try:
-    from secure_vault import EmergencyVault
-except ImportError:
-    class EmergencyVault:
-        def __init__(self): pass
-        def decrypt(self, encrypted_bytes: bytes) -> dict: return {}
+from crypto_manager import CryptoManager
 
 
-class UserKeyManager:
-    """사용자 지정 키 기반 암/복호화 핸들러"""
-    def __init__(self, raw_user_pass: str = "DefaultUserKey"):
-        self.cipher = self._create_cipher(raw_user_pass)
+class DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
 
-    def _create_cipher(self, secret: str) -> Fernet:
-        kdf = hashlib.pbkdf2_hmac(
-            'sha256',
-            secret.encode('utf-8'),
-            b'user_dynamic_salt_v1',
-            100_000
-        )
-        key = base64.urlsafe_b64encode(kdf)
-        return Fernet(key)
 
-    def encrypt(self, data_dict: dict) -> bytes:
-        json_str = json.dumps(data_dict, ensure_ascii=False)
-        return self.cipher.encrypt(json_str.encode('utf-8'))
+def dpapi_encrypt(plain_text: str) -> str:
+    if not plain_text:
+        return ""
+    try:
+        b = plain_text.encode('utf-8')
+        ib = DATA_BLOB(len(b), ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_byte)))
+        ob = DATA_BLOB()
+        if ctypes.windll.crypt32.CryptProtectData(ctypes.byref(ib), "MeMoAppPwd", None, None, None, 0, ctypes.byref(ob)):
+            res = ctypes.string_at(ob.pbData, ob.cbData)
+            ctypes.windll.kernel32.LocalFree(ob.pbData)
+            return base64.b64encode(res).decode('utf-8')
+    except Exception as e:
+        print(f"DPAPI encrypt error: {e}")
+    return ""
 
-    def decrypt(self, encrypted_bytes: bytes) -> dict:
-        try:
-            decrypted_bytes = self.cipher.decrypt(encrypted_bytes)
-            return json.loads(decrypted_bytes.decode('utf-8'))
-        except Exception:
-            return {}
+
+def dpapi_decrypt(cipher_b64: str) -> str:
+    if not cipher_b64:
+        return ""
+    try:
+        b = base64.b64decode(cipher_b64)
+        ib = DATA_BLOB(len(b), ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_byte)))
+        ob = DATA_BLOB()
+        if ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(ib), None, None, None, None, 0, ctypes.byref(ob)):
+            res = ctypes.string_at(ob.pbData, ob.cbData)
+            ctypes.windll.kernel32.LocalFree(ob.pbData)
+            return res.decode('utf-8')
+    except Exception as e:
+        print(f"DPAPI decrypt error: {e}")
+    return ""
+
+
+# ---------------------------------------------------------
+# 한/영 영타 오타 자동 변환 모듈 (dkssud -> 안녕 상호 변환)
+# ---------------------------------------------------------
+KOR_CHO = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ']
+KOR_JUNG = ['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ', 'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ']
+KOR_JONG = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ']
+
+ENG_KEY_MAP = {
+    'q': 'ㅂ', 'Q': 'ㅃ', 'w': 'ㅈ', 'W': 'ㅉ', 'e': 'ㄷ', 'E': 'ㄸ', 'r': 'ㄱ', 'R': 'ㄲ', 't': 'ㅅ', 'T': 'ㅆ',
+    'y': 'ㅛ', 'u': 'ㅕ', 'i': 'ㅑ', 'o': 'ㅐ', 'O': 'ㅒ', 'p': 'ㅔ', 'P': 'ㅖ', 'a': 'ㅁ', 's': 'ㄴ', 'd': 'ㅇ',
+    'f': 'ㄹ', 'g': 'ㅎ', 'h': 'ㅗ', 'j': 'ㅓ', 'k': 'ㅏ', 'l': 'ㅣ', 'z': 'ㅋ', 'x': 'ㅌ', 'c': 'ㅊ', 'v': 'ㅍ',
+    'b': 'ㅠ', 'n': 'ㅜ', 'm': 'ㅡ'
+}
+
+KOR_KEY_MAP = {v: k for k, v in ENG_KEY_MAP.items()}
+
+
+def eng_to_kor(text: str) -> str:
+    """영타로 잘못 친 텍스트(예: dkssudgktpdy)를 한글(안녕하세요)로 조합 변환합니다."""
+    res = []
+    i = 0
+    n = len(text)
+    
+    while i < n:
+        c1 = text[i]
+        if c1 not in ENG_KEY_MAP:
+            res.append(c1)
+            i += 1
+            continue
+            
+        cho_char = ENG_KEY_MAP.get(c1, '')
+        if cho_char in KOR_CHO and i + 1 < n and text[i+1] in ENG_KEY_MAP:
+            jung_char = ENG_KEY_MAP.get(text[i+1], '')
+            if jung_char in KOR_JUNG:
+                cho_idx = KOR_CHO.index(cho_char)
+                jung_idx = KOR_JUNG.index(jung_char)
+                jong_idx = 0
+                advance = 2
+                
+                if i + 2 < n and text[i+2] in ENG_KEY_MAP:
+                    jong_char1 = ENG_KEY_MAP.get(text[i+2], '')
+                    if i + 3 < n and text[i+3] in ENG_KEY_MAP and ENG_KEY_MAP.get(text[i+3], '') in KOR_JUNG:
+                        jong_idx = 0
+                    elif jong_char1 in KOR_JONG:
+                        jong_idx = KOR_JONG.index(jong_char1)
+                        advance = 3
+                        
+                syllable = chr(0xAC00 + (cho_idx * 588) + (jung_idx * 28) + jong_idx)
+                res.append(syllable)
+                i += advance
+                continue
+                
+        res.append(cho_char)
+        i += 1
+        
+    return "".join(res)
+
+
+def kor_to_eng(text: str) -> str:
+    """한글 텍스트(예: 믐믐믐)를 영타(aaa)로 역변환합니다."""
+    res = []
+    for ch in text:
+        code = ord(ch)
+        if 0xAC00 <= code <= 0xD7A3:
+            s_idx = code - 0xAC00
+            cho_idx = s_idx // 588
+            jung_idx = (s_idx % 588) // 28
+            jong_idx = s_idx % 28
+            
+            res.append(KOR_KEY_MAP.get(KOR_CHO[cho_idx], ''))
+            res.append(KOR_KEY_MAP.get(KOR_JUNG[jung_idx], ''))
+            if jong_idx > 0:
+                res.append(KOR_KEY_MAP.get(KOR_JONG[jong_idx], ''))
+        elif ch in KOR_KEY_MAP:
+            res.append(KOR_KEY_MAP[ch])
+        else:
+            res.append(ch)
+    return "".join(res)
+
+
+def convert_eng_kor_smart(text: str) -> str:
+    if not text: return ""
+    kor_count = len(re.findall(r'[\uac00-\ud7a3]', text))
+    eng_count = len(re.findall(r'[a-zA-Z]', text))
+    if eng_count >= kor_count:
+        return eng_to_kor(text)
+    else:
+        return kor_to_eng(text)
+
+
+def set_auto_start(enable: bool) -> None:
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    app_name = "MemoitApp"
+    executable = sys.executable if getattr(sys, 'frozen', False) else f'"{sys.executable}" "{sys.argv[0]}"'
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS)
+        if enable:
+            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, executable)
+        else:
+            try:
+                winreg.DeleteValue(key, app_name)
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+    except Exception as e:
+        print(f"Auto start registry error: {e}")
 
 
 class SyncWorker(QObject):
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, sync_manager):
+    def __init__(self, sync_manager: Any) -> None:
         super().__init__()
         self.sm = sync_manager
-        self.target_method = ""
-        self.titles_to_delete = []
+        self.target_method: str = ""
+        self.titles_to_delete: List[str] = []
 
-    def execute(self):
+    def execute(self) -> None:
         try:
             if self.target_method == "run_push":
                 self.run_push()
@@ -67,76 +182,193 @@ class SyncWorker(QObject):
                 self.run_delete_batch(self.titles_to_delete)
         except Exception as e:
             error_msg = f"동기화 치명적 오류: {str(e)}"
-            print(traceback.format_exc())
+            self.sm.log_error(error_msg, e)
             self.finished.emit(False, error_msg)
 
-    def run_push(self):
+    def run_push(self) -> None:
         if not self.sm.drive_api.is_available():
             self.finished.emit(False, "환경설정에서 GAS URL을 먼저 입력해주세요.")
             return
-        memos = self.sm.load_local_memos()
+        
         count = 0
-        for m in memos:
-            title = m.get('title')
-            if title:
-                if self.sm.drive_api.upload_file(f"{title}.json", m):
-                    count += 1
+        for f in self.sm.local_path.glob("*.json"):
+            if "trash_bin" in str(f):
+                continue
+            try:
+                with open(f, "r", encoding="utf-8") as file:
+                    memo_data = json.load(file)
+                memo_id = memo_data.get('id')
+                if memo_id:
+                    filename = f"{memo_id}.json"
+                    if self.sm.drive_api.upload_file(filename, memo_data):
+                        count += 1
+            except Exception as e:
+                self.sm.log_error(f"Push 파일 읽기 실패 ({f.name}): {e}", e)
+                    
         if count > 0:
-            self.finished.emit(True, f"{count}개의 메모 업로드 완료")
+            self.finished.emit(True, f"{count}개의 암호화된 메모 업로드 완료")
         else:
             self.finished.emit(True, "업로드 완료 (변경사항 없음)")
 
-    def run_pull(self):
+    def run_pull(self) -> None:
         if not self.sm.drive_api.is_available():
             self.finished.emit(False, "환경설정에서 GAS URL을 먼저 입력해주세요.")
             return
+        
         files = self.sm.drive_api.list_files()
+        
+        local_timestamps: Dict[str, str] = {}
+        for f in self.sm.local_path.glob("*.json"):
+            if "trash_bin" in str(f): continue
+            try:
+                with open(f, "r", encoding="utf-8") as file:
+                    m = json.load(file)
+                    if isinstance(m, dict) and 'id' in m:
+                        local_timestamps[m['id']] = m.get('updated_at', '')
+            except Exception:
+                pass
+
         count = 0
         for f in files:
             name = f.get("name")
             if name and name.endswith(".json"):
                 content = self.sm.drive_api.download_file(name)
                 if content:
-                    data = json.loads(content) if isinstance(content, str) else content
-                    self.sm.save_memo_locally(data)
-                    count += 1
+                    try:
+                        if isinstance(content, str):
+                            data_json = json.loads(content)
+                        else:
+                            data_json = content
+                            
+                        if isinstance(data_json, dict) and 'id' in data_json:
+                            memo_id = data_json['id']
+                            if memo_id in local_timestamps:
+                                local_time_str = local_timestamps[memo_id]
+                                remote_time_str = data_json.get('updated_at', '')
+
+                                try:
+                                    local_dt = datetime.fromisoformat(local_time_str) if local_time_str else datetime.min
+                                    remote_dt = datetime.fromisoformat(remote_time_str) if remote_time_str else datetime.min
+                                    if remote_dt <= local_dt:
+                                        continue
+                                except Exception:
+                                    pass
+
+                            raw_file = self.sm.local_path / f"{memo_id}.json"
+                            with open(raw_file, "w", encoding="utf-8") as out_f:
+                                json.dump(data_json, out_f, ensure_ascii=False, indent=2)
+                            count += 1
+                    except Exception as e:
+                        self.sm.log_error(f"Pull 처리 중 에러 ({name}): {e}", e)
+                        
         self.finished.emit(True, f"클라우드에서 {count}개의 메모 가져오기 완료")
 
-    def run_delete_batch(self, titles: List[str]):
+    def run_delete_batch(self, ids: List[str]) -> None:
         if not self.sm.drive_api.is_available():
             self.finished.emit(False, "환경설정에서 GAS URL 설정 누락")
             return
         success_count = 0
-        for title in titles:
-            if self.sm.drive_api.delete_file(f"{title}.json"):
+        for memo_id in ids:
+            if self.sm.drive_api.delete_file(f"{memo_id}.json"):
                 success_count += 1
         if success_count > 0:
             self.finished.emit(True, f"{success_count}개의 메모 클라우드 휴지통 이동 완료")
 
 
+def clean_plain_text(content: Any) -> str:
+    """HTML 및 Qt 내부 <style>...</style> 태그, 딕셔너리 래퍼를 완전히 제거하고 순수 본문 텍스트만 추출합니다."""
+    if not content:
+        return ""
+    if isinstance(content, dict):
+        content = content.get('content', '')
+    content_str = str(content)
+    if content_str.startswith("{") and "'is_encrypted'" in content_str:
+        try:
+            d = ast.literal_eval(content_str)
+            if isinstance(d, dict) and 'content' in d:
+                content_str = str(d['content'])
+        except Exception:
+            pass
+    elif content_str.startswith("{") and '"is_encrypted"' in content_str:
+        try:
+            d = json.loads(content_str)
+            if isinstance(d, dict) and 'content' in d:
+                content_str = str(d['content'])
+        except Exception:
+            pass
+
+    no_style = re.sub(r'<style[^>]*>.*?</style>', '', content_str, flags=re.DOTALL | re.IGNORECASE)
+    no_script = re.sub(r'<script[^>]*>.*?</script>', '', no_style, flags=re.DOTALL | re.IGNORECASE)
+    plain = re.sub(r'<[^>]+>', '', no_script).strip()
+    plain = html.unescape(plain)
+    return plain
+
+
 class SyncManager(QObject):
-    def __init__(self, drive_api: Any):
+    DEFAULT_SETTINGS: Dict[str, Any] = {
+        "use_sync": False,
+        "drive_folder_id": "",
+        "local_memo_path": str(Path.home() / ".memoit_custom" / "memos"),
+        "sync_interval_index": 0,
+        "auto_start": False,
+        "auto_login": False,
+        "default_memo_color": "#E0F2FE",
+        "default_font_family": "D2Coding",
+        "default_code_font_family": "D2Coding",
+        "default_code_lang": "JSON",
+        "default_code_theme": "dark",
+        "auto_eng_kor_convert": True,
+        "default_gen_line_numbers": False,
+        "default_gen_line_bg": False,
+        "default_code_line_numbers": True,
+        "default_code_line_bg": False,
+        "default_show_line_numbers": False,
+        "default_show_line_bg": False,
+        "default_is_pinned": False,
+        "trash_auto_delete_days": 0,
+        "app_theme": "white",
+        "default_memo_opacity": 1.0,
+        "default_memo_width": 350,
+        "default_memo_height": 380,
+        "default_code_memo_width": 700,
+        "default_code_memo_height": 380,
+        "explorer_is_pinned": True,
+        "shortcuts": {
+            "eng_kor_convert": "Ctrl+Alt+E",
+            "toggle_fmt_bar": "Ctrl+Shift+T",
+            "copy_all": "Ctrl+Shift+C",
+            "format_code": "Ctrl+Shift+F",
+            "new_memo": "Ctrl+N",
+            "new_code_memo": "Ctrl+Shift+N",
+            "save": "Ctrl+S",
+            "search": "Ctrl+F",
+            "rename": "F2",
+            "open_explorer": "Ctrl+E",
+            "replace": "Ctrl+H",
+            "toggle_pin": "Ctrl+P",
+            "toggle_rollup": "Ctrl+M",
+            "delete_memo": "Ctrl+D",
+            "toggle_code_theme": "Ctrl+Shift+L",
+            "arrange_rolled_memos": "Ctrl+Alt+R",
+            "arrange_all_memos": "Ctrl+Alt+A"
+        }
+    }
+
+    def __init__(self, drive_api: Any) -> None:
         super().__init__()
         self.drive_api = drive_api
+        self.crypto = CryptoManager()
+        self.session_password: Optional[str] = None
+        
         self.base_path = Path.home() / ".memoit_custom"
         self.settings_path = self.base_path / "settings.json"
+        self.vault_path = self.base_path / "user_vault.json"
+        self.error_log_path = self.base_path / "error.log"
         
-        # 설정 먼저 로드
         self.settings = self.load_settings()
-        
-        # [핵심] 최초 실행이거나 사용자 키가 기본값인 경우 입력 팝업 띄우기
-        user_pass = self.settings.get("user_secret_key", "DefaultUserKey")
-        if user_pass == "DefaultUserKey":
-            user_pass = self._prompt_for_user_key()
-            self.settings["user_secret_key"] = user_pass
-            self.save_settings(self.settings)
 
-        # 사용자 지정 키 핸들러 초기화
-        self.encryptor = UserKeyManager(user_pass)
-        self.emergency_vault = EmergencyVault()
-
-        self.ui_manager = None
-        self.active_threads = [] 
+        self.ui_manager: Any = None
+        self.active_threads: List[QThread] = [] 
 
         cp = self.settings.get("local_memo_path")
         self.local_path = Path(cp) if cp else self.base_path / "memos"
@@ -151,162 +383,335 @@ class SyncManager(QObject):
         QTimer.singleShot(3000, self.sync_pull)
         QTimer.singleShot(8000, self.sync_push)
 
-    def _prompt_for_user_key(self) -> str:
-        """최초 실행 시 사용자로부터 암호화 키를 입력받는 다이얼로그"""
-        from PyQt6.QtWidgets import QInputDialog, QLineEdit
-        
-        # 다이얼로그가 안정적으로 뜨도록 반복 혹은 기본값 처리
-        while True:
-            text, ok = QInputDialog.getText(
-                None, 
-                "메모 보안 설정", 
-                "메모를 암호화할 비밀번호(개인 키)를 입력하세요:", 
-                QLineEdit.EchoMode.Password, 
-                ""
-            )
-            if ok and text.strip():
-                return text.strip()
-            # 강제로 닫거나 입력을 안 한 경우 기본값으로 방어
-            if not ok:
-                return "DefaultUserKey"
+    def has_vault(self) -> bool:
+        return self.vault_path.exists()
 
-    def set_ui_manager(self, ui_manager):
+    def create_vault(self, password: str) -> bool:
+        try:
+            self.base_path.mkdir(parents=True, exist_ok=True)
+            verification_payload = self.crypto.encrypt_text("MEMOIT_VAULT_TEST_VERIFICATION", password)
+            with open(self.vault_path, "w", encoding="utf-8") as f:
+                json.dump(verification_payload, f, ensure_ascii=False, indent=2)
+            self.session_password = password
+            return True
+        except Exception as e:
+            self.log_error(f"암호 보관함 생성 실패: {e}", e)
+            return False
+
+    def verify_and_login(self, password: str) -> bool:
+        if not self.has_vault():
+            return False
+        try:
+            with open(self.vault_path, "r", encoding="utf-8") as f:
+                vault_data = json.load(f)
+            decrypted = self.crypto.decrypt_text(vault_data, password)
+            if decrypted == "MEMOIT_VAULT_TEST_VERIFICATION":
+                self.session_password = password
+                return True
+        except Exception as e:
+            self.log_error(f"비밀번호 검증 오류: {e}", e)
+        return False
+
+    def try_auto_login(self) -> bool:
+        if not self.settings.get("auto_login", False):
+            return False
+        token = self.settings.get("saved_pwd_token", "")
+        if not token:
+            return False
+        saved_pwd = dpapi_decrypt(token)
+        if saved_pwd and self.verify_and_login(saved_pwd):
+            return True
+        return False
+
+    def save_remembered_password(self, password: str, auto_login: bool) -> None:
+        self.settings["auto_login"] = auto_login
+        if auto_login and password:
+            self.settings["saved_pwd_token"] = dpapi_encrypt(password)
+        else:
+            self.settings["saved_pwd_token"] = ""
+        self.save_settings(self.settings)
+
+    def verify_otp_unlock(self, otp_code: str) -> bool:
+        if self.crypto.verify_otp(otp_code):
+            self.session_password = "__MASTER_OTP_UNLOCKED__"
+            return True
+        return False
+
+    def reset_password_with_otp(self, otp_code: str, new_password: str) -> bool:
+        if not self.crypto.verify_otp(otp_code):
+            return False
+        
+        memos = self.load_local_memos()
+        if self.create_vault(new_password):
+            for m in memos:
+                self.save_memo_locally(m)
+            return True
+        return False
+
+    def is_unlocked(self) -> bool:
+        return (self.session_password is not None) or (not self.has_vault())
+
+    def log_error(self, message: str, exc: Optional[Exception] = None) -> None:
+        try:
+            self.base_path.mkdir(parents=True, exist_ok=True)
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_entry = f"[{now_str}] {message}\n"
+            if exc:
+                log_entry += f"{traceback.format_exc()}\n"
+            with open(self.error_log_path, "a", encoding="utf-8") as f:
+                f.write(log_entry)
+        except Exception:
+            pass
+
+    def set_ui_manager(self, ui_manager: Any) -> None:
         self.ui_manager = ui_manager
 
     def load_settings(self) -> Dict[str, Any]:
-        defaults = {
-            "use_sync": True, 
-            "drive_folder_id": "", 
-            "local_memo_path": str(Path.home() / ".memoit_custom" / "memos"), 
-            "sync_interval_index": 0, 
-            "auto_start": False, 
-            "default_memo_color": "#E0F2FE",
-            "user_secret_key": "DefaultUserKey"
-        }
+        defaults = dict(self.DEFAULT_SETTINGS)
         self.base_path.mkdir(parents=True, exist_ok=True)
         if self.settings_path.exists():
             try:
                 with open(self.settings_path, "r", encoding="utf-8") as f:
-                    return {**defaults, **json.load(f)}
-            except: pass
+                    loaded = json.load(f)
+                    loaded_shortcuts = loaded.get("shortcuts", {})
+                    merged_shortcuts = {**defaults.get("shortcuts", {}), **loaded_shortcuts}
+                    return {**defaults, **loaded, "shortcuts": merged_shortcuts}
+            except Exception as e:
+                self.log_error("설정 파일 로드 실패", e)
         return defaults
 
     def save_settings(self, new_s: Dict[str, Any]) -> None:
         self.settings = new_s
-        # 사용자 키가 변경되었을 경우 암호화 핸들러 동적 갱신
-        new_pass = self.settings.get("user_secret_key", "DefaultUserKey")
-        self.encryptor = UserKeyManager(new_pass)
-
         try:
             with open(self.settings_path, "w", encoding="utf-8") as f:
                 json.dump(self.settings, f, ensure_ascii=False, indent=2)
-            self.local_path = Path(self.settings.get("local_memo_path"))
+            self.local_path = Path(self.settings.get("local_memo_path", str(self.base_path / "memos")))
             self.local_path.mkdir(parents=True, exist_ok=True)
             self.trash_path = self.local_path / "trash_bin"
             self.trash_path.mkdir(parents=True, exist_ok=True)
             self.drive_api.set_web_app_url(self.settings.get("drive_folder_id", ""))
+            
+            set_auto_start(self.settings.get("auto_start", False))
             self.setup_timer()
-        except: pass
+        except Exception as e:
+            self.log_error("설정 파일 저장 실패", e)
 
     def setup_timer(self) -> None:
         intervals = [60, 600, 1800, 3600]
         idx = self.settings.get("sync_interval_index", 0)
+        idx = max(0, min(idx, len(intervals) - 1))
         self.sync_timer.stop()
-        try: self.sync_timer.timeout.disconnect()
-        except: pass
+        try:
+            self.sync_timer.timeout.disconnect()
+        except Exception:
+            pass
         
         if self.settings.get("use_sync", True):
             self.sync_timer.timeout.connect(self.sync_push)
             self.sync_timer.start(intervals[idx] * 1000)
 
     def load_local_memos(self) -> List[Dict[str, Any]]:
-        memos = []
-        if not self.local_path.exists(): return memos
-        for f in self.local_path.glob("*.json"):
-            if "trash_bin" in str(f): continue
+        memos: List[Dict[str, Any]] = []
+        seen_ids = set()
+        
+        if not self.local_path.exists(): 
+            return memos
+            
+        for f in list(self.local_path.glob("*.json")):
+            if "trash_bin" in str(f): 
+                continue
             try:
-                with open(f, "rb") as file:
-                    file_bytes = file.read()
+                with open(f, "r", encoding="utf-8") as file:
+                    m = json.load(file)
                 
-                # 1순위: 사용자 지정 키로 복호화 시도
-                m = self.encryptor.decrypt(file_bytes)
-                # 2순위 (실패 시): 비상용 마스터 키 볼트로 복호화 시도
-                if not m:
-                    m = self.emergency_vault.decrypt(file_bytes)
-                # 3순위 (구버전 평문 호환): 일반 JSON 파싱 시도
-                if not m:
-                    try:
-                        m = json.loads(file_bytes.decode('utf-8'))
-                    except:
-                        pass
-                
-                if m:
-                    m['title'] = f.stem
+                if isinstance(m, dict):
+                    memo_id = m.get('id')
+                    if not memo_id or len(memo_id) < 30:
+                        memo_id = str(uuid.uuid4())
+                        m['id'] = memo_id
+
+                    if memo_id in seen_ids:
+                        continue
+
+                    # 휴지통에 동일 ID나 파일명이 이미 존재하는 경우 (삭제 후 잔존한 껍데기 파일 자동 삭제)
+                    if (self.trash_path / f.name).exists() or (self.trash_path / f"{memo_id}.json").exists():
+                        try:
+                            f.unlink()
+                        except Exception:
+                            pass
+                        continue
+
+                    seen_ids.add(memo_id)
+                    
+                    raw_content = m.get('content')
+                    needs_re_encryption = False
+
+                    if isinstance(raw_content, dict):
+                        if raw_content.get("is_encrypted"):
+                            try:
+                                decrypted_content = self.crypto.decrypt_text(raw_content, self.session_password)
+                            except Exception:
+                                decrypted_content = "[복호화 실패 메모]"
+                        else:
+                            decrypted_content = str(raw_content.get("content", ""))
+                    else:
+                        decrypted_content = str(raw_content) if raw_content is not None else ""
+                        needs_re_encryption = True
+
+                    m['content'] = decrypted_content
+                    
+                    # 0자 내용인 빈 초안 메모는 디스크에서 자동으로 깔끔히 청소 및 제외
+                    if m.get('is_draft') and not m.get('is_manually_saved') and not clean_plain_text(decrypted_content):
+                        try:
+                            f.unlink()
+                        except Exception:
+                            pass
+                        continue
+
                     memos.append(m)
-            except: pass
+
+                    expected_file = self.local_path / f"{memo_id}.json"
+                    if (needs_re_encryption or f.name != expected_file.name) and self.is_unlocked():
+                        self.save_memo_locally(m)
+                        if f.name != expected_file.name:
+                            try:
+                                f.unlink()
+                            except Exception as e:
+                                self.log_error(f"구버전 레거시 메모 파일 정리 실패 ({f.name}): {e}", e)
+            except Exception as e:
+                self.log_error(f"로컬 메모 파일 읽기 에러 ({f.name}): {e}", e)
+                
         return memos
 
     def load_trash_memos(self) -> List[Dict[str, Any]]:
-        memos = []
+        memos: List[Dict[str, Any]] = []
         if not self.trash_path.exists(): return memos
-        for f in self.trash_path.glob("*.json"):
+        for f in list(self.trash_path.glob("*.json")):
             try:
-                with open(f, "rb") as file:
-                    file_bytes = file.read()
+                with open(f, "r", encoding="utf-8") as file:
+                    m = json.load(file)
                 
-                m = self.encryptor.decrypt(file_bytes)
-                if not m:
-                    m = self.emergency_vault.decrypt(file_bytes)
-                if not m:
-                    try:
-                        m = json.loads(file_bytes.decode('utf-8'))
-                    except:
-                        pass
-                
-                if m:
-                    m['title'] = f.stem
+                if isinstance(m, dict):
+                    if 'id' not in m:
+                        m['id'] = f.stem
+                        
+                    raw_content = m.get('content')
+                    if isinstance(raw_content, dict):
+                        if raw_content.get("is_encrypted"):
+                            try:
+                                m['content'] = self.crypto.decrypt_text(raw_content, self.session_password)
+                            except Exception:
+                                m['content'] = "[암호화된 복호화 실패 메모]"
+                        else:
+                            m['content'] = str(raw_content.get("content", ""))
+                    else:
+                        m['content'] = str(raw_content) if raw_content is not None else ""
                     memos.append(m)
-            except: pass
+            except Exception as e:
+                self.log_error(f"휴지통 메모 읽기 에러 ({f.name}): {e}", e)
         return memos
 
-    def restore_memo_locally(self, title: str) -> bool:
-        src, dst = self.trash_path / f"{title}.json", self.local_path / f"{title}.json"
+    def restore_memo_locally(self, memo_id: str) -> bool:
+        src = self.trash_path / f"{memo_id}.json"
+        dst = self.local_path / f"{memo_id}.json"
         try:
             if src.exists():
                 if dst.exists(): dst.unlink()
-                shutil.move(str(src), str(dst)); return True
-        except: pass
+                shutil.move(str(src), str(dst))
+                return True
+        except Exception as e:
+            self.log_error(f"로컬 메모 복구 실패 ({memo_id}): {e}", e)
         return False
 
-    def save_memo_locally(self, data: Dict[str, Any]) -> None:
-        f = self.local_path / f"{data.get('title', 'Untitled')}.json"
+    def save_memo_locally(self, data: Dict[str, Any]) -> bool:
+        memo_id = data.get('id')
+        if not memo_id:
+            memo_id = str(uuid.uuid4())
+            data['id'] = memo_id
+
+        plain_content = str(data.get('content', ''))
+        plain_text = clean_plain_text(plain_content)
+
+        # 미작성 빈 초안 메모(is_draft == True, 내용 없음, 수동저장 안함)는 디스크 저장을 차단하며 기존 파일이 있으면 파기
+        if data.get('is_draft') and not data.get('is_manually_saved') and not plain_text:
+            f = self.local_path / f"{memo_id}.json"
+            if f.exists():
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+            return False
+
+        memo_to_save = dict(data)
+        encrypted_payload = self.crypto.encrypt_text(plain_content, self.session_password)
+        memo_to_save['content'] = encrypted_payload
+
+        f = self.local_path / f"{memo_id}.json"
         try:
-            encrypted_bytes = self.encryptor.encrypt(data)
-            with open(f, "wb") as file:
-                file.write(encrypted_bytes)
-        except: pass
+            with open(f, "w", encoding="utf-8") as file:
+                json.dump(memo_to_save, file, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            self.log_error(f"로컬 메모 저장 실패 ({memo_id}): {e}", e)
+            return False
 
     def rename_memo_locally(self, ot: str, nt: str, data: Dict[str, Any]) -> bool:
-        op, np = self.local_path / f"{ot}.json", self.local_path / f"{nt}.json"
-        if np.exists() and ot != nt: return False
         try:
-            if op.exists(): op.rename(np)
-            data['title'] = nt; self.save_memo_locally(data); return True
-        except: return False
+            data['title'] = nt
+            self.save_memo_locally(data)
+            return True
+        except Exception as e:
+            self.log_error(f"메모 제목 변경 실패 ({ot} -> {nt}): {e}", e)
+            return False
 
-    def delete_memo_locally(self, title: str) -> None:
-        src, dst = self.local_path / f"{title}.json", self.trash_path / f"{title}.json"
+    def delete_memo_locally(self, memo_id: str, title: Optional[str] = None) -> None:
+        if not memo_id: return
+        self.trash_path.mkdir(parents=True, exist_ok=True)
+        
+        # 1. ID 기반 파일 연동 이동
+        src = self.local_path / f"{memo_id}.json"
+        dst = self.trash_path / f"{memo_id}.json"
+        
         if src.exists():
             try:
                 if dst.exists(): dst.unlink()
                 shutil.move(str(src), str(dst))
-            except: pass
+            except Exception as e:
+                self.log_error(f"로컬 메모 휴지통 이동 실패 ({memo_id}): {e}", e)
 
-    def delete_memos_cloud(self, titles: List[str]):
+        # 2. 제목, ID 및 파일명 기반 레거시/중복 파생 파일 전수 수거 및 휴지통 이동
+        if self.local_path.exists():
+            for f in list(self.local_path.glob("*.json")):
+                if "trash_bin" in str(f) or f.is_dir(): continue
+                try:
+                    with open(f, "r", encoding="utf-8") as file:
+                        m_data = json.load(file)
+                    if isinstance(m_data, dict):
+                        file_id = m_data.get('id')
+                        file_title = m_data.get('title')
+                        if file_id == memo_id or (title and file_title == title) or (f.stem == memo_id) or (title and f.stem == title):
+                            target_dst = self.trash_path / f.name
+                            if target_dst.exists(): target_dst.unlink()
+                            shutil.move(str(f), str(target_dst))
+                except Exception:
+                    pass
+
+    def empty_trash_locally(self) -> int:
+        count = 0
+        if self.trash_path.exists():
+            for f in list(self.trash_path.glob("*.json")):
+                try:
+                    f.unlink()
+                    count += 1
+                except Exception:
+                    pass
+        return count
+
+    def delete_memos_cloud(self, ids: List[str]) -> None:
         if not self.settings.get("use_sync", True): return 
         worker = SyncWorker(self)
         worker.target_method = "run_delete_batch"
-        worker.titles_to_delete = titles
+        worker.titles_to_delete = ids
         self._start_worker(worker)
 
     def sync_push(self) -> None:
@@ -325,7 +730,7 @@ class SyncManager(QObject):
         worker.target_method = "run_pull"
         self._start_worker(worker)
 
-    def _start_worker(self, worker):
+    def _start_worker(self, worker: SyncWorker) -> None:
         thread = QThread()
         thread.worker = worker 
         worker.moveToThread(thread)
@@ -344,7 +749,7 @@ class SyncManager(QObject):
         self.active_threads.append(thread)
         thread.start()
 
-    def on_sync_finished(self, success, message):
+    def on_sync_finished(self, success: bool, message: str) -> None:
         print(f"[동기화 로그] 성공: {success}, 내용: {message}")
         if self.ui_manager:
             if self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
@@ -357,5 +762,5 @@ class SyncManager(QObject):
                         QSystemTrayIcon.MessageIcon.Warning, 
                         3000
                     )
-            if success and "가져오기 완료" in message and self.ui_manager.explorer_window:
+            if success and ("가져오기 완료" in message or "업로드 완료" in message) and self.ui_manager.explorer_window:
                 self.ui_manager.explorer_window.refresh()
