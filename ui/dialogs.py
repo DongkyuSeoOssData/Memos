@@ -36,7 +36,7 @@ class PasswordSetupDialog(QDialog):
         self.setWindowTitle("🔑 Memos 비밀번호 설정 (최초 실행)")
         self.setFixedSize(440, 320)
         self.setStyleSheet("""
-            QDialog { background: #000000; font-family: 'SF Pro Display', 'Pretendard', sans-serif; }
+            QDialog { background: #000000; font-family: 'D2Coding', 'Consolas', monospace; }
             QLabel { color: #FFFFFF; }
             QLineEdit { padding: 12px; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 12px; background: #1C1C1E; color: white; font-size: 10pt; }
             QLineEdit:focus { border: 1.5px solid #0A84FF; }
@@ -110,7 +110,7 @@ class PasswordLoginDialog(QDialog):
             pal = LIGHT_THEMES.get(mode, LIGHT_THEMES["white"])
 
         self.setStyleSheet(f"""
-            QDialog {{ background-color: {pal['bg']}; font-family: 'SF Pro Display', 'Pretendard', sans-serif; border: 1px solid {pal['border']}; border-radius: 16px; }}
+            QDialog {{ background-color: {pal['bg']}; font-family: 'D2Coding', 'Consolas', monospace; border: 1px solid {pal['border']}; border-radius: 16px; }}
             QLabel {{ color: {pal['text']}; background: transparent; }}
             QLineEdit {{ padding: 12px; border: 1px solid {pal['border']}; border-radius: 12px; background: {pal['input']}; color: {pal['text']}; font-size: 10pt; }}
             QLineEdit:focus {{ border: 1.5px solid {pal['accent']}; }}
@@ -178,7 +178,7 @@ class OTPRescueDialog(QDialog):
         self.setWindowTitle("🆘 구글 OTP 비상 복구")
         self.setFixedSize(450, 320)
         self.setStyleSheet("""
-            QDialog { background: #000000; font-family: 'SF Pro Display', 'Pretendard', sans-serif; }
+            QDialog { background: #000000; font-family: 'D2Coding', 'Consolas', monospace; }
             QLabel { color: #FFFFFF; }
             QLineEdit { padding: 12px; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 12px; background: #1C1C1E; color: white; font-size: 10pt; }
             QLineEdit:focus { border: 1.5px solid #FF453A; }
@@ -246,7 +246,7 @@ class ConflictDialog(QDialog):
         super().__init__()
         self.setWindowTitle("복구 중복 확인")
         self.setFixedSize(620, 460)
-        self.setStyleSheet("background-color: #000000; color: #FFFFFF; font-family: 'SF Pro Display', 'Pretendard', sans-serif;")
+        self.setStyleSheet("background-color: #000000; color: #FFFFFF; font-family: 'D2Coding', 'Consolas', monospace;")
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)

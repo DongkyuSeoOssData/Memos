@@ -1,6 +1,5 @@
-from utils.crypto_utils import ENG_KEY_MAP, KOR_KEY_MAP
-from utils.text_utils import clean_plain_text
-from utils.crypto_utils import dpapi_encrypt, dpapi_decrypt
+from utils.crypto_utils import ENG_KEY_MAP, KOR_KEY_MAP, DATA_BLOB, dpapi_encrypt, dpapi_decrypt
+from utils.text_utils import clean_plain_text, eng_to_kor, kor_to_eng, convert_eng_kor_smart
 from core.sync_worker import SyncWorker
 import os
 import sys
@@ -10,95 +9,15 @@ import uuid
 import winreg
 import ctypes
 import ctypes.wintypes
-import base64
 import re
-import traceback
-import html
 from datetime import datetime
-from typing import Any, List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional
 from pathlib import Path
 from PyQt6.QtCore import QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import QSystemTrayIcon
 from crypto_manager import CryptoManager
 
-class DATA_BLOB(ctypes.Structure):
-    _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
 
-KOR_CHO = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ']
-
-KOR_JUNG = ['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ', 'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ']
-
-KOR_JONG = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ']
-
-def eng_to_kor(text: str) -> str:
-    """영타로 잘못 친 텍스트(예: dkssudgktpdy)를 한글(안녕하세요)로 조합 변환합니다."""
-    res = []
-    i = 0
-    n = len(text)
-    
-    while i < n:
-        c1 = text[i]
-        if c1 not in ENG_KEY_MAP:
-            res.append(c1)
-            i += 1
-            continue
-            
-        cho_char = ENG_KEY_MAP.get(c1, '')
-        if cho_char in KOR_CHO and i + 1 < n and text[i+1] in ENG_KEY_MAP:
-            jung_char = ENG_KEY_MAP.get(text[i+1], '')
-            if jung_char in KOR_JUNG:
-                cho_idx = KOR_CHO.index(cho_char)
-                jung_idx = KOR_JUNG.index(jung_char)
-                jong_idx = 0
-                advance = 2
-                
-                if i + 2 < n and text[i+2] in ENG_KEY_MAP:
-                    jong_char1 = ENG_KEY_MAP.get(text[i+2], '')
-                    if i + 3 < n and text[i+3] in ENG_KEY_MAP and ENG_KEY_MAP.get(text[i+3], '') in KOR_JUNG:
-                        jong_idx = 0
-                    elif jong_char1 in KOR_JONG:
-                        jong_idx = KOR_JONG.index(jong_char1)
-                        advance = 3
-                        
-                syllable = chr(0xAC00 + (cho_idx * 588) + (jung_idx * 28) + jong_idx)
-                res.append(syllable)
-                i += advance
-                continue
-                
-        res.append(cho_char)
-        i += 1
-        
-    return "".join(res)
-
-def kor_to_eng(text: str) -> str:
-    """한글 텍스트(예: 믐믐믐)를 영타(aaa)로 역변환합니다."""
-    res = []
-    for ch in text:
-        code = ord(ch)
-        if 0xAC00 <= code <= 0xD7A3:
-            s_idx = code - 0xAC00
-            cho_idx = s_idx // 588
-            jung_idx = (s_idx % 588) // 28
-            jong_idx = s_idx % 28
-            
-            res.append(KOR_KEY_MAP.get(KOR_CHO[cho_idx], ''))
-            res.append(KOR_KEY_MAP.get(KOR_JUNG[jung_idx], ''))
-            if jong_idx > 0:
-                res.append(KOR_KEY_MAP.get(KOR_JONG[jong_idx], ''))
-        elif ch in KOR_KEY_MAP:
-            res.append(KOR_KEY_MAP[ch])
-        else:
-            res.append(ch)
-    return "".join(res)
-
-def convert_eng_kor_smart(text: str) -> str:
-    if not text: return ""
-    kor_count = len(re.findall(r'[\uac00-\ud7a3]', text))
-    eng_count = len(re.findall(r'[a-zA-Z]', text))
-    if eng_count >= kor_count:
-        return eng_to_kor(text)
-    else:
-        return kor_to_eng(text)
 
 def set_auto_start(enable: bool) -> None:
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"

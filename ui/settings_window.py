@@ -1,4 +1,4 @@
-from PyQt6.QtCore import QMetaObject
+from PyQt6.QtCore import QMetaObject, pyqtSlot
 from ui.ui_utils import apply_ios_shadow
 from ui.themes import LIGHT_THEMES, DARK_THEMES
 import sys
@@ -81,7 +81,7 @@ class SettingsWindow(QWidget):
         
         self.cb_default_pin = QCheckBox("새 메모 실행 시 화면 고정 기본 적용")
         self.cb_auto_eng_kor = QCheckBox("한/영 영타 오타 자동 변환기 사용")
-        self.a = QCheckBox("윈도우 시작 시 자동 실행")
+        self.auto_start_cb = QCheckBox("윈도우 시작 시 자동 실행")
         
         self.cb_gen_line_num = QCheckBox("일반 메모: 최초 실행 시 행번호 표시")
         self.cb_gen_line_bg = QCheckBox("일반 메모: 최초 실행 시 줄노트 배경 표시")
@@ -89,7 +89,7 @@ class SettingsWindow(QWidget):
         self.cb_code_line_bg = QCheckBox("코드 메모: 최초 실행 시 줄노트 배경 표시")
         
         for cb_item in [
-            self.cb_default_pin, self.cb_auto_eng_kor, self.a,
+            self.cb_default_pin, self.cb_auto_eng_kor, self.auto_start_cb,
             self.cb_gen_line_num, self.cb_gen_line_bg,
             self.cb_code_line_num, self.cb_code_line_bg
         ]:
@@ -123,37 +123,37 @@ class SettingsWindow(QWidget):
         
         g1_l.addWidget(QLabel("GAS Web App URL:"))
         url_box = QHBoxLayout()
-        self.u = QLineEdit()
-        self.u.setPlaceholderText("https://script.google.com/macros/s/.../exec")
-        self.u.setFixedHeight(40)
+        self.url_input = QLineEdit()
+        self.url_input.setPlaceholderText("https://script.google.com/macros/s/.../exec")
+        self.url_input.setFixedHeight(40)
         
         self.btn_test_url = QPushButton(" 연결 테스트")
         self.btn_test_url.setFixedHeight(40)
         self.btn_test_url.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_test_url.clicked.connect(self.test_gas_url)
         
-        url_box.addWidget(self.u)
+        url_box.addWidget(self.url_input)
         url_box.addWidget(self.btn_test_url)
         g1_l.addLayout(url_box)
         
         g1_l.addWidget(QLabel("로컬 메모 저장 위치:"))
         ph = QHBoxLayout()
-        self.p = QLineEdit()
-        self.p.setReadOnly(True)
-        self.p.setFixedHeight(40)
+        self.path_input = QLineEdit()
+        self.path_input.setReadOnly(True)
+        self.path_input.setFixedHeight(40)
         self.btn_change_path = QPushButton(" 경로 변경")
         self.btn_change_path.setFixedHeight(40)
         self.btn_change_path.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_change_path.clicked.connect(self.sel)
-        ph.addWidget(self.p)
+        ph.addWidget(self.path_input)
         ph.addWidget(self.btn_change_path)
         g1_l.addLayout(ph)
         
         g1_l.addWidget(QLabel("자동 동기화 주기:"))
-        self.s = QComboBox()
-        self.s.addItems(["1분마다", "10분마다", "30분마다", "1시간마다"])
-        self.s.setFixedHeight(40)
-        g1_l.addWidget(self.s)
+        self.sync_interval_combo = QComboBox()
+        self.sync_interval_combo.addItems(["1분마다", "10분마다", "30분마다", "1시간마다"])
+        self.sync_interval_combo.setFixedHeight(40)
+        g1_l.addWidget(self.sync_interval_combo)
         l_sync.addWidget(g1)
         l_sync.addStretch()
         
@@ -238,13 +238,13 @@ class SettingsWindow(QWidget):
         g3_l.addLayout(f_row4)
         
         g3_l.addWidget(QLabel("일반 메모 기본 색상:"))
-        self.c = QComboBox()
-        self.c.setFixedHeight(40)
+        self.default_color_combo = QComboBox()
+        self.default_color_combo.setFixedHeight(40)
         for idx, (name, color_hex) in enumerate(self.colors.items()):
-            self.c.addItem(name)
+            self.default_color_combo.addItem(name)
             if color_hex != "random":
-                self.c.setItemData(idx, QColor(color_hex), Qt.ItemDataRole.BackgroundRole)
-        g3_l.addWidget(self.c)
+                self.default_color_combo.setItemData(idx, QColor(color_hex), Qt.ItemDataRole.BackgroundRole)
+        g3_l.addWidget(self.default_color_combo)
         
         # 기본 투명도 설정 그룹
         g_opacity = QGroupBox("새 메모 기본 투명도 (불투명 100% 기본)")
@@ -349,7 +349,7 @@ class SettingsWindow(QWidget):
         apply_ios_shadow(self)
 
     def test_gas_url(self) -> None:
-        url = self.u.text().strip()
+        url = self.url_input.text().strip()
         if not url or not url.startswith("http"):
             QMessageBox.warning(self, "연결 테스트 실패", "유효한 HTTP/HTTPS URL을 입력해주세요.")
             return
@@ -362,14 +362,15 @@ class SettingsWindow(QWidget):
             try:
                 res = self.sm.drive_api.ping_web_app()
                 if res:
-                    QTimer.singleShot(0, self._on_ping_success)
+                    QMetaObject.invokeMethod(self, "_on_ping_success", Qt.ConnectionType.QueuedConnection)
                 else:
-                    QTimer.singleShot(0, self._on_ping_failed)
+                    QMetaObject.invokeMethod(self, "_on_ping_failed", Qt.ConnectionType.QueuedConnection)
             except Exception:
-                QTimer.singleShot(0, self._on_ping_failed)
+                QMetaObject.invokeMethod(self, "_on_ping_failed", Qt.ConnectionType.QueuedConnection)
 
         threading.Thread(target=_async_ping, daemon=True).start()
 
+    @pyqtSlot()
     def _on_ping_success(self) -> None:
         self.sync_cb.setChecked(True)
         if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager and self.sm.ui_manager.explorer_window:
@@ -377,6 +378,7 @@ class SettingsWindow(QWidget):
         else:
             QMessageBox.information(self, "연결 테스트 성공", "구글 드라이브 연결 성공!")
 
+    @pyqtSlot()
     def _on_ping_failed(self) -> None:
         if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager and self.sm.ui_manager.explorer_window:
             self.sm.ui_manager.explorer_window.show_toast("❌ 구글 드라이브 연결 실패 (URL 및 권한 확인)")
@@ -398,7 +400,7 @@ class SettingsWindow(QWidget):
             SettingsWindow#SettingsWindow, QWidget#SettingsWindow {{
                 background-color: {pal['bg']};
             }}
-            QWidget {{ font-family: 'SF Pro Display', 'Pretendard', sans-serif; font-size: 9.5pt; color: {pal['text']}; background-color: {pal['bg']}; }}
+            QWidget {{ font-family: 'D2Coding', 'Consolas', monospace; font-size: 9.5pt; color: {pal['text']}; background-color: {pal['bg']}; }}
             QTabWidget::pane {{ border: 1px solid {pal['border']}; border-radius: 0px; background: {pal['card']}; }}
             QTabBar::tab {{ padding: 10px 20px; font-weight: bold; background: {pal['bg']}; color: {pal['text']}; border-top-left-radius: 0px; border-top-right-radius: 0px; margin-right: 4px; }}
             QTabBar::tab:selected {{ background: {pal['accent']}; color: white; }}
@@ -447,7 +449,9 @@ class SettingsWindow(QWidget):
             "현재 메모 삭제": "delete_memo",
             "코드 테마 전환 (다크/라이트)": "toggle_code_theme",
             "접은 메모 정렬": "arrange_rolled_memos",
-            "메모 전체 정렬": "arrange_all_memos"
+            "메모 전체 정렬": "arrange_all_memos",
+            "모든 메모 켜기": "open_all_memos",
+            "모든 메모 숨기기/보이기 토글": "toggle_all_memos"
         }
         for r in range(self.shortcut_table.rowCount()):
             name = self.shortcut_table.item(r, 0).text()
@@ -459,12 +463,12 @@ class SettingsWindow(QWidget):
         
         ns = {
             "use_sync": self.sync_cb.isChecked(),
-            "drive_folder_id": self.u.text().strip(), 
-            "local_memo_path": self.p.text().strip(), 
-            "sync_interval_index": self.s.currentIndex(), 
-            "auto_start": self.a.isChecked(), 
+            "drive_folder_id": self.url_input.text().strip(),
+            "local_memo_path": self.path_input.text().strip(),
+            "sync_interval_index": self.sync_interval_combo.currentIndex(),
+            "auto_start": self.auto_start_cb.isChecked(),
             "auto_login": is_auto_login,
-            "default_memo_color": list(self.colors.values())[self.c.currentIndex()],
+            "default_memo_color": list(self.colors.values())[self.default_color_combo.currentIndex()],
             "default_font_family": self.default_font_box.currentFont().family(),
             "default_code_font_family": self.default_code_font_box.currentFont().family(),
             "default_code_lang": self.default_code_lang_box.currentText(),
@@ -491,20 +495,24 @@ class SettingsWindow(QWidget):
         self.sm.save_settings(ns)
         if not is_auto_login:
             self.sm.save_remembered_password("", False)
+            
+        if hasattr(self.sm, 'ui_manager') and hasattr(self.sm.ui_manager, 'update_tray_menu'):
+            self.sm.ui_manager.update_tray_menu()
+            
         QMessageBox.information(self, "알림", "설정이 성공적으로 저장되었습니다.")
 
     def sel(self) -> None:
-        p = QFileDialog.getExistingDirectory(self, "선택", self.p.text())
+        p = QFileDialog.getExistingDirectory(self, "선택", self.path_input.text())
         if p:
-            self.p.setText(p)
+            self.path_input.setText(p)
 
     def load(self) -> None:
         s = self.sm.settings
         self.sync_cb.setChecked(s.get("use_sync", False))
-        self.u.setText(s.get("drive_folder_id",""))
-        self.p.setText(str(self.sm.local_path))
-        self.s.setCurrentIndex(s.get("sync_interval_index", 0))
-        self.a.setChecked(s.get("auto_start", False))
+        self.url_input.setText(s.get("drive_folder_id",""))
+        self.path_input.setText(str(self.sm.local_path))
+        self.sync_interval_combo.setCurrentIndex(s.get("sync_interval_index", 0))
+        self.auto_start_cb.setChecked(s.get("auto_start", False))
         self.cb_auto_login.setChecked(s.get("auto_login", False))
         self.cb_default_pin.setChecked(s.get("default_is_pinned", False))
         self.cb_auto_eng_kor.setChecked(s.get("auto_eng_kor_convert", True))
@@ -550,7 +558,7 @@ class SettingsWindow(QWidget):
         curr = s.get("default_memo_color", "#FFFFFF")
         for i, (n, c) in enumerate(self.colors.items()):
             if c == curr:
-                self.c.setCurrentIndex(i)
+                self.default_color_combo.setCurrentIndex(i)
                 break
                 
         trash_days = s.get("trash_auto_delete_days", 0)
@@ -576,7 +584,9 @@ class SettingsWindow(QWidget):
             ("현재 메모 삭제", sc_map.get("delete_memo", "Ctrl+D")),
             ("코드 테마 전환 (다크/라이트)", sc_map.get("toggle_code_theme", "Ctrl+Shift+L")),
             ("접은 메모 정렬", sc_map.get("arrange_rolled_memos", "Ctrl+Alt+R")),
-            ("메모 전체 정렬", sc_map.get("arrange_all_memos", "Ctrl+Alt+A"))
+            ("메모 전체 정렬", sc_map.get("arrange_all_memos", "Ctrl+Alt+A")),
+            ("모든 메모 켜기", sc_map.get("open_all_memos", "Ctrl+Shift+O")),
+            ("모든 메모 숨기기/보이기 토글", sc_map.get("toggle_all_memos", "Ctrl+Shift+H"))
         ]
         
         self.shortcut_table.setRowCount(0)

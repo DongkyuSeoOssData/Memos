@@ -37,6 +37,9 @@ def main() -> None:
     """
     app = QApplication(sys.argv)
     
+    from PyQt6.QtGui import QFont
+    app.setFont(QFont("D2Coding", 10))
+    
     # 마지막 창이 닫혀도 시스템 트레이 아이콘이 존재하므로 앱이 종료되지 않도록 설정
     app.setQuitOnLastWindowClosed(False)
     

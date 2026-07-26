@@ -67,7 +67,7 @@ class MemoWindow(QWidget):
         self.text_edit.cursorPositionChanged.connect(self.update_toolbar_button_states)
         
         self.toast_label = QLabel(self)
-        self.toast_label.setStyleSheet("background-color: #007AFF; color: white; font-weight: bold; border-radius: 10px; padding: 6px 14px; font-size: 9.5pt;")
+        self.toast_label.setStyleSheet("background-color: rgba(0, 122, 255, 0.8); color: white; font-weight: bold; border-radius: 10px; padding: 6px 14px; font-size: 9.5pt;")
         self.toast_label.hide()
         self.toast_timer = QTimer(self)
         self.toast_timer.setSingleShot(True)
@@ -105,6 +105,8 @@ class MemoWindow(QWidget):
             QShortcut(QKeySequence(s_cfg.get("arrange_all_memos", "Ctrl+Alt+A")), self).activated.connect(self.ui_manager.arrange_memos)
             QShortcut(QKeySequence(s_cfg.get("new_memo", "Ctrl+N")), self).activated.connect(self.ui_manager.create_empty_memo)
             QShortcut(QKeySequence(s_cfg.get("new_code_memo", "Ctrl+Shift+N")), self).activated.connect(self.ui_manager.create_code_memo)
+            QShortcut(QKeySequence(s_cfg.get("open_all_memos", "Ctrl+Shift+O")), self).activated.connect(self.ui_manager.open_all_memos)
+            QShortcut(QKeySequence(s_cfg.get("toggle_all_memos", "Ctrl+Shift+H")), self).activated.connect(self.ui_manager.toggle_all)
 
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.close)
 
@@ -149,10 +151,14 @@ class MemoWindow(QWidget):
         text_color = "#F2F2F7" if is_dark_bg else "#1C1C1E"
         line_color = "rgba(255,255,255,0.15)" if is_dark_bg else "rgba(0,0,0,0.15)"
         
+        font_fam = "'D2Coding'" if is_code_memo else "'D2Coding', 'Consolas', monospace"
+        font_size = f"{self.memo_data.get('font_size', 11)}pt"
+        style_str = f"QTextEdit {{ border:none; background: transparent; color:{text_color}; font-family: {font_fam}; font-size: {font_size}; }}"
+        
         if self.memo_data.get('show_line_bg', False):
-            self.text_edit.setStyleSheet(f"QTextEdit {{ border:none; background: transparent; color:{text_color}; background-image: repeating-linear-gradient(transparent, transparent 27px, {line_color} 28px); background-attachment: local; }}")
+            self.text_edit.setStyleSheet(style_str)
         else:
-            self.text_edit.setStyleSheet(f"QTextEdit {{ border:none; background: transparent; color:{text_color}; }}")
+            self.text_edit.setStyleSheet(style_str)
         
     def setup_ui(self) -> None:
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -173,7 +179,7 @@ class MemoWindow(QWidget):
         # 📌 제목 레이블 (압정 영역 직전까지 확장)
         self.title_edit = QLineEdit()
         self.title_edit.setReadOnly(True)
-        self.title_edit.setStyleSheet("border:none; background:transparent; font-weight:bold; font-size:11.5pt; font-family: 'SF Pro Display', 'Pretendard', sans-serif;")
+        self.title_edit.setStyleSheet("border:none; background:transparent; font-weight:bold; font-size:11.5pt; font-family: 'D2Coding', 'Consolas', monospace;")
         self.title_edit.editingFinished.connect(self.handle_rename)
         self.title_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.title_edit.customContextMenuRequested.connect(self.show_menu)
@@ -193,7 +199,15 @@ class MemoWindow(QWidget):
         self.code_lang_box.currentTextChanged.connect(self.on_code_lang_changed)
         self.code_lang_box.hide()
         
+        # 언어 선택 아이콘 버튼 (language.svg) - 콤보박스와 함께 표시
+        self.btn_lang_icon = QPushButton("")
+        self.btn_lang_icon.setFixedSize(24, 24)
+        self.btn_lang_icon.setEnabled(False)  # 클릭 불가, 아이콘 표시 전용
+        self.btn_lang_icon.setStyleSheet("QPushButton { background: transparent; border: none; }")
+        self.btn_lang_icon.hide()
+
         ctrl.addWidget(self.btn_code_theme)
+        ctrl.addWidget(self.btn_lang_icon)
         ctrl.addWidget(self.code_lang_box)
         ctrl.addStretch()
 
@@ -412,8 +426,8 @@ class MemoWindow(QWidget):
                         is_memo_dark_bg = True
         
         btn_text_color = '#FFFFFF' if is_memo_dark_bg else '#000000'
-        btn_style_off = f"border:none; color:{btn_text_color}; font-size:10pt; background: transparent; font-weight:bold;"
-        btn_style_on = "border:none; color:white; font-size:10pt; background: #007AFF; font-weight:bold; border-radius: 6px;"
+        btn_style_off = f"border:none; color:{btn_text_color}; font-size:10pt; background: transparent; font-weight:bold; border-radius: 4px;"
+        btn_style_on = "border:none; color:white; font-size:10pt; background: #007AFF; font-weight:bold; border-radius: 4px;"
 
         if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
             self.btn_bullet.setText("")
@@ -455,7 +469,7 @@ class MemoWindow(QWidget):
     def toggle_sub_fmt_panel(self) -> None:
         is_vis = self.sub_fmt_widget.isVisible()
         self.sub_fmt_widget.setVisible(not is_vis)
-        self.btn_toggle_sub_fmt.setText("A🎨 ▴" if not is_vis else "A🎨 ▾")
+        self.btn_toggle_sub_fmt.setText("Aa ▴" if not is_vis else "Aa ▾")
 
     def on_code_lang_changed(self, lang: str) -> None:
         self.memo_data['code_lang'] = lang
@@ -527,7 +541,7 @@ class MemoWindow(QWidget):
             menu.addAction(name).triggered.connect(lambda checked, c=hex_code: self.set_text_bg_color(QColor(c)))
             
         menu.addSeparator()
-        menu.addAction("🎨 사용자 지정 RGB 색상...").triggered.connect(self.choose_bg_color)
+        menu.addAction("사용자 지정 RGB 색상...").triggered.connect(self.choose_bg_color)
         menu.exec(self.btn_bg_color.mapToGlobal(QPoint(0, self.btn_bg_color.height())))
 
     def set_text_bg_color(self, color: QColor) -> None:
@@ -644,30 +658,45 @@ class MemoWindow(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet("QMenu { background: white; color: #000000; border: 1px solid #C7C7CC; border-radius: 8px; } QMenu::item:selected { background-color: #007AFF; color: white; }")
         
+        s = self.memo_window_get_settings()
+        sc = s.get("shortcuts", {})
+        def _fmt_sc(title: str, key: str, default: str) -> str:
+            val = sc.get(key, default)
+            return f"{title} ({val})" if val else title
+
+        sender_widget = self.sender()
+        if hasattr(sender_widget, 'copy'):
+            menu.addAction("복사 (Ctrl+C)").triggered.connect(sender_widget.copy)
+            menu.addAction("잘라내기 (Ctrl+X)").triggered.connect(sender_widget.cut)
+            menu.addAction("붙여넣기 (Ctrl+V)").triggered.connect(sender_widget.paste)
+            menu.addAction("모두 선택 (Ctrl+A)").triggered.connect(sender_widget.selectAll)
+            menu.addSeparator()
+
         is_code = self.memo_data.get('is_code_memo', False)
         if is_code:
-            menu.addAction("✨ 코드 자동 정렬 (Ctrl+Shift+F)").triggered.connect(self.prettify_code)
-            menu.addAction("📋 코드만 클립보드 복사").triggered.connect(self.copy_all_content)
-            menu.addAction("🌙 / ☀️ 코드 테마 전환 (Ctrl+Shift+L)").triggered.connect(self.toggle_code_theme)
+            menu.addAction(_fmt_sc("코드 자동 정렬", "format_code", "Ctrl+Shift+F")).triggered.connect(self.prettify_code)
+            menu.addAction("코드만 클립보드 복사").triggered.connect(self.copy_all_content)
+            menu.addAction(_fmt_sc("코드 테마 전환", "toggle_code_theme", "Ctrl+Shift+L")).triggered.connect(self.toggle_code_theme)
         else:
-            menu.addAction("📋 전체 메모 내용 복사 (클립보드)").triggered.connect(self.copy_all_content)
+            menu.addAction(_fmt_sc("전체 메모 내용 복사 (클립보드)", "copy_all", "Ctrl+Shift+C")).triggered.connect(self.copy_all_content)
             
-        menu.addAction("🔤 한/영 영타 오타 변환 (Ctrl+Alt+E)").triggered.connect(self.convert_selected_eng_kor)
+        menu.addAction(_fmt_sc("한/영 영타 오타 변환", "eng_kor_convert", "Ctrl+Alt+E")).triggered.connect(self.convert_selected_eng_kor)
         
         menu.addSeparator()
-        s = self.memo_window_get_settings()
+        
         is_auto_convert = s.get("auto_eng_kor_convert", True)
-        auto_convert_action = menu.addAction(f"🔤 한/영 자동 변환기 [{ 'ON' if is_auto_convert else 'OFF' }]")
+        auto_convert_action = menu.addAction(f"한/영 자동 변환기 [{ 'ON' if is_auto_convert else 'OFF' }]")
         auto_convert_action.setCheckable(True)
         auto_convert_action.setChecked(is_auto_convert)
         auto_convert_action.triggered.connect(self.toggle_auto_eng_kor_setting)
         
         menu.addSeparator()
-        menu.addAction("저장 (Ctrl+S)").triggered.connect(self.manual_save)
-        menu.addAction("검색 (Ctrl+F)").triggered.connect(self.show_search_only)
-        menu.addAction("바꾸기 (Ctrl+H)").triggered.connect(self.show_search_and_replace)
-        menu.addAction("📌 화면 고정 토글 (Ctrl+P)").triggered.connect(self.toggle_pin)
-        menu.addAction("📐 메모 창 접기 (Ctrl+M)").triggered.connect(self.toggle_rollup)
+        menu.addAction(_fmt_sc("메모 탐색기 열기", "open_explorer", "Ctrl+E")).triggered.connect(self.ui_manager.open_memo_explorer)
+        menu.addAction(_fmt_sc("저장", "save", "Ctrl+S")).triggered.connect(self.manual_save)
+        menu.addAction(_fmt_sc("검색", "search", "Ctrl+F")).triggered.connect(self.show_search_only)
+        menu.addAction(_fmt_sc("바꾸기", "replace", "Ctrl+H")).triggered.connect(self.show_search_and_replace)
+        menu.addAction(_fmt_sc("화면 고정 토글", "toggle_pin", "Ctrl+P")).triggered.connect(self.toggle_pin)
+        menu.addAction(_fmt_sc("메모 창 접기", "toggle_rollup", "Ctrl+M")).triggered.connect(self.toggle_rollup)
         
         ln_action = menu.addAction("행번호 표시")
         ln_action.setCheckable(True)
@@ -687,7 +716,7 @@ class MemoWindow(QWidget):
 
         menu.addSeparator()
         # 🔆 투명도 슬라이더 서브메뉴
-        opacity_menu = menu.addMenu("🔆 창 투명도 조절")
+        opacity_menu = menu.addMenu("창 투명도 조절")
         opacity_widget = QWidget()
         opacity_layout = QHBoxLayout(opacity_widget)
         opacity_layout.setContentsMargins(12, 6, 12, 6)
@@ -722,7 +751,7 @@ class MemoWindow(QWidget):
         opacity_menu.addAction("40% (많이 투명)").triggered.connect(lambda: opa_slider.setValue(40))
 
         menu.addSeparator()
-        menu.addAction("ⓧ 메모 삭제 (Ctrl+D)").triggered.connect(lambda: self.delete_callback(self))
+        menu.addAction(_fmt_sc("메모 삭제", "delete_memo", "Ctrl+D")).triggered.connect(lambda: self.delete_callback(self))
         menu.exec(self.sender().mapToGlobal(pos))
 
     def toggle_auto_eng_kor_setting(self) -> None:
@@ -852,25 +881,21 @@ class MemoWindow(QWidget):
         self._auto_save_timer.start(1000)
 
     def choose_fg_color(self) -> None:
-        """글씨색 선택 (순차 변경)"""
-        colors = ["#000000", "#FF3B30", "#007AFF", "#34C759", "#FF9500", "#FFFFFF"]
-        cur = getattr(self, '_current_fg_idx', -1)
-        cur = (cur + 1) % len(colors)
-        self._current_fg_idx = cur
-        color = QColor(colors[cur])
-        
-        cursor = self.text_edit.textCursor()
-        if not cursor.hasSelection():
-            cursor.select(QTextCursor.SelectionType.Document)
-        fmt = QTextCharFormat()
-        fmt.setForeground(color)
-        cursor.mergeCharFormat(fmt)
-        self.text_edit.mergeCurrentCharFormat(fmt)
-        self.btn_fg_color.setStyleSheet(
-            f"font-weight: bold; color: {color.name()}; "
-            f"border: 1px solid #C7C7CC; border-radius: 6px; background: white;"
-        )
-        self.manual_save()
+        color = QColorDialog.getColor(Qt.GlobalColor.black, self, "글씨색 선택")
+        if color.isValid():
+            cursor = self.text_edit.textCursor()
+            fmt = QTextCharFormat()
+            fmt.setForeground(color)
+            if cursor.hasSelection():
+                cursor.mergeCharFormat(fmt)
+            else:
+                self.text_edit.mergeCurrentCharFormat(fmt)
+            
+            self.btn_fg_color.setStyleSheet(
+                f"font-weight: bold; color: {color.name()}; "
+                f"border: 1px solid #C7C7CC; border-radius: 6px; background: white;"
+            )
+            self.manual_save()
 
     def choose_bg_color(self) -> None:
         colors = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "transparent"]
@@ -893,7 +918,11 @@ class MemoWindow(QWidget):
                 while True:
                     lst = block.textList()
                     if lst:
+                        bf = block.blockFormat()
+                        bf.setObjectIndex(-1)
                         lst.remove(block)
+                        c = QTextCursor(block)
+                        c.setBlockFormat(bf)
                     if block == end_block or not block.isValid(): break
                     block = block.next()
             else:
@@ -929,7 +958,11 @@ class MemoWindow(QWidget):
                 while True:
                     lst = block.textList()
                     if lst:
+                        bf = block.blockFormat()
+                        bf.setObjectIndex(-1)
                         lst.remove(block)
+                        c = QTextCursor(block)
+                        c.setBlockFormat(bf)
                     if block == end_block or not block.isValid(): break
                     block = block.next()
             else:
@@ -1019,6 +1052,7 @@ class MemoWindow(QWidget):
             if hasattr(self, 'btn_code_theme'): self.btn_code_theme.hide()
             if hasattr(self, 'code_lang_box'): self.code_lang_box.hide()
             if hasattr(self, 'btn_format_code'): self.btn_format_code.hide()
+            if hasattr(self, 'btn_lang_icon'): self.btn_lang_icon.hide()
             if hasattr(self, 'bg'):
                 self.bg.setGraphicsEffect(None)
         else:
@@ -1054,6 +1088,7 @@ class MemoWindow(QWidget):
                 if hasattr(self, 'btn_code_theme'): self.btn_code_theme.show()
                 if hasattr(self, 'code_lang_box'): self.code_lang_box.show()
                 if hasattr(self, 'btn_format_code'): self.btn_format_code.show()
+                if hasattr(self, 'btn_lang_icon'): self.btn_lang_icon.show()
             self.btn_min.setToolTip("접기 (Ctrl+M)")
             self.btn_max.show()
             
@@ -1107,10 +1142,16 @@ class MemoWindow(QWidget):
             self.show_toast("✓ 저장됨")
 
     def manual_save(self) -> None:
-        self.memo_data['is_manually_saved'] = True
-        self.memo_data['is_draft'] = False
-        self._auto_save_timer.stop()
-        self.execute_auto_save()
+        plain = clean_plain_text(self.text_edit.toHtml())
+        if plain:
+            self.memo_data['is_manually_saved'] = True
+            self.memo_data['is_draft'] = False
+            self._auto_save_timer.stop()
+            self.execute_auto_save()
+        else:
+            # 내용이 없으면 draft 상태 유지, 저장은 수행하되 목록에는 추가 안되게 처리
+            self._auto_save_timer.stop()
+            self.execute_auto_save()
 
     def apply_data(self) -> None:
         if getattr(self, '_is_applying_data', False):
@@ -1129,24 +1170,10 @@ class MemoWindow(QWidget):
             
         current_flags = self.windowFlags()
         if (current_flags & (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)) != target_flags:
-            if self.isVisible() and sys.platform == 'win32':
-                import ctypes
-                hwnd = int(self.winId())
-                HWND_TOPMOST = -1
-                HWND_NOTOPMOST = -2
-                SWP_NOMOVE = 0x0002
-                SWP_NOSIZE = 0x0001
-                flag = HWND_TOPMOST if is_pinned else HWND_NOTOPMOST
-                ctypes.windll.user32.SetWindowPos(hwnd, flag, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
-                
-                # To prevent this branch from running repeatedly, we would need to update Qt's internal flags.
-                # However, setWindowFlags causes flicker. We will just let it run SetWindowPos again 
-                # on subsequent calls to _apply_data_internal, which is harmless and flicker-free.
-            else:
-                was_visible = self.isVisible()
-                self.setWindowFlags(target_flags)
-                if was_visible:
-                    self.show()
+            was_visible = self.isVisible()
+            self.setWindowFlags(target_flags)
+            if was_visible:
+                self.show()
         
         is_code_memo = self.memo_data.get('is_code_memo', False)
 
@@ -1190,7 +1217,7 @@ class MemoWindow(QWidget):
             self.btn_pin.setText("")
             self.btn_pin.setStyleSheet(
                 "QPushButton { background: #0A84FF; color: white; "
-                "border: none; border-radius: 12px; font-weight: bold; font-size: 9pt; } "
+                "border: none; border-radius: 4px; } "
                 "QPushButton:hover { background: #007AFF; }"
             )
         else:
@@ -1230,10 +1257,12 @@ class MemoWindow(QWidget):
                 self.btn_format_code.hide()
                 self.btn_code_theme.hide()
                 self.code_lang_box.hide()
+                if hasattr(self, 'btn_lang_icon'): self.btn_lang_icon.hide()
             else:
                 self.btn_format_code.show()
                 self.btn_code_theme.show()
                 self.code_lang_box.show()
+                if hasattr(self, 'btn_lang_icon'): self.btn_lang_icon.show()
 
             code_theme = self.memo_data.get('code_theme', 'dark')
             lang = self.memo_data.get('code_lang', 'JSON')
@@ -1241,6 +1270,9 @@ class MemoWindow(QWidget):
             self.btn_code_theme.setText(" 라이트" if code_theme == "dark" else " 다크")
             if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
                 self.btn_code_theme.setIcon(self.ui_manager.get_theme_icon("litemode.svg" if code_theme == "dark" else "darkmod.svg", is_memo_dark_bg))
+                if hasattr(self, 'btn_lang_icon'):
+                    icon_color = "#FFFFFF" if is_memo_dark_bg else "#000000"
+                    self.btn_lang_icon.setIcon(self.ui_manager.get_theme_icon("language.svg", is_memo_dark_bg, override_color=icon_color))
             
             self.code_lang_box.blockSignals(True)
             self.code_lang_box.setCurrentText(lang)
@@ -1307,18 +1339,33 @@ class MemoWindow(QWidget):
             self.title_edit.setStyleSheet(
                 f"border:none; background:transparent; color:{title_c}; "
                 f"font-weight:bold; font-size:12pt; "
-                f"font-family: 'SF Pro Display', 'Pretendard', sans-serif;"
+                f"font-family: 'D2Coding', 'Consolas', monospace;"
             )
             self.text_edit.setStyleSheet(
                 f"QTextEdit {{ border:none; background:transparent; color:{text_c}; }}"
             )
-
-            self.text_edit.setTextColor(QColor(text_c))
-            cursor = self.text_edit.textCursor()
-            cursor.select(QTextCursor.SelectionType.Document)
-            base_fmt = QTextCharFormat()
-            base_fmt.setForeground(QColor(text_c))
-            cursor.mergeCharFormat(base_fmt)
+            
+            # Change default text colors only, preserve custom colors
+            doc = self.text_edit.document()
+            target_color_name = text_c.upper()
+            if is_memo_dark_bg:
+                old_colors = ["#000000", "#1C1C1E", "#333333"]
+            else:
+                old_colors = ["#FFFFFF", "#F2F2F7", "#CCCCCC"]
+                
+            for i in range(doc.blockCount()):
+                block = doc.findBlockByNumber(i)
+                it = block.begin()
+                while not it.atEnd():
+                    frag = it.fragment()
+                    fmt = frag.charFormat()
+                    if fmt.foreground().color().name().upper() in old_colors:
+                        fmt.setForeground(QColor(text_c))
+                        cursor = QTextCursor(block)
+                        cursor.setPosition(frag.position())
+                        cursor.setPosition(frag.position() + frag.length(), QTextCursor.MoveMode.KeepAnchor)
+                        cursor.mergeCharFormat(fmt)
+                    it += 1
 
             radius_px = "0px"
             self.bg.setStyleSheet(
@@ -1491,7 +1538,9 @@ class MemoWindow(QWidget):
         
     def enable_rename(self) -> None:
         self.title_edit.setReadOnly(False)
-        self.title_edit.setStyleSheet("border:1px solid #007AFF; background:white; color:#000000; font-weight:bold; font-size:12pt; border-radius:0px;")
+        is_code = self.memo_data.get('is_code_memo', False)
+        font_fam = "'D2Coding'" if is_code else "'D2Coding', 'Consolas', monospace"
+        self.title_edit.setStyleSheet(f"border:1px solid #007AFF; background:white; color:#000000; font-weight:bold; font-size:12pt; border-radius:0px; font-family: {font_fam};")
         self.title_edit.setFocus()
         self.title_edit.setCursorPosition(len(self.title_edit.text()))
 
@@ -1523,8 +1572,9 @@ class MemoWindow(QWidget):
         is_dark = is_app_dark or is_memo_dark_bg
         is_code = self.memo_data.get('is_code_memo', False)
         
-        title_color = "#64D2FF" if is_code else ("#FFFFFF" if is_dark else "#1C1C1E")
-        self.title_edit.setStyleSheet(f"border:none; background:transparent; color:{title_color}; font-weight:bold; font-size:12pt;")
+        title_color = "#007AFF" if is_code else ("#FFFFFF" if is_dark else "#1C1C1E")
+        font_fam = "'D2Coding'" if is_code else "'D2Coding', 'Consolas', monospace"
+        self.title_edit.setStyleSheet(f"border:none; background:transparent; color:{title_color}; font-weight:bold; font-size:12pt; font-family: {font_fam};")
         self.title_edit.setCursorPosition(0)
         if getattr(self, 'ui_manager', None) and self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
             self.ui_manager.explorer_window.update_table()
@@ -1532,9 +1582,7 @@ class MemoWindow(QWidget):
     def toggle_pin(self) -> None:
         self.memo_data['is_pinned'] = not self.memo_data.get('is_pinned', False)
         self.apply_data()
-        self.show()
         self.save_callback(self.memo_data)
-        self.show_toast("📌 화면 고정 켜짐" if self.memo_data['is_pinned'] else "📍 화면 고정 해제됨")
         
     def change_color(self, c: str) -> None:
         self.memo_data['bg_color'] = c
@@ -1552,7 +1600,6 @@ class MemoWindow(QWidget):
         self.save_callback(self.memo_data)
         if getattr(self, 'ui_manager', None) and self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
             self.ui_manager.explorer_window.update_table()
-    
     def mousePressEvent(self, e: Any) -> None: 
         if e.button() == Qt.MouseButton.LeftButton:
             if hasattr(self, 'title_edit') and not self.title_edit.isReadOnly():

@@ -56,9 +56,9 @@ class UIManager:
     
     def get_theme_icon(self, svg_name: str, is_dark: Optional[bool] = None, override_color: Optional[str] = None) -> QIcon:
         if getattr(sys, 'frozen', False):
-            base_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
+            base_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent))
         else:
-            base_dir = Path(__file__).parent
+            base_dir = Path(__file__).parent.parent
             
         svg_path = base_dir / "icons" / svg_name
         if not svg_path.exists():
@@ -101,10 +101,24 @@ class UIManager:
             return QIcon()
 
     def setup_tray(self) -> None:
-        icon = self.get_theme_icon("memo.svg", is_dark=False, override_color="#000000")
-        self.tray_icon = QSystemTrayIcon(icon)
+        if getattr(sys, 'frozen', False):
+            base_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent))
+        else:
+            base_dir = Path(__file__).parent.parent
+            
+        icon_path = base_dir / "icons" / "memo.ico"
+        if not icon_path.exists():
+            icon_path = Path("icons") / "memo.ico"
+            
+        self.tray_icon = QSystemTrayIcon(QIcon(str(icon_path)))
         self.tray_icon.activated.connect(self.on_tray_activated)
-        
+        self.update_tray_menu()
+        self.tray_icon.show()
+
+    def _fmt_sc(self, title: str, sc: str) -> str:
+        return f"{title} ({sc})" if sc else title
+
+    def update_tray_menu(self) -> None:
         menu = QMenu()
         theme = self.sync_manager.settings.get('app_theme', 'white')
         is_dark = (theme == "dark")
@@ -119,31 +133,36 @@ class UIManager:
         
         s = self.sync_manager.settings.get("shortcuts", {})
         
-        act_new = menu.addAction(f"새 메모 ({s.get('new_memo', 'Ctrl+N')})")
+        act_new = menu.addAction(self._fmt_sc("새 메모", s.get('new_memo', 'Ctrl+N')))
         act_new.setIcon(self.get_theme_icon("memo.svg", is_dark))
         act_new.triggered.connect(self.create_empty_memo)
 
-        act_code = menu.addAction(f"새 코드 메모 ({s.get('new_code_memo', 'Ctrl+Shift+N')})")
+        act_code = menu.addAction(self._fmt_sc("새 코드 메모", s.get('new_code_memo', 'Ctrl+Shift+N')))
         act_code.setIcon(self.get_theme_icon("codememo.svg", is_dark))
         act_code.triggered.connect(self.create_code_memo)
 
-        act_arr_r = menu.addAction(f"접은 메모 정렬 ({s.get('arrange_rolled_memos', 'Ctrl+Alt+R')})")
+        act_arr_r = menu.addAction(self._fmt_sc("접은 메모 정렬", s.get('arrange_rolled_memos', 'Ctrl+Alt+R')))
         act_arr_r.setIcon(self.get_theme_icon("정렬1.svg", is_dark))
         act_arr_r.triggered.connect(self.arrange_rolled_up_memos)
 
-        act_exp = menu.addAction(f"메모 탐색기 ({s.get('open_explorer', 'Ctrl+E')})")
+        act_exp = menu.addAction(self._fmt_sc("메모 탐색기", s.get('open_explorer', 'Ctrl+E')))
         act_exp.setIcon(self.get_theme_icon("memo.svg", is_dark))
         act_exp.triggered.connect(self.open_memo_explorer)
 
-        act_arr_a = menu.addAction(f"펼친 메모 정렬 ({s.get('arrange_all_memos', 'Ctrl+Alt+A')})")
+        act_arr_a = menu.addAction(self._fmt_sc("펼친 메모 정렬", s.get('arrange_all_memos', 'Ctrl+Alt+A')))
         act_arr_a.setIcon(self.get_theme_icon("정렬2.svg", is_dark))
         act_arr_a.triggered.connect(self.arrange_memos)
 
         act_sync = menu.addAction("지금 동기화")
         act_sync.setIcon(self.get_theme_icon("cloude.svg", is_dark))
         act_sync.triggered.connect(self.sync_manager.sync_push)
+
+        act_open_all = menu.addAction(self._fmt_sc("모든 메모 켜기", s.get('open_all_memos', 'Ctrl+Shift+O')))
+        act_open_all.setIcon(self.get_theme_icon("memo.svg", is_dark))
+        act_open_all.triggered.connect(self.open_all_memos)
         
-        self.toggle_action = menu.addAction("모두 숨기기")
+        title_toggle = "모두 숨기기" if self._all_visible else "모두 보이기"
+        self.toggle_action = menu.addAction(self._fmt_sc(title_toggle, s.get('toggle_all_memos', 'Ctrl+Shift+H')))
         self.toggle_action.setIcon(self.get_theme_icon("minimize.svg", is_dark))
         self.toggle_action.triggered.connect(self.toggle_all)
         
@@ -157,8 +176,8 @@ class UIManager:
         act_quit.setIcon(self.get_theme_icon("close.svg", is_dark, override_color="#FF453A"))
         act_quit.triggered.connect(QApplication.quit)
         
-        self.tray_icon.setContextMenu(menu)
-        self.tray_icon.show()
+        self._tray_menu = menu
+        self.tray_icon.setContextMenu(self._tray_menu)
 
     def enforce_z_order_layering(self) -> None:
         for w in self.memo_windows.values():
@@ -182,7 +201,7 @@ class UIManager:
                 except Exception:
                     pass
             if self.explorer_window and self.explorer_window.isVisible():
-                QTimer.singleShot(0, self.explorer_window.refresh)
+                QMetaObject.invokeMethod(self.explorer_window, "refresh", Qt.ConnectionType.QueuedConnection)
         import threading
         threading.Thread(target=_task, daemon=True).start()
 
@@ -297,6 +316,21 @@ class UIManager:
             self.enforce_z_order_layering()
         self.toggle_action.setText("모두 보이기" if self._all_visible else "모두 숨기기")
         self._all_visible = not self._all_visible
+
+    def open_all_memos(self) -> None:
+        """모든 메모를 저장된 위치에 켭니다."""
+        memos = self.sync_manager.load_local_memos()
+        for m in memos:
+            if not m.get('is_deleted', False):
+                memo_id = m['id']
+                if memo_id in self.memo_windows:
+                    w = self.memo_windows[memo_id]
+                    w.memo_data['is_visible'] = True
+                    w.show()
+                else:
+                    m['is_visible'] = True
+                    self.create_new_memo(m, show_on_create=True)
+        self.enforce_z_order_layering()
         
     def open_memo_explorer(self) -> None:
         if not self.ensure_unlocked():
@@ -548,7 +582,7 @@ class UIManager:
             
     def close_memo_window_by_id(self, memo_id: str, is_deleting: bool = False) -> None:
         if memo_id in self.memo_windows:
-            w = self.memo_windows[memo_id]
+            w = self.memo_windows.pop(memo_id)
             if is_deleting:
                 w._is_deleting = True
             w.close()
