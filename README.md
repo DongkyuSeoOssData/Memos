@@ -1,52 +1,54 @@
-# Memos - 구글 드라이브 동기화 및 로컬 하이브리드 메모 시스템 (v1.7.1)
+# Memos - 구글 드라이브 동기화 및 로컬 하이브리드 메모 시스템 (v2.0.0)
 
-로컬 환경의 초경량 반응 속도와 구글 드라이브 클라우드의 데이터 무결성을 완벽하게 결합한 데스크톱 메모 애플리케이션입니다.
-v1.7 버전에서는 성능이 대폭 강화된 커스텀 행 번호 엔진, 비동기 스레드 최적화, 제로-렉(Zero-Lag) 코드 메모, 그리고 다크/라이트 픽셀 퍼펙트 UI가 새롭게 탑재되었습니다.
-
----
-
-## ✨ v1.7.x 핵심 기능 및 대규모 업데이트 내역
-
-### 1. 코드 메모 성능 대폭 향상 (Zero-Lag Code Memo) ➔ [Hotfix]
-* **저장 및 종료 딜레이 제거:** 기존 코드 메모에서 발생하던 무거운 HTML 렌더링 부하를 순수 텍스트(Plain Text) 추출 기반으로 최적화하여 0.5초 이상의 렉을 완벽하게 제거했습니다.
-* **손상된 메모 자가 치유(Self-Healing):** 과거 버그로 인해 무거운 HTML 형태로 저장되었던 코드 메모를 열 때, 불필요한 태그를 씻어내어 원본 텍스트로 자동 치유하는 로직이 적용되었습니다.
-
-### 2. 다크/라이트 모드 픽셀 퍼펙트 동기화 (Pixel-Perfect UI) ➔ [Hotfix]
-* 테마 전환 시 버튼 폰트 크기, 테이블 헤더의 대문자 표기(`uppercase`), 체크박스의 둥글기 및 마진값이 어긋나던 미세한 레이아웃 차이를 100% 동일한 규격으로 통일하여, 테마 변경 시 레이아웃 엇갈림이 전혀 발생하지 않습니다.
-
-### 3. 일괄 정렬 시 화면 프리징(UI Freezing) 완벽 해결 ➔ [Hotfix]
-* 다수의 메모를 한 번에 정렬(펼친 메모, 접은 메모 화면 우측 정렬 등)할 때 메인 스레드에서 파일 저장이 연쇄적으로 일어나며 앱이 멈추던 현상을 **비동기 백그라운드 스레드 저장 방식**으로 개선하여 완벽히 해결했습니다.
-
-### 4. 시스템 트레이 아이콘 개선 및 앱 좀비화 버그 해결 ➔ [Hotfix]
-* `Memos.spec` 설정 오류로 인해 아이콘 리소스가 누락되어 앱이 사용자 눈에 띄지 않는 "좀비 프로세스"로 실행되던 치명적 빌드 버그를 해결했습니다.
-* 트레이 아이콘의 렌더링 방식을 개선하여, 강제적인 흰색 배경 없이 `memo.svg` 벡터 아이콘 고유의 깔끔한 투명 배경을 지원합니다.
-
-### 5. 커스텀 행 번호 엔진(`MemoTextEdit`) 및 스마트 탭 연동
-* **VS Code 스타일 동적 행 번호:** `QTextEdit` 기반의 커스텀 라인 넘버 영역(`LineNumberArea`)을 탑재하여 줄 번호 출력을 지원합니다.
-* **스마트 탭 및 들여쓰기 동기화:** 키보드 `Tab` 및 `Shift + Tab` 입력 시 포맷바의 들여쓰기(`⇥`) 및 내어쓰기(`⇤`) 기능과 연동됩니다.
-
-### 6. 초슬림 50px 롤업 최소화 및 가로 리사이징 개방
-* 창 최소화(`_`) 버튼 클릭 시 50px 높이의 슬림한 툴바 박스 형태로 접힙니다.
-* 접힌 상태에서도 우측 하단 크기 조절 핸들(`QSizeGrip`)을 통해 자유롭게 가로 너비를 변경할 수 있습니다.
-
-### 7. 실시간 본문 미리보기 및 빠른 수정 (Live Quick-Edit)
-* 탐색기 하단 미리보기 뷰어에서 직접 텍스트 수정이 가능하며, 수정 즉시 로컬에 저장되고 바탕화면에 열려 있는 메모장 창으로도 즉각 동기화됩니다.
-
-### 8. 완벽한 상태 기억 및 무중단 침묵 동기화 (State Persistence & Silent Sync)
-* **메모장 & 탐색기:** 닫힐 때의 좌표, 크기, 활성화 상태를 완벽히 기억하여 재시작 시 동일하게 복원됩니다.
-* **Silent Sync:** 백그라운드 동기화 성공 시 방해되는 팝업 알림 없이 탐색기 상단에 파란색 텍스트로 조용히 상태를 알려줍니다.
-* **실시간 화면 제어 단축키:** `Ctrl + 마우스 휠`로 폰트 크기, `Shift + 마우스 휠`로 투명도를 제어할 수 있습니다.
+로컬 환경의 초경량 반응 속도와 구글 드라이브 클라우드의 데이터 무결성을 완벽하게 결합한 데스크톱 메모 애플리케이션입니다. 
+빠르고 직관적인 UI, 완벽한 보안 암호화, 그리고 개발자를 위한 코드 하이라이팅 기능을 제공합니다.
 
 ---
 
-## 🔒 보안 특징 (Security Features)
+## ✨ v2.0.0 핵심 업데이트 내역
+
+### 1. 전면적인 아키텍처 리팩토링 (Architecture Refactoring)
+* **모듈화 설계:** 단일 파일로 비대했던 코드를 역할에 따라 `core/`, `ui/`, `utils/` 폴더 구조로 분리하여 유지보수성과 확장성을 극대화했습니다.
+* **UI 클래스 세분화:** 수천 줄의 얽혀있던 코드를 `memo_window.py`, `memo_explorer.py`, `memo_editor.py` 등으로 완전히 분리하여 메모리 관리와 성능을 향상시켰습니다.
+
+### 2. 치명적 버그 수정 및 최적화
+* **메모 무한 증식 버그 해결:** 구형 ID(레거시 ID)를 가진 파일들이 저장될 때마다 새로운 파일로 무한 복제 및 증식되던 버그를 완벽히 해결했습니다. 
+* **휴지통 일괄 정리:** 탐색기에서 원본 메모를 삭제할 때 관련된 중복 및 파생 파일들이 함께 묶여 휴지통으로 정리되도록 동기화 안정성을 높였습니다.
+
+### 3. UI/UX 미세 조정 (Pixel-Perfect UI)
+* **깜빡임 없는 핀 고정(항상 위):** 창 고정 및 해제 시 창이 사라졌다 나타나는 플리커링(Flickering) 현상을 Windows 네이티브 API(`SetWindowPos`) 호출 방식으로 변경하여 부드럽게 전환되도록 개선했습니다.
+* **테마 잔상 및 렌더링 버그 제거:** 테마 전환 버튼의 하늘색 찌꺼기 테두리, 라이트 모드 언어 선택창 글씨 묻힘 현상, 그리고 핀 고정 버튼의 네모박스 테두리 오류를 모두 제거하여 모든 테마에서 완벽한 둥근 투명 버튼과 UI를 제공합니다.
+
+---
+
+## 🚀 주요 기능 및 특징 (Key Features)
+
+1. **초경량 제로-렉(Zero-Lag) 메모 에디터**
+   - 무거운 HTML 렌더링 부하를 제거한 순수 텍스트(Plain Text) 및 스마트 파싱 기반으로 최적화하여 렉 없는 쾌적한 타이핑을 지원합니다.
+   - **VS Code 스타일 동적 행 번호**와 다크/라이트 코드 하이라이팅을 지원합니다.
+
+2. **스마트 리스트 포맷 및 들여쓰기**
+   - 불릿(•) 및 넘버(1.) 리스트 자동 생성과 토글(Toggle Off) 해제 기능을 지원합니다.
+   - 단축키(`Tab`, `Shift + Tab`)를 통한 스마트 들여쓰기를 지원하며, 리스트 해제 시에도 사용자의 수동 들여쓰기 범위가 그대로 유지됩니다.
+
+3. **완벽한 상태 기억 및 롤업(Roll-up) 모드**
+   - 창이 닫힐 때의 좌표, 크기, 핀 고정 여부를 기억하여 다음 번 실행 시 완벽하게 같은 위치에 복원됩니다.
+   - 제목 표시줄을 더블클릭하거나 최소화(`_`) 버튼 클릭 시 50px 높이의 얇은 툴바 형태로 접히는 **초슬림 롤업 기능**을 제공합니다. (접힌 상태에서도 가로 길이 자유 조절 가능)
+
+4. **비동기 침묵 동기화 (Silent Sync)**
+   - 구글 드라이브 업로드/다운로드 과정이 비동기 백그라운드 스레드로 동작하여 작업 중 UI 멈춤(Freezing)이 전혀 발생하지 않습니다.
+   - 동기화 완료 시 방해되는 팝업 알림 없이 탐색기 상단에 파란색 텍스트로 조용히 상태를 알려줍니다.
+
+---
+
+## 🔒 강력한 보안 (Security Features)
 
 1. **사용자 지정 키 기반 로컬 암호화**
-* 앱 최초 실행 시 사용자가 직접 입력한 개인 비밀번호를 기반으로 `PBKDF2`(SHA-256) 대칭키를 유도하여 로컬 메모(`.json`)를 안전하게 암·복호화합니다.
-* 사용자의 개인 키는 내부 설정 파일(`settings.json`)에 안전하게 보호되며, 소스코드가 유출되더라도 키가 없으면 메모를 열어볼 수 없습니다.
+   - 앱 최초 실행 시 설정한 개인 비밀번호를 기반으로 `PBKDF2`(SHA-256) 대칭키를 유도하여 로컬 메모 데이터를 안전하게 암호화(`.json`)합니다.
+   - 파일 유출 시에도 개인 키가 없으면 절대 열어볼 수 없습니다.
 
-2. **비상용 마스터 키 볼트 (`secure_vault.py`) 분리**
-* 긴급 상황이나 깃허브 오픈소스로 배포할 때를 대비하여 비상용 마스터 키 로직은 별도의 로컬 전용 모듈(`secure_vault.py`)로 분리되어 **Git 관리 대상(`.gitignore`)에서 제외**됩니다.
+2. **비상용 마스터 키 볼트 분리**
+   - 긴급 상황 및 오픈소스 배포를 대비하여 비상용 마스터 키 로직은 별도 모듈(`secure_vault.py`)로 분리되어 `.gitignore` 처리됩니다.
 
 ---
 
@@ -56,46 +58,53 @@ v1.7 버전에서는 성능이 대폭 강화된 커스텀 행 번호 엔진, 비
 📦 260602_MeMo_GoogleDrive
  ┣ 📂 memos             # 암호화된 로컬 메모 저장 폴더 (자동 생성)
  ┣ 📂 icons             # 테마별 SVG 아이콘 및 시스템 트레이 리소스
+ ┣ 📂 core              # 핵심 비즈니스 로직 및 백그라운드 관리
+ ┃ ┣ 📜 sync_manager.py # 동기화 및 전반적인 데이터 관리 매니저
+ ┃ ┗ 📜 sync_worker.py  # 비동기 구글 드라이브 업로드/다운로드 워커
+ ┣ 📂 ui                # 분리된 UI 컴포넌트 및 모듈
+ ┃ ┣ 📜 ui_manager.py   # UI 컴포넌트 총괄 및 이벤트 매니저
+ ┃ ┣ 📜 memo_window.py  # 개별 메모 창 UI
+ ┃ ┣ 📜 memo_explorer.py# 메모 탐색기 UI
+ ┃ ┣ 📜 memo_editor.py  # 커스텀 텍스트 에디터 및 행 번호 엔진
+ ┃ ┣ 📜 settings_window.py # 환경 설정 UI
+ ┃ ┣ 📜 dialogs.py      # 패스워드 및 알림 다이얼로그
+ ┃ ┗ 📜 themes.py, ui_utils.py # UI 유틸리티 및 테마
+ ┣ 📂 utils             # 공통 유틸리티 (암복호화, 텍스트 처리 등)
+ ┃ ┣ 📜 crypto_utils.py # AES/PBKDF2 등 암호화 처리
+ ┃ ┗ 📜 text_utils.py   # 텍스트 추출 및 파싱 유틸
  ┣ 📜 main.py           # 애플리케이션 진입점 및 중복 실행 방지(Lock)
- ┣ 📜 ui_manager.py     # UI 이벤트 루프 및 Qt 컴포넌트 총괄 매니저
- ┣ 📜 sync_manager.py   # 동기화 및 사용자 지정 키 암/복호화 백그라운드 매니저
  ┣ 📜 drive_api.py      # Google Apps Script 통신 및 클라우드 연동
- ┣ 📜 Memos.spec        # PyInstaller 실행 파일 빌드 설정
+ ┣ 📜 Memos.spec        # PyInstaller 빌드 설정
  ┗ 📜 README.md         # 프로젝트 설명서
 ```
 
 ---
 
-## 🚀 설치 및 실행 방법 (개발자용)
+## 📦 설치 및 실행 방법
 
-### 1. 필수 패키지 설치
-프로젝트 폴더에서 터미널을 열고 아래 명령어를 입력하여 필요한 라이브러리를 설치합니다.
+### 1. 패키지 설치
+프로젝트 폴더 터미널에서 다음 명령어로 의존성을 설치합니다.
 ```bash
 pip install -r requirements.txt
 ```
-*(필수 라이브러리: `PyQt6`, `cryptography`, `pynput` 등)*
 
 ### 2. 프로그램 실행
 ```bash
 python main.py
 ```
-*최초 실행 시 메모를 암호화할 비밀번호를 설정하는 팝업 창이 나타납니다.*
 
-### 3. 실행 파일(.exe) 빌드 (PyInstaller)
-파이썬 환경 없이 바로 실행 가능한 단일 파일로 만들고 싶다면 아래 명령어를 입력하세요.
+### 3. 단일 실행 파일(.exe) 빌드
 ```bash
 pyinstaller Memos.spec
 ```
-*(빌드 완료 후 `dist` 폴더 내에 아이콘과 UI 리소스가 모두 포함된 `Memos.exe`가 생성됩니다.)*
 
 ---
 
 ## ☁️ 구글 드라이브 동기화 셋팅 방법 (필수)
 
 ### Step 1. 구글 앱스 스크립트(GAS) 생성
-
-1. [구글 드라이브](https://drive.google.com)에 접속하여 [새로 만들기] -> [더보기] -> [Google Apps Script]를 클릭합니다.
-2. 편집기 창의 기존 코드를 모두 지우고, 아래 코드를 복사해서 붙여넣습니다.
+1. [구글 드라이브](https://drive.google.com) -> [새로 만들기] -> [Google Apps Script]
+2. 기존 코드를 지우고 `drive_api.py` 내의 주석 또는 하단의 코드를 복사해 붙여넣습니다.
 
 ```javascript
 function doPost(e) {
@@ -105,37 +114,25 @@ function doPost(e) {
   
   if (data.action === "upload") {
     const files = mainFolder.getFilesByName(data.filename);
-    if (files.hasNext()) {
-      files.next().setContent(data.content);
-    } else {
-      mainFolder.createFile(data.filename, data.content);
-    }
+    if (files.hasNext()) files.next().setContent(data.content);
+    else mainFolder.createFile(data.filename, data.content);
     return ContentService.createTextOutput("Success");
   } else if (data.action === "delete") {
     const files = mainFolder.getFilesByName(data.filename);
-    if (files.hasNext()) {
-      files.next().moveTo(trashFolder);
-    }
+    if (files.hasNext()) files.next().moveTo(trashFolder);
     return ContentService.createTextOutput("Moved to Trash");
-  } else if (data.action === "permanentDelete") {
-    const files = trashFolder.getFilesByName(data.filename);
-    if (files.hasNext()) {
-      files.next().setTrashed(true);
-    }
-    return ContentService.createTextOutput("Permanently Deleted");
   }
 }
 
 function doGet(e) {
   const action = e.parameter.action;
   const mainFolder = getOrCreateFolder("Memos");
-  
   if (action === "list") {
     const files = mainFolder.getFiles();
     const list = [];
     while (files.hasNext()) {
-      const file = files.next();
-      list.push({name: file.getName(), id: file.getId()});
+      const f = files.next();
+      list.push({name: f.getName(), id: f.getId()});
     }
     return ContentService.createTextOutput(JSON.stringify({files: list})).setMimeType(ContentService.MimeType.JSON);
   } else if (action === "download") {
@@ -151,7 +148,6 @@ function getOrCreateFolder(name) {
   if (folders.hasNext()) return folders.next();
   return DriveApp.createFolder(name);
 }
-
 function getOrCreateSubFolder(parentFolder, name) {
   const folders = parentFolder.getFoldersByName(name);
   if (folders.hasNext()) return folders.next();
@@ -159,15 +155,9 @@ function getOrCreateSubFolder(parentFolder, name) {
 }
 ```
 
-### Step 2. 웹 앱으로 배포하기
-
-1. 코드 저장(`Ctrl + S`) 후, 우측 상단 [배포] -> [새 배포]를 클릭합니다.
-2. 톱니바퀴 아이콘 -> '웹 앱'을 선택합니다.
-3. 접근 승인(Who has access)을 '모든 사용자(Anyone)'로 변경 후 [배포]를 누릅니다.
-4. 화면에 나타나는 '웹 앱 URL'을 복사합니다.
-
-### Step 3. 메모 앱 연결
-
-1. 앱 실행 후 시스템 트레이 아이콘 우클릭 -> [⚙ 환경설정]을 클릭합니다.
-2. 복사한 **웹 앱 URL**을 `GAS URL:` 칸에 붙여넣고 [설정 저장]을 누릅니다.
-3. [구글 동기화 연결 테스트] 버튼을 눌러 연동 상태를 확인합니다.
+### Step 2. 웹 앱 배포 및 연결
+1. 코드 저장(`Ctrl + S`) 후, 우측 상단 **[배포] -> [새 배포]** 클릭
+2. 톱니바퀴 아이콘 -> **'웹 앱'** 선택, 접근 승인을 **'모든 사용자(Anyone)'**로 변경 후 배포
+3. 생성된 **'웹 앱 URL'**을 복사
+4. 앱의 시스템 트레이 우클릭 -> **[⚙ 환경설정]** -> `GAS URL:` 에 붙여넣고 저장
+5. [테스트] 버튼을 눌러 연동 확인 완료!

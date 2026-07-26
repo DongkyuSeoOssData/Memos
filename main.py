@@ -2,8 +2,8 @@ import sys
 import os
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication
-from ui_manager import UIManager
-from sync_manager import SyncManager
+from ui.ui_manager import UIManager
+from core.sync_manager import SyncManager
 from drive_api import DriveAPI
 
 def is_already_running() -> bool:

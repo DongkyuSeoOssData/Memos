@@ -1,3 +1,7 @@
+from utils.crypto_utils import ENG_KEY_MAP, KOR_KEY_MAP
+from utils.text_utils import clean_plain_text
+from utils.crypto_utils import dpapi_encrypt, dpapi_decrypt
+from core.sync_worker import SyncWorker
 import os
 import sys
 import json
@@ -15,62 +19,16 @@ from typing import Any, List, Dict, Optional, Tuple
 from pathlib import Path
 from PyQt6.QtCore import QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import QSystemTrayIcon
-
 from crypto_manager import CryptoManager
-
 
 class DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte))]
 
-
-def dpapi_encrypt(plain_text: str) -> str:
-    if not plain_text:
-        return ""
-    try:
-        b = plain_text.encode('utf-8')
-        ib = DATA_BLOB(len(b), ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_byte)))
-        ob = DATA_BLOB()
-        if ctypes.windll.crypt32.CryptProtectData(ctypes.byref(ib), "MeMoAppPwd", None, None, None, 0, ctypes.byref(ob)):
-            res = ctypes.string_at(ob.pbData, ob.cbData)
-            ctypes.windll.kernel32.LocalFree(ob.pbData)
-            return base64.b64encode(res).decode('utf-8')
-    except Exception as e:
-        print(f"DPAPI encrypt error: {e}")
-    return ""
-
-
-def dpapi_decrypt(cipher_b64: str) -> str:
-    if not cipher_b64:
-        return ""
-    try:
-        b = base64.b64decode(cipher_b64)
-        ib = DATA_BLOB(len(b), ctypes.cast(ctypes.create_string_buffer(b, len(b)), ctypes.POINTER(ctypes.c_byte)))
-        ob = DATA_BLOB()
-        if ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(ib), None, None, None, None, 0, ctypes.byref(ob)):
-            res = ctypes.string_at(ob.pbData, ob.cbData)
-            ctypes.windll.kernel32.LocalFree(ob.pbData)
-            return res.decode('utf-8')
-    except Exception as e:
-        print(f"DPAPI decrypt error: {e}")
-    return ""
-
-
-# ---------------------------------------------------------
-# 한/영 영타 오타 자동 변환 모듈 (dkssud -> 안녕 상호 변환)
-# ---------------------------------------------------------
 KOR_CHO = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ']
+
 KOR_JUNG = ['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ', 'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ']
+
 KOR_JONG = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ']
-
-ENG_KEY_MAP = {
-    'q': 'ㅂ', 'Q': 'ㅃ', 'w': 'ㅈ', 'W': 'ㅉ', 'e': 'ㄷ', 'E': 'ㄸ', 'r': 'ㄱ', 'R': 'ㄲ', 't': 'ㅅ', 'T': 'ㅆ',
-    'y': 'ㅛ', 'u': 'ㅕ', 'i': 'ㅑ', 'o': 'ㅐ', 'O': 'ㅒ', 'p': 'ㅔ', 'P': 'ㅖ', 'a': 'ㅁ', 's': 'ㄴ', 'd': 'ㅇ',
-    'f': 'ㄹ', 'g': 'ㅎ', 'h': 'ㅗ', 'j': 'ㅓ', 'k': 'ㅏ', 'l': 'ㅣ', 'z': 'ㅋ', 'x': 'ㅌ', 'c': 'ㅊ', 'v': 'ㅍ',
-    'b': 'ㅠ', 'n': 'ㅜ', 'm': 'ㅡ'
-}
-
-KOR_KEY_MAP = {v: k for k, v in ENG_KEY_MAP.items()}
-
 
 def eng_to_kor(text: str) -> str:
     """영타로 잘못 친 텍스트(예: dkssudgktpdy)를 한글(안녕하세요)로 조합 변환합니다."""
@@ -112,7 +70,6 @@ def eng_to_kor(text: str) -> str:
         
     return "".join(res)
 
-
 def kor_to_eng(text: str) -> str:
     """한글 텍스트(예: 믐믐믐)를 영타(aaa)로 역변환합니다."""
     res = []
@@ -134,7 +91,6 @@ def kor_to_eng(text: str) -> str:
             res.append(ch)
     return "".join(res)
 
-
 def convert_eng_kor_smart(text: str) -> str:
     if not text: return ""
     kor_count = len(re.findall(r'[\uac00-\ud7a3]', text))
@@ -143,7 +99,6 @@ def convert_eng_kor_smart(text: str) -> str:
         return eng_to_kor(text)
     else:
         return kor_to_eng(text)
-
 
 def set_auto_start(enable: bool) -> None:
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -161,148 +116,6 @@ def set_auto_start(enable: bool) -> None:
         winreg.CloseKey(key)
     except Exception as e:
         print(f"Auto start registry error: {e}")
-
-
-class SyncWorker(QObject):
-    finished = pyqtSignal(bool, str)
-
-    def __init__(self, sync_manager: Any) -> None:
-        super().__init__()
-        self.sm = sync_manager
-        self.target_method: str = ""
-        self.titles_to_delete: List[str] = []
-
-    def execute(self) -> None:
-        try:
-            if self.target_method == "run_push":
-                self.run_push()
-            elif self.target_method == "run_pull":
-                self.run_pull()
-            elif self.target_method == "run_delete_batch":
-                self.run_delete_batch(self.titles_to_delete)
-        except Exception as e:
-            error_msg = f"동기화 치명적 오류: {str(e)}"
-            self.sm.log_error(error_msg, e)
-            self.finished.emit(False, error_msg)
-
-    def run_push(self) -> None:
-        if not self.sm.drive_api.is_available():
-            self.finished.emit(False, "환경설정에서 GAS URL을 먼저 입력해주세요.")
-            return
-        
-        count = 0
-        for f in self.sm.local_path.glob("*.json"):
-            if "trash_bin" in str(f):
-                continue
-            try:
-                with open(f, "r", encoding="utf-8") as file:
-                    memo_data = json.load(file)
-                memo_id = memo_data.get('id')
-                if memo_id:
-                    filename = f"{memo_id}.json"
-                    if self.sm.drive_api.upload_file(filename, memo_data):
-                        count += 1
-            except Exception as e:
-                self.sm.log_error(f"Push 파일 읽기 실패 ({f.name}): {e}", e)
-                    
-        if count > 0:
-            self.finished.emit(True, f"{count}개의 암호화된 메모 업로드 완료")
-        else:
-            self.finished.emit(True, "업로드 완료 (변경사항 없음)")
-
-    def run_pull(self) -> None:
-        if not self.sm.drive_api.is_available():
-            self.finished.emit(False, "환경설정에서 GAS URL을 먼저 입력해주세요.")
-            return
-        
-        files = self.sm.drive_api.list_files()
-        
-        local_timestamps: Dict[str, str] = {}
-        for f in self.sm.local_path.glob("*.json"):
-            if "trash_bin" in str(f): continue
-            try:
-                with open(f, "r", encoding="utf-8") as file:
-                    m = json.load(file)
-                    if isinstance(m, dict) and 'id' in m:
-                        local_timestamps[m['id']] = m.get('updated_at', '')
-            except Exception:
-                pass
-
-        count = 0
-        for f in files:
-            name = f.get("name")
-            if name and name.endswith(".json"):
-                content = self.sm.drive_api.download_file(name)
-                if content:
-                    try:
-                        if isinstance(content, str):
-                            data_json = json.loads(content)
-                        else:
-                            data_json = content
-                            
-                        if isinstance(data_json, dict) and 'id' in data_json:
-                            memo_id = data_json['id']
-                            if memo_id in local_timestamps:
-                                local_time_str = local_timestamps[memo_id]
-                                remote_time_str = data_json.get('updated_at', '')
-
-                                try:
-                                    local_dt = datetime.fromisoformat(local_time_str) if local_time_str else datetime.min
-                                    remote_dt = datetime.fromisoformat(remote_time_str) if remote_time_str else datetime.min
-                                    if remote_dt <= local_dt:
-                                        continue
-                                except Exception:
-                                    pass
-
-                            raw_file = self.sm.local_path / f"{memo_id}.json"
-                            with open(raw_file, "w", encoding="utf-8") as out_f:
-                                json.dump(data_json, out_f, ensure_ascii=False, indent=2)
-                            count += 1
-                    except Exception as e:
-                        self.sm.log_error(f"Pull 처리 중 에러 ({name}): {e}", e)
-                        
-        self.finished.emit(True, f"클라우드에서 {count}개의 메모 가져오기 완료")
-
-    def run_delete_batch(self, ids: List[str]) -> None:
-        if not self.sm.drive_api.is_available():
-            self.finished.emit(False, "환경설정에서 GAS URL 설정 누락")
-            return
-        success_count = 0
-        for memo_id in ids:
-            if self.sm.drive_api.delete_file(f"{memo_id}.json"):
-                success_count += 1
-        if success_count > 0:
-            self.finished.emit(True, f"{success_count}개의 메모 클라우드 휴지통 이동 완료")
-
-
-def clean_plain_text(content: Any) -> str:
-    """HTML 및 Qt 내부 <style>...</style> 태그, 딕셔너리 래퍼를 완전히 제거하고 순수 본문 텍스트만 추출합니다."""
-    if not content:
-        return ""
-    if isinstance(content, dict):
-        content = content.get('content', '')
-    content_str = str(content)
-    if content_str.startswith("{") and "'is_encrypted'" in content_str:
-        try:
-            d = ast.literal_eval(content_str)
-            if isinstance(d, dict) and 'content' in d:
-                content_str = str(d['content'])
-        except Exception:
-            pass
-    elif content_str.startswith("{") and '"is_encrypted"' in content_str:
-        try:
-            d = json.loads(content_str)
-            if isinstance(d, dict) and 'content' in d:
-                content_str = str(d['content'])
-        except Exception:
-            pass
-
-    no_style = re.sub(r'<style[^>]*>.*?</style>', '', content_str, flags=re.DOTALL | re.IGNORECASE)
-    no_script = re.sub(r'<script[^>]*>.*?</script>', '', no_style, flags=re.DOTALL | re.IGNORECASE)
-    plain = re.sub(r'<[^>]+>', '', no_script).strip()
-    plain = html.unescape(plain)
-    return plain
-
 
 class SyncManager(QObject):
     DEFAULT_SETTINGS: Dict[str, Any] = {
@@ -526,7 +339,7 @@ class SyncManager(QObject):
                 
                 if isinstance(m, dict):
                     memo_id = m.get('id')
-                    if not memo_id or len(memo_id) < 30:
+                    if not memo_id or len(memo_id) < 8:
                         memo_id = str(uuid.uuid4())
                         m['id'] = memo_id
 
