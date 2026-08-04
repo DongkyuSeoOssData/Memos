@@ -27,27 +27,50 @@ from PyQt6.QtGui import (
 from PyQt6.QtSvg import QSvgRenderer
 import os
 import threading
-from core.sync_manager import convert_eng_kor_smart
+from utils.text_utils import convert_eng_kor_smart
 from utils.text_utils import clean_plain_text
+
+
+def _theme_palette_from_settings(sync_manager: Any) -> Dict[str, Any]:
+    theme = sync_manager.settings.get('app_theme', 'white')
+    if theme == 'dark':
+        mode = sync_manager.settings.get('dark_theme_mode', 'dark')
+        return DARK_THEMES.get(mode, DARK_THEMES['dark'])
+    mode = sync_manager.settings.get('light_theme_mode', 'white')
+    return LIGHT_THEMES.get(mode, LIGHT_THEMES['white'])
+
+
+def _system_dialog_palette() -> Dict[str, str]:
+    pal = QApplication.palette()
+    return {
+        'bg': pal.color(QPalette.ColorRole.Window).name(),
+        'card': pal.color(QPalette.ColorRole.Base).name(),
+        'input': pal.color(QPalette.ColorRole.Base).name(),
+        'text': pal.color(QPalette.ColorRole.WindowText).name(),
+        'border': pal.color(QPalette.ColorRole.Mid).name(),
+        'accent': pal.color(QPalette.ColorRole.Highlight).name(),
+        'highlight_text': pal.color(QPalette.ColorRole.HighlightedText).name(),
+    }
 
 class PasswordSetupDialog(QDialog):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
+        pal = _system_dialog_palette()
         self.setWindowTitle("🔑 Memos 비밀번호 설정 (최초 실행)")
         self.setFixedSize(440, 320)
-        self.setStyleSheet("""
-            QDialog { background: #000000; font-family: 'D2Coding', 'Consolas', monospace; }
-            QLabel { color: #FFFFFF; }
-            QLineEdit { padding: 12px; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 12px; background: #1C1C1E; color: white; font-size: 10pt; }
-            QLineEdit:focus { border: 1.5px solid #0A84FF; }
-            QCheckBox { font-size: 9.5pt; color: #0A84FF; font-weight: bold; }
+        self.setStyleSheet(f"""
+            QDialog {{ background: {pal['bg']}; font-family: 'D2Coding', 'Consolas', monospace; }}
+            QLabel {{ color: {pal['text']}; }}
+            QLineEdit {{ padding: 12px; border: 1px solid {pal['border']}; border-radius: 12px; background: {pal['input']}; color: {pal['text']}; font-size: 10pt; }}
+            QLineEdit:focus {{ border: 1.5px solid {pal['accent']}; }}
+            QCheckBox {{ font-size: 9.5pt; color: {pal['accent']}; font-weight: bold; }}
         """)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
         
-        info = QLabel("<b>보안 메모 암호화 비밀번호를 설정해주세요.</b><br/><span style='font-size:9pt; color:#8E8E93;'>다른 PC에서 구글 백업본을 열 때도 동일한 비밀번호를 입력합니다.</span>")
+        info = QLabel("<b>보안 메모 암호화 비밀번호를 설정해주세요.</b><br/><span style='font-size:9pt;'>다른 PC에서 구글 백업본을 열 때도 동일한 비밀번호를 입력합니다.</span>")
         info.setWordWrap(True)
         layout.addWidget(info)
         
@@ -71,7 +94,7 @@ class PasswordSetupDialog(QDialog):
         
         btn_box = QHBoxLayout()
         ok_btn = QPushButton("설정 완료")
-        ok_btn.setStyleSheet("background: #0A84FF; color: white; padding: 12px 24px; border-radius: 12px; font-weight: bold; border: none;")
+        ok_btn.setStyleSheet(f"background: {pal['accent']}; color: {pal['highlight_text']}; padding: 12px 24px; border-radius: 12px; font-weight: bold; border: none;")
         ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         ok_btn.clicked.connect(self.validate)
         btn_box.addStretch()
@@ -100,14 +123,7 @@ class PasswordLoginDialog(QDialog):
         self.setWindowTitle(" Memos 비밀번호 잠금 해제")
         self.setFixedSize(450, 300)
         
-        theme = self.sync_manager.settings.get('app_theme', 'white')
-        is_dark = (theme == "dark")
-        if is_dark:
-            mode = self.sync_manager.settings.get("dark_theme_mode", "dark")
-            pal = DARK_THEMES.get(mode, DARK_THEMES["dark"])
-        else:
-            mode = self.sync_manager.settings.get("light_theme_mode", "white")
-            pal = LIGHT_THEMES.get(mode, LIGHT_THEMES["white"])
+        pal = _theme_palette_from_settings(self.sync_manager)
 
         self.setStyleSheet(f"""
             QDialog {{ background-color: {pal['bg']}; font-family: 'D2Coding', 'Consolas', monospace; border: 1px solid {pal['border']}; border-radius: 16px; }}
@@ -146,7 +162,7 @@ class PasswordLoginDialog(QDialog):
         btn_box.addStretch()
         
         ok_btn = QPushButton("잠금 해제")
-        ok_btn.setStyleSheet(f"background: {pal['accent']}; color: white; padding: 12px 24px; border-radius: 12px; font-weight: bold; border: none;")
+        ok_btn.setStyleSheet(f"background: {pal['accent']}; color: {pal['highlight_text']}; padding: 12px 24px; border-radius: 12px; font-weight: bold; border: none;")
         ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         ok_btn.clicked.connect(self.attempt_login)
         btn_box.addWidget(ok_btn)
@@ -177,18 +193,19 @@ class OTPRescueDialog(QDialog):
         self.sync_manager = sync_manager
         self.setWindowTitle("🆘 구글 OTP 비상 복구")
         self.setFixedSize(450, 320)
-        self.setStyleSheet("""
-            QDialog { background: #000000; font-family: 'D2Coding', 'Consolas', monospace; }
-            QLabel { color: #FFFFFF; }
-            QLineEdit { padding: 12px; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 12px; background: #1C1C1E; color: white; font-size: 10pt; }
-            QLineEdit:focus { border: 1.5px solid #FF453A; }
+        pal = _theme_palette_from_settings(self.sync_manager)
+        self.setStyleSheet(f"""
+            QDialog {{ background: {pal['bg']}; font-family: 'D2Coding', 'Consolas', monospace; }}
+            QLabel {{ color: {pal['text']}; }}
+            QLineEdit {{ padding: 12px; border: 1px solid {pal['border']}; border-radius: 12px; background: {pal['input']}; color: {pal['text']}; font-size: 10pt; }}
+            QLineEdit:focus {{ border: 1.5px solid {pal['accent']}; }}
         """)
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
         
-        info = QLabel("<b>스마트폰 Google Authenticator의 6자리 OTP 번호를 입력하세요.</b><br/><span style='font-size:9pt; color:#8E8E93;'>승인 시 새로운 비밀번호로 재설정되고 모든 메모가 해독됩니다.</span>")
+        info = QLabel("<b>스마트폰 Google Authenticator의 6자리 OTP 번호를 입력하세요.</b><br/><span style='font-size:9pt;'>승인 시 새로운 비밀번호로 재설정되고 모든 메모가 해독됩니다.</span>")
         info.setWordWrap(True)
         layout.addWidget(info)
         
@@ -208,12 +225,12 @@ class OTPRescueDialog(QDialog):
         
         btn_box = QHBoxLayout()
         cancel_btn = QPushButton("취소")
-        cancel_btn.setStyleSheet("padding: 12px 20px; background: #1C1C1E; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 12px; font-weight: bold; color: white;")
+        cancel_btn.setStyleSheet(f"padding: 12px 20px; background: {pal['card']}; border: 1px solid {pal['border']}; border-radius: 12px; font-weight: bold; color: {pal['text']};")
         cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         cancel_btn.clicked.connect(self.reject)
         
         ok_btn = QPushButton("OTP 승인 및 비상 해제")
-        ok_btn.setStyleSheet("background: #FF453A; color: white; padding: 12px 20px; border-radius: 12px; font-weight: bold; border: none;")
+        ok_btn.setStyleSheet(f"background: {pal['accent']}; color: {pal['highlight_text']}; padding: 12px 20px; border-radius: 12px; font-weight: bold; border: none;")
         ok_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         ok_btn.clicked.connect(self.attempt_rescue)
         
@@ -244,13 +261,14 @@ class OTPRescueDialog(QDialog):
 class ConflictDialog(QDialog):
     def __init__(self, title: str, cur_c: str, trash_c: str) -> None:
         super().__init__()
+        pal = _system_dialog_palette()
         self.setWindowTitle("복구 중복 확인")
         self.setFixedSize(620, 460)
-        self.setStyleSheet("background-color: #000000; color: #FFFFFF; font-family: 'D2Coding', 'Consolas', monospace;")
+        self.setStyleSheet(f"background-color: {pal['bg']}; color: {pal['text']}; font-family: 'D2Coding', 'Consolas', monospace;")
         
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
-        layout.addWidget(QLabel(f"<b style='color:#0A84FF; font-size:11pt;'>'{title}'</b>이(가) 이미 존재합니다. 덮어쓰시겠습니까?"))
+        layout.addWidget(QLabel(f"<b style='color:{pal['accent']}; font-size:11pt;'>'{title}'</b>이(가) 이미 존재합니다. 덮어쓰시겠습니까?"))
         
         diff = QHBoxLayout()
         for label_text, content_text in [("[현재 로컬]", clean_plain_text(cur_c)), ("[휴지통]", clean_plain_text(trash_c))]:
@@ -259,7 +277,7 @@ class ConflictDialog(QDialog):
             te = QTextEdit()
             te.setPlainText(content_text)
             te.setReadOnly(True)
-            te.setStyleSheet("border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 12px; padding: 10px; color: white; background: #1C1C1E;")
+            te.setStyleSheet(f"border: 1px solid {pal['border']}; border-radius: 12px; padding: 10px; color: {pal['text']}; background: {pal['card']};")
             box.addWidget(te)
             diff.addLayout(box)
             

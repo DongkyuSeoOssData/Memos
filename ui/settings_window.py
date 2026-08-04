@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, QEvent, QRect, QByteArray
 from PyQt6.QtGui import (
+    QGuiApplication,
     QIcon, QAction, QColor, QShortcut, QKeySequence, QFont, QFontDatabase,
     QPixmap, QPainter, QTextListFormat, QTextCursor, QTextCharFormat, QPalette, QTextDocument,
     QSyntaxHighlighter, QCursor
@@ -28,13 +29,14 @@ from PyQt6.QtGui import (
 from PyQt6.QtSvg import QSvgRenderer
 import os
 import threading
-from core.sync_manager import convert_eng_kor_smart
+from utils.text_utils import convert_eng_kor_smart
 from utils.text_utils import clean_plain_text
 
 class SettingsWindow(QWidget):
     def __init__(self, sm: Any) -> None:
         super().__init__()
         self.sm = sm
+        self.ui_font_pt = int(self.sm.settings.get("settings_window_font_pt", 10))
         self.colors = {
             "랜덤": "random",
             "다크그레이": "#2E3440",
@@ -48,11 +50,31 @@ class SettingsWindow(QWidget):
         self.apply_theme_style()
         self.load()
 
+    def _apply_initial_window_size(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if not screen:
+            return
+        geom = screen.geometry()
+        max_w = int(geom.width() * 0.8)
+        max_h = int(geom.height() * 0.8)
+        hint = self.sizeHint()
+        target_w = min(max(int(geom.width() * 0.4), hint.width()), max_w)
+        target_h = min(max(int(geom.height() * 0.4), hint.height()), max_h)
+        self.resize(target_w, target_h)
+
+    def _apply_font_scale(self) -> None:
+        base_font = QFont(self.sm.settings.get("default_font_family", "D2Coding"), self.ui_font_pt)
+        self.setFont(base_font)
+        self.tabs.setFont(base_font)
+        self.shortcut_table.setFont(base_font)
+        self.shortcut_table.verticalHeader().setDefaultSectionSize(max(34, int(self.ui_font_pt * 3.0)))
+        self.shortcut_table.horizontalHeader().setMinimumHeight(max(30, int(self.ui_font_pt * 2.6)))
+        self.shortcut_table.horizontalHeader().setFont(QFont(base_font.family(), max(8, self.ui_font_pt - 1)))
+
     def init_ui(self) -> None:
         self.setObjectName("SettingsWindow")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowTitle("Memos Settings")
-        self.setFixedSize(740, 960)
         
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(18, 18, 18, 18)
@@ -347,6 +369,7 @@ class SettingsWindow(QWidget):
         self.sb.clicked.connect(self.save)
         main_layout.addWidget(self.sb)
         apply_ios_shadow(self)
+        self._apply_initial_window_size()
 
     def test_gas_url(self) -> None:
         url = self.url_input.text().strip()
@@ -388,6 +411,7 @@ class SettingsWindow(QWidget):
     def apply_theme_style(self) -> None:
         theme = self.sm.settings.get('app_theme', 'white')
         is_dark = (theme == "dark")
+        base_pt = int(getattr(self, "ui_font_pt", 10))
         
         if is_dark:
             mode = self.sm.settings.get("dark_theme_mode", "dark")
@@ -400,19 +424,19 @@ class SettingsWindow(QWidget):
             SettingsWindow#SettingsWindow, QWidget#SettingsWindow {{
                 background-color: {pal['bg']};
             }}
-            QWidget {{ font-family: 'D2Coding', 'Consolas', monospace; font-size: 9.5pt; color: {pal['text']}; background-color: {pal['bg']}; }}
+            QWidget {{ font-family: 'D2Coding', 'Consolas', monospace; font-size: {base_pt}pt; color: {pal['text']}; background-color: {pal['bg']}; }}
             QTabWidget::pane {{ border: 1px solid {pal['border']}; border-radius: 0px; background: {pal['card']}; }}
-            QTabBar::tab {{ padding: 10px 20px; font-weight: bold; background: {pal['bg']}; color: {pal['text']}; border-top-left-radius: 0px; border-top-right-radius: 0px; margin-right: 4px; }}
+            QTabBar::tab {{ padding: 10px 20px; font-weight: bold; background: {pal['bg']}; color: {pal['text']}; border-top-left-radius: 0px; border-top-right-radius: 0px; margin-right: 4px; font-size: {max(8, base_pt - 1)}pt; }}
             QTabBar::tab:selected {{ background: {pal['accent']}; color: white; }}
             QGroupBox {{ font-weight: bold; border: 1px solid {pal['border']}; border-radius: 0px; margin-top: 12px; padding-top: 15px; background: {pal['card']}; color: {pal['text']}; }}
             QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {pal['accent']}; }}
-            QLineEdit, QComboBox, QFontComboBox {{ padding: 8px 12px; border: 1px solid {pal['border']}; border-radius: 0px; color: {pal['text']}; background-color: {pal['input']}; }}
+            QLineEdit, QComboBox, QFontComboBox {{ padding: 8px 12px; border: 1px solid {pal['border']}; border-radius: 0px; color: {pal['text']}; background-color: {pal['input']}; font-size: {base_pt}pt; }}
             QLineEdit:focus, QComboBox:focus {{ border: 1.5px solid {pal['accent']}; }}
             QComboBox QAbstractItemView {{ background-color: {pal['card']}; color: {pal['text']}; selection-background-color: {pal['accent']}; selection-color: white; }}
-            QPushButton {{ padding: 8px 16px; background: {pal['card']}; border: 1px solid {pal['border']}; border-radius: 0px; color: {pal['text']}; font-weight: bold; }}
+            QPushButton {{ padding: 8px 16px; background: {pal['card']}; border: 1px solid {pal['border']}; border-radius: 0px; color: {pal['text']}; font-weight: bold; font-size: {base_pt}pt; }}
             QPushButton:hover {{ background: {pal['accent']}; color: white; }}
-            QTableWidget {{ border: 1px solid {pal['border']}; border-radius: 0px; background: {pal['card']}; color: {pal['text']}; }}
-            QHeaderView::section {{ background: {pal['bg']}; color: {pal['accent']}; font-weight: bold; border: none; }}
+            QTableWidget {{ border: 1px solid {pal['border']}; border-radius: 0px; background: {pal['card']}; color: {pal['text']}; font-size: {base_pt}pt; }}
+            QHeaderView::section {{ background: {pal['bg']}; color: {pal['accent']}; font-weight: bold; border: none; font-size: {max(8, base_pt - 1)}pt; }}
             QCheckBox {{ color: {pal['text']}; background: transparent; }}
             QLabel {{ color: {pal['text']}; background: transparent; }}
         """)
@@ -426,7 +450,23 @@ class SettingsWindow(QWidget):
             self.btn_change_path.setIcon(self.sm.ui_manager.get_theme_icon("memo.svg", is_dark))
             self.sb.setIcon(self.sm.ui_manager.get_theme_icon("save.svg", True))
             
-        self.sb.setStyleSheet(f"background: {pal['accent']}; color: white; padding: 12px; font-weight: bold; font-size: 11pt; border-radius: 0px; border: none;")
+        self.sb.setStyleSheet(f"background: {pal['accent']}; color: white; padding: 12px; font-weight: bold; font-size: {base_pt + 1}pt; border-radius: 0px; border: none;")
+        self._apply_font_scale()
+
+    def wheelEvent(self, event: Any) -> None:
+        if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            super().wheelEvent(event)
+            return
+
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+
+        self.ui_font_pt = max(9, min(20, self.ui_font_pt + (1 if delta > 0 else -1)))
+        self.sm.settings["settings_window_font_pt"] = self.ui_font_pt
+        self.apply_theme_style()
+        self.sm.save_settings(self.sm.settings)
+        event.accept()
 
     def save(self) -> None:
         is_auto_login = self.cb_auto_login.isChecked()
@@ -450,7 +490,6 @@ class SettingsWindow(QWidget):
             "코드 테마 전환 (다크/라이트)": "toggle_code_theme",
             "접은 메모 정렬": "arrange_rolled_memos",
             "메모 전체 정렬": "arrange_all_memos",
-            "모든 메모 켜기": "open_all_memos",
             "모든 메모 숨기기/보이기 토글": "toggle_all_memos"
         }
         for r in range(self.shortcut_table.rowCount()):
@@ -490,6 +529,7 @@ class SettingsWindow(QWidget):
             "default_memo_height": self.spin_memo_height.value(),
             "default_code_memo_width": self.spin_code_memo_width.value(),
             "default_code_memo_height": self.spin_code_memo_height.value(),
+            "settings_window_font_pt": self.ui_font_pt,
             "shortcuts": shortcuts_dict
         }
         self.sm.save_settings(ns)
@@ -585,7 +625,6 @@ class SettingsWindow(QWidget):
             ("코드 테마 전환 (다크/라이트)", sc_map.get("toggle_code_theme", "Ctrl+Shift+L")),
             ("접은 메모 정렬", sc_map.get("arrange_rolled_memos", "Ctrl+Alt+R")),
             ("메모 전체 정렬", sc_map.get("arrange_all_memos", "Ctrl+Alt+A")),
-            ("모든 메모 켜기", sc_map.get("open_all_memos", "Ctrl+Shift+O")),
             ("모든 메모 숨기기/보이기 토글", sc_map.get("toggle_all_memos", "Ctrl+Shift+H"))
         ]
         

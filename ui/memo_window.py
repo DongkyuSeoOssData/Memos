@@ -28,7 +28,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtSvg import QSvgRenderer
 import os
 import threading
-from core.sync_manager import convert_eng_kor_smart
+from utils.text_utils import convert_eng_kor_smart
 from utils.text_utils import clean_plain_text
 
 class MemoWindow(QWidget):
@@ -112,6 +112,38 @@ class MemoWindow(QWidget):
 
     def memo_window_get_settings(self) -> Dict[str, Any]:
         return self.ui_manager.sync_manager.settings if getattr(self, 'ui_manager', None) else {}
+
+    def _current_theme_palette(self) -> Dict[str, Any]:
+        settings = self.memo_window_get_settings()
+        app_theme = settings.get('app_theme', 'white')
+        if app_theme == 'dark':
+            mode = settings.get('dark_theme_mode', 'dark')
+            return DARK_THEMES.get(mode, DARK_THEMES['dark'])
+        mode = settings.get('light_theme_mode', 'white')
+        return LIGHT_THEMES.get(mode, LIGHT_THEMES['white'])
+
+    def _memo_theme_palette(self) -> Dict[str, Any]:
+        if self.memo_data.get('is_code_memo', False):
+            code_theme = self.memo_data.get('code_theme', 'dark')
+            if code_theme == 'dark':
+                return DARK_THEMES.get('dark', DARK_THEMES['dark'])
+            return LIGHT_THEMES.get('white', LIGHT_THEMES['white'])
+
+        bg_color = self.memo_data.get('bg_color', '#FFFFFF')
+        if bg_color == 'random':
+            bg_color = '#FFFFFF'
+
+        is_dark = True if bg_color in ['#2E3440', '#1C1C1E', '#000000'] else False
+        if not is_dark:
+            c_obj = QColor(bg_color)
+            if c_obj.isValid():
+                lum = (0.299 * c_obj.red() + 0.587 * c_obj.green() + 0.114 * c_obj.blue()) / 255.0
+                if lum < 0.5:
+                    is_dark = True
+
+        if is_dark:
+            return DARK_THEMES.get('dark', DARK_THEMES['dark'])
+        return LIGHT_THEMES.get('white', LIGHT_THEMES['white'])
 
     def show_toast(self, text: str) -> None:
         self.toast_label.setText(text)
@@ -526,7 +558,11 @@ class MemoWindow(QWidget):
 
     def show_bg_color_menu(self) -> None:
         menu = QMenu(self)
-        menu.setStyleSheet("QMenu { background: white; color: #000000; border: 1px solid #C7C7CC; border-radius: 8px; } QMenu::item:selected { background-color: #007AFF; color: white; }")
+        pal = self._current_theme_palette()
+        menu.setStyleSheet(
+            f"QMenu {{ background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']}; border-radius: 8px; }} "
+            f"QMenu::item:selected {{ background-color: {pal['accent']}; color: {pal['text']}; }}"
+        )
         
         menu.addAction("❌ 배경색 없음 (투명)").triggered.connect(lambda: self.set_text_bg_color(QColor(0, 0, 0, 0)))
         menu.addSeparator()
@@ -548,8 +584,9 @@ class MemoWindow(QWidget):
         fmt = self.text_edit.currentCharFormat()
         fmt.setBackground(color)
         self.text_edit.mergeCurrentCharFormat(fmt)
-        bg_style = color.name() if color.alpha() > 0 else "white"
-        self.btn_bg_color.setStyleSheet(f"border: 1px solid #C7C7CC; border-radius: 6px; background: {bg_style};")
+        pal = self._current_theme_palette()
+        bg_style = color.name() if color.alpha() > 0 else pal['card']
+        self.btn_bg_color.setStyleSheet(f"border: 1px solid {pal['border']}; border-radius: 6px; background: {bg_style};")
         self.manual_save()
 
     def mouseDoubleClickEvent(self, e: Any) -> None:
@@ -656,7 +693,11 @@ class MemoWindow(QWidget):
         
     def show_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
-        menu.setStyleSheet("QMenu { background: white; color: #000000; border: 1px solid #C7C7CC; border-radius: 8px; } QMenu::item:selected { background-color: #007AFF; color: white; }")
+        pal = self._current_theme_palette()
+        menu.setStyleSheet(
+            f"QMenu {{ background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']}; border-radius: 8px; }} "
+            f"QMenu::item:selected {{ background-color: {pal['accent']}; color: {pal['text']}; }}"
+        )
         
         s = self.memo_window_get_settings()
         sc = s.get("shortcuts", {})
@@ -1194,6 +1235,13 @@ class MemoWindow(QWidget):
 
         is_dark = is_memo_dark_bg
         override_w = "#FFFFFF" if is_dark else "#1C1C1E"
+        p_pal = self._memo_theme_palette() if hasattr(self, '_memo_theme_palette') else {
+            "accent": "#0A84FF",
+            "text": "#1C1C1E",
+            "border": "#C7C7CC",
+            "input": "#FFFFFF",
+            "card": "#FFFFFF",
+        }
 
         is_pinned = self.memo_data.get('is_pinned', False)
         if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
@@ -1216,40 +1264,41 @@ class MemoWindow(QWidget):
         if is_pinned:
             self.btn_pin.setText("")
             self.btn_pin.setStyleSheet(
-                "QPushButton { background: #0A84FF; color: white; "
+                f"QPushButton {{ background: {p_pal['accent']}; color: {p_pal['text']}; "
                 "border: none; border-radius: 4px; } "
-                "QPushButton:hover { background: #007AFF; }"
+                f"QPushButton:hover {{ background: {p_pal['accent']}; }}"
             )
         else:
             self.btn_pin.setText("")
+            text_rgb = QColor(p_pal['text'])
+            hover_rgba = f"rgba({text_rgb.red()}, {text_rgb.green()}, {text_rgb.blue()}, {0.15 if is_memo_dark_bg else 0.08})"
             if is_memo_dark_bg:
                 self.btn_pin.setStyleSheet(
                     "QPushButton { background: transparent; border: none; border-radius: 6px; } "
-                    "QPushButton:hover { background: rgba(255,255,255,0.15); }"
+                    f"QPushButton:hover {{ background: {hover_rgba}; }}"
                 )
             else:
                 self.btn_pin.setStyleSheet(
                     "QPushButton { background: transparent; border: none; border-radius: 6px; } "
-                    "QPushButton:hover { background: rgba(0,0,0,0.08); }"
+                    f"QPushButton:hover {{ background: {hover_rgba}; }}"
                 )
 
-        win_btn_style_dark  = ("QPushButton { background: transparent; color: #FFFFFF; font-weight: bold; "
-                               "border: none; border-radius: 6px; } "
-                               "QPushButton:hover { background: rgba(255,255,255,0.15); }")
-        win_btn_style_light = ("QPushButton { background: transparent; color: #1C1C1E; font-weight: bold; "
-                               "border: none; border-radius: 6px; } "
-                               "QPushButton:hover { background: rgba(0,0,0,0.08); }")
-        close_btn_style     = ("QPushButton { background: transparent; color: #FF453A; font-weight: bold; "
-                               "border: none; border-radius: 6px; } "
-                               "QPushButton:hover { background: #FF453A; color: white; }")
+        text_rgb = QColor(p_pal['text'])
+        hover_rgba = f"rgba({text_rgb.red()}, {text_rgb.green()}, {text_rgb.blue()}, {0.15 if is_memo_dark_bg else 0.08})"
+        win_btn_style = (f"QPushButton {{ background: transparent; color: {p_pal['text']}; font-weight: bold; "
+                         "border: none; border-radius: 6px; } "
+                         f"QPushButton:hover {{ background: {hover_rgba}; }}")
+        close_btn_style = (f"QPushButton {{ background: transparent; color: {p_pal['accent']}; font-weight: bold; "
+                           "border: none; border-radius: 6px; } "
+                           f"QPushButton:hover {{ background: {p_pal['accent']}; color: {p_pal['text']}; }}")
 
         if is_memo_dark_bg:
-            self.btn_min.setStyleSheet(win_btn_style_dark)
-            self.btn_max.setStyleSheet(win_btn_style_dark)
+            self.btn_min.setStyleSheet(win_btn_style)
+            self.btn_max.setStyleSheet(win_btn_style)
             self.btn_close.setStyleSheet(close_btn_style)
         else:
-            self.btn_min.setStyleSheet(win_btn_style_light)
-            self.btn_max.setStyleSheet(win_btn_style_light)
+            self.btn_min.setStyleSheet(win_btn_style)
+            self.btn_max.setStyleSheet(win_btn_style)
             self.btn_close.setStyleSheet(close_btn_style)
 
         if is_code_memo:
@@ -1290,7 +1339,7 @@ class MemoWindow(QWidget):
                 code_bg = pal['card']
                 code_text = pal['text']
 
-            title_c = "#007AFF"
+            title_c = pal['accent']
             self.title_edit.setStyleSheet(
                 f"border:none; background:transparent; color:{title_c}; "
                 f"font-weight:bold; font-size:12pt; font-family: 'D2Coding';"
@@ -1314,7 +1363,7 @@ class MemoWindow(QWidget):
             mono_font = QFont(code_font_name, self.memo_data.get('font_size', 11))
             self.text_edit.setFont(mono_font)
 
-            btn_text_color = "#F2F2F7" if is_memo_dark_bg else "#1C1C1E"
+            btn_text_color = p_pal['text']
             btn_bg_color = "rgba(255, 255, 255, 0.12)" if is_memo_dark_bg else "rgba(0, 0, 0, 0.06)"
             btn_border_color = "rgba(255, 255, 255, 0.2)" if is_memo_dark_bg else "rgba(0, 0, 0, 0.15)"
 
@@ -1333,8 +1382,8 @@ class MemoWindow(QWidget):
             if bg_color == "random":
                 bg_color = "#FFFFFF"
 
-            text_c  = "#F2F2F7" if is_memo_dark_bg else "#1C1C1E"
-            title_c = "#FFFFFF" if is_memo_dark_bg else "#1C1C1E"
+            text_c  = p_pal['text']
+            title_c = p_pal['text']
 
             self.title_edit.setStyleSheet(
                 f"border:none; background:transparent; color:{title_c}; "
@@ -1540,7 +1589,8 @@ class MemoWindow(QWidget):
         self.title_edit.setReadOnly(False)
         is_code = self.memo_data.get('is_code_memo', False)
         font_fam = "'D2Coding'" if is_code else "'D2Coding', 'Consolas', monospace"
-        self.title_edit.setStyleSheet(f"border:1px solid #007AFF; background:white; color:#000000; font-weight:bold; font-size:12pt; border-radius:0px; font-family: {font_fam};")
+        pal = self._memo_theme_palette()
+        self.title_edit.setStyleSheet(f"border:1px solid {pal['accent']}; background:transparent; color:{pal['text']}; font-weight:bold; font-size:12pt; border-radius:0px; font-family: {font_fam};")
         self.title_edit.setFocus()
         self.title_edit.setCursorPosition(len(self.title_edit.text()))
 
@@ -1560,19 +1610,11 @@ class MemoWindow(QWidget):
             else:
                 QMessageBox.warning(self, "중복", f"'{nt}' 존재.")
                 self.title_edit.setText(ot)
-                
-        theme = self.memo_window_get_settings().get('app_theme', 'white')
-        is_app_dark = (theme == "dark")
-        bg_color = self.memo_data.get('bg_color', '#FFFFFF')
-        is_memo_dark_bg = True if bg_color in ['#2E3440', '#1C1C1E', '#000000'] else False
-        if not is_memo_dark_bg and bg_color != "random":
-            c_obj = QColor(bg_color)
-            if c_obj.isValid() and c_obj.lightnessF() < 0.5:
-                is_memo_dark_bg = True
-        is_dark = is_app_dark or is_memo_dark_bg
+
         is_code = self.memo_data.get('is_code_memo', False)
         
-        title_color = "#007AFF" if is_code else ("#FFFFFF" if is_dark else "#1C1C1E")
+        pal = self._memo_theme_palette()
+        title_color = pal['accent'] if is_code else pal['text']
         font_fam = "'D2Coding'" if is_code else "'D2Coding', 'Consolas', monospace"
         self.title_edit.setStyleSheet(f"border:none; background:transparent; color:{title_color}; font-weight:bold; font-size:12pt; font-family: {font_fam};")
         self.title_edit.setCursorPosition(0)

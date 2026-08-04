@@ -21,14 +21,14 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, QEvent, QRect, QByteArray, pyqtSlot
 from PyQt6.QtGui import (
-    QIcon, QAction, QColor, QShortcut, QKeySequence, QFont, QFontDatabase,
+    QGuiApplication, QIcon, QAction, QColor, QShortcut, QKeySequence, QFont, QFontDatabase,
     QPixmap, QPainter, QTextListFormat, QTextCursor, QTextCharFormat, QPalette, QTextDocument,
     QSyntaxHighlighter, QCursor
 )
 from PyQt6.QtSvg import QSvgRenderer
 import os
 import threading
-from core.sync_manager import convert_eng_kor_smart
+from utils.text_utils import convert_eng_kor_smart
 from utils.text_utils import clean_plain_text
 
 class MemoExplorerWindow(QWidget):
@@ -40,6 +40,7 @@ class MemoExplorerWindow(QWidget):
     def __init__(self, ui_manager: Any) -> None:
         super().__init__()
         self.ui_manager = ui_manager
+        self.ui_font_pt = int(self.ui_manager.sync_manager.settings.get("explorer_font_pt", 10))
         self.current_page: int = 1
         self.items_per_page: int = 10
         self.filtered_memos: List[Dict[str, Any]] = []
@@ -50,6 +51,32 @@ class MemoExplorerWindow(QWidget):
         self.init_ui()
         self.apply_theme_style()
         self.bind_global_shortcuts()
+
+    def _apply_initial_window_size(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if not screen:
+            return
+        geom = screen.geometry()
+        max_w = int(geom.width() * 0.8)
+        max_h = int(geom.height() * 0.8)
+        hint = self.sizeHint()
+        target_w = min(max(int(geom.width() * 0.4), hint.width()), max_w)
+        target_h = min(max(int(geom.height() * 0.4), hint.height()), max_h)
+        self.resize(target_w, target_h)
+
+    def _apply_font_scale(self) -> None:
+        base_font = QFont("D2Coding", self.ui_font_pt)
+        self.setFont(base_font)
+        self.bg.setFont(base_font)
+        self.table.setFont(base_font)
+        self.pv.setFont(QFont("D2Coding", max(9, self.ui_font_pt)))
+        self.shortcut_font_refresh()
+
+    def shortcut_font_refresh(self) -> None:
+        row_h = max(38, int(self.ui_font_pt * 3.2))
+        self.table.verticalHeader().setDefaultSectionSize(row_h)
+        for row in range(self.table.rowCount()):
+            self.table.setRowHeight(row, row_h)
 
     def bind_global_shortcuts(self) -> None:
         s_cfg = self.ui_manager.sync_manager.settings.get("shortcuts", {})
@@ -74,7 +101,7 @@ class MemoExplorerWindow(QWidget):
         if geom and len(geom) == 4:
             self.setGeometry(geom[0], geom[1], geom[2], geom[3])
         else:
-            self.resize(1060, 860)
+            self._apply_initial_window_size()
             
         self.is_pinned = self.ui_manager.sync_manager.settings.get('explorer_is_pinned', True)
         f = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinimizeButtonHint
@@ -270,6 +297,7 @@ class MemoExplorerWindow(QWidget):
         self.refresh()
         
         self.grip = QSizeGrip(self)
+        self._apply_font_scale()
 
     def toggle_maximize(self) -> None:
         """100% 정상 작동하는 윈도우 최대화/복원 기능"""
@@ -376,6 +404,7 @@ class MemoExplorerWindow(QWidget):
         self.update_icons()
         theme = self.ui_manager.sync_manager.settings.get('app_theme', 'white')
         is_dark = (theme == "dark")
+        base_pt = int(getattr(self, "ui_font_pt", 10))
         
         self.btn_app_theme.setText(" 라이트" if is_dark else " 다크")
         
@@ -395,11 +424,13 @@ class MemoExplorerWindow(QWidget):
                 QLabel {{
                     color: {pal['text']};
                     font-family: 'D2Coding', 'Consolas', monospace;
+                    font-size: {base_pt}pt;
                 }}
                 QPushButton {{
                     font-family: 'D2Coding', 'Consolas', monospace;
                     color: {pal['text']};
                     border-radius: 0px;
+                    font-size: {base_pt}pt;
                 }}
                 QLineEdit, QComboBox {{
                     padding: 8px 14px;
@@ -408,6 +439,7 @@ class MemoExplorerWindow(QWidget):
                     color: {pal['text']};
                     background-color: {pal['input']};
                     selection-background-color: {pal['accent']};
+                    font-size: {base_pt}pt;
                 }}
                 QLineEdit:focus, QComboBox:focus {{
                     border: 1.5px solid {pal['accent']};
@@ -430,7 +462,7 @@ class MemoExplorerWindow(QWidget):
                     outline: none;
                     gridline-color: transparent;
                     font-family: 'D2Coding', 'Consolas', monospace;
-                    font-size: 9.5pt;
+                    font-size: {base_pt}pt;
                 }}
                 QTableWidget::item {{
                     border: none;
@@ -456,7 +488,7 @@ class MemoExplorerWindow(QWidget):
                     background-color: {pal['input']};
                     color: {pal['accent']};
                     font-weight: 600;
-                    font-size: 8.5pt;
+                    font-size: {max(8, base_pt - 1)}pt;
                     font-family: 'D2Coding', 'Consolas', monospace;
                     border: none;
                     border-bottom: 1px solid {pal['border']};
@@ -501,7 +533,7 @@ class MemoExplorerWindow(QWidget):
                 background-color: {pal['input']};
                 border: 1px solid {pal['border']};
                 border-radius: 12px; padding: 12px;
-                color: {pal['text']}; font-size: 10pt;
+                color: {pal['text']}; font-size: {base_pt}pt;
                 font-family: 'D2Coding', 'Consolas', monospace;
             """)
 
@@ -513,7 +545,7 @@ class MemoExplorerWindow(QWidget):
                     border-radius: 12px;
                     color: {pal['text']};
                     font-weight: bold;
-                    font-size: 9.5pt;
+                    font-size: {base_pt}pt;
                 }}
                 QPushButton:hover {{
                     background-color: rgba(255,255,255,0.12);
@@ -528,16 +560,19 @@ class MemoExplorerWindow(QWidget):
             self.btn_app_theme.setStyleSheet(f"""
                 padding: 0 14px; border: 1.5px solid {pal['accent']}; border-radius: 14px;
                 font-weight: bold; background: rgba(10,132,255,0.15); color: {pal['accent']};
+                font-size: {base_pt}pt;
             """)
             self.btn_arrange_rolled.setStyleSheet(f"""
                 padding: 6px 14px; background: rgba(10,132,255,0.12);
                 border: 1px solid rgba(10,132,255,0.4); color: {pal['accent']};
                 font-weight: bold; border-radius: 12px;
+                font-size: {base_pt}pt;
             """)
             self.btn_arrange_memos.setStyleSheet(f"""
                 padding: 6px 14px; background: rgba(10,132,255,0.12);
                 border: 1px solid rgba(10,132,255,0.4); color: {pal['accent']};
                 font-weight: bold; border-radius: 12px;
+                font-size: {base_pt}pt;
             """)
             self.b_del.setStyleSheet(
                 "QPushButton { padding: 8px 16px; background: rgba(255,69,58,0.12); "
@@ -573,11 +608,13 @@ class MemoExplorerWindow(QWidget):
                 QLabel {{
                     color: {pal['text']};
                     font-family: 'D2Coding', 'Consolas', monospace;
+                    font-size: {base_pt}pt;
                 }}
                 QPushButton {{
                     font-family: 'D2Coding', 'Consolas', monospace;
                     color: {pal['text']};
                     border-radius: 0px;
+                    font-size: {base_pt}pt;
                 }}
                 QLineEdit, QComboBox {{
                     padding: 8px 14px;
@@ -586,6 +623,7 @@ class MemoExplorerWindow(QWidget):
                     color: {pal['text']};
                     background-color: {pal['input']};
                     selection-background-color: {pal['accent']};
+                    font-size: {base_pt}pt;
                 }}
                 QLineEdit:focus, QComboBox:focus {{
                     border: 1.5px solid {pal['accent']};
@@ -608,7 +646,7 @@ class MemoExplorerWindow(QWidget):
                     outline: none;
                     gridline-color: transparent;
                     font-family: 'D2Coding', 'Consolas', monospace;
-                    font-size: 9.5pt;
+                    font-size: {base_pt}pt;
                 }}
                 QTableWidget::item {{
                     border: none;
@@ -634,7 +672,7 @@ class MemoExplorerWindow(QWidget):
                     background-color: {pal['bg']};
                     color: #8E8E93;
                     font-weight: 600;
-                    font-size: 8.5pt;
+                    font-size: {max(8, base_pt - 1)}pt;
                     font-family: 'D2Coding', 'Consolas', monospace;
                     border: none;
                     border-bottom: 1px solid {pal['border']};
@@ -679,7 +717,7 @@ class MemoExplorerWindow(QWidget):
                 background-color: {pal['card']};
                 border: 1px solid {pal['border']};
                 border-radius: 12px; padding: 12px;
-                color: {pal['text']}; font-size: 10pt;
+                color: {pal['text']}; font-size: {base_pt}pt;
                 font-family: 'D2Coding', 'Consolas', monospace;
             """)
 
@@ -691,7 +729,7 @@ class MemoExplorerWindow(QWidget):
                     border-radius: 12px;
                     color: {pal['text']};
                     font-weight: bold;
-                    font-size: 9.5pt;
+                    font-size: {base_pt}pt;
                 }}
                 QPushButton:hover {{
                     background-color: {pal['accent']};
@@ -707,16 +745,19 @@ class MemoExplorerWindow(QWidget):
             self.btn_app_theme.setStyleSheet(f"""
                 padding: 0 14px; border: 1.5px solid {pal['accent']}; border-radius: 14px;
                 font-weight: bold; background: rgba(0,122,255,0.08); color: {pal['accent']};
+                font-size: {base_pt}pt;
             """)
             self.btn_arrange_rolled.setStyleSheet(f"""
                 padding: 6px 14px; background: rgba(0,122,255,0.08);
                 border: 1px solid rgba(0,122,255,0.35); color: {pal['accent']};
                 font-weight: bold; border-radius: 12px;
+                font-size: {base_pt}pt;
             """)
             self.btn_arrange_memos.setStyleSheet(f"""
                 padding: 6px 14px; background: rgba(0,122,255,0.08);
                 border: 1px solid rgba(0,122,255,0.35); color: {pal['accent']};
                 font-weight: bold; border-radius: 12px;
+                font-size: {base_pt}pt;
             """)
             self.b_del.setStyleSheet(
                 "QPushButton { padding: 8px 16px; background: rgba(255,59,48,0.07); "
@@ -778,6 +819,21 @@ class MemoExplorerWindow(QWidget):
         self.btn_filter_all.setStyleSheet(btn_style_on if self.filter_mode == "ALL" else btn_style_off)
         self.btn_filter_gen.setStyleSheet(btn_style_on if self.filter_mode == "GENERAL" else btn_style_off)
         self.btn_filter_code.setStyleSheet(btn_style_on if self.filter_mode == "CODE" else btn_style_off)
+
+    def wheelEvent(self, event: Any) -> None:
+        if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            super().wheelEvent(event)
+            return
+
+        delta = event.angleDelta().y()
+        if delta == 0:
+            return
+
+        self.ui_font_pt = max(9, min(20, self.ui_font_pt + (1 if delta > 0 else -1)))
+        self.ui_manager.sync_manager.settings["explorer_font_pt"] = self.ui_font_pt
+        self.apply_theme_style()
+        self.ui_manager.sync_manager.save_settings(self.ui_manager.sync_manager.settings)
+        event.accept()
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
@@ -1133,11 +1189,12 @@ class MemoExplorerWindow(QWidget):
         
     def update_table(self) -> None:
         self.table.setRowCount(0)
+        row_h = max(38, int(self.ui_font_pt * 3.2))
         items = self.filtered_memos[(self.current_page - 1) * 10 : self.current_page * 10]
         for m in items:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            self.table.setRowHeight(r, 48)
+            self.table.setRowHeight(r, row_h)
             
             c = QTableWidgetItem("")
             c.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
@@ -1220,6 +1277,7 @@ class MemoExplorerWindow(QWidget):
             self.table.setCellWidget(r, 4, cell_p_w)
             
         self.p_l.setText(f"{self.current_page} / {max(1, (len(self.filtered_memos) + 9) // 10)}")
+        self.shortcut_font_refresh()
         
     def toggle_fav(self, memo: Dict[str, Any]) -> None:
         memo['is_favorite'] = not memo.get('is_favorite', False)

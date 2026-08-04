@@ -1,15 +1,12 @@
-from utils.crypto_utils import ENG_KEY_MAP, KOR_KEY_MAP, DATA_BLOB, dpapi_encrypt, dpapi_decrypt
-from utils.text_utils import clean_plain_text, eng_to_kor, kor_to_eng, convert_eng_kor_smart
+from utils.crypto_utils import dpapi_encrypt, dpapi_decrypt
+from utils.text_utils import clean_plain_text
 from core.sync_worker import SyncWorker
-import os
+import traceback
 import sys
 import json
 import shutil
 import uuid
 import winreg
-import ctypes
-import ctypes.wintypes
-import re
 from datetime import datetime
 from typing import Any, List, Dict, Optional
 from pathlib import Path

@@ -1,4 +1,4 @@
-from PyQt6.QtCore import QMetaObject
+from PyQt6.QtCore import QMetaObject, QObject, pyqtSlot
 
 from ui.memo_window import MemoWindow
 from ui.memo_explorer import MemoExplorerWindow
@@ -31,13 +31,48 @@ from PyQt6.QtGui import (
 from PyQt6.QtSvg import QSvgRenderer
 import os
 import threading
-from core.sync_manager import convert_eng_kor_smart
+from utils.text_utils import convert_eng_kor_smart
 from utils.text_utils import clean_plain_text
+
+try:
+    import keyboard
+except Exception:
+    # 외부 패키지 필요: pip install keyboard
+    keyboard = None
 
 PASTEL_COLORS = ["#E0F2FE", "#DCFCE7", "#FEF9C3", "#FCE7F3", "#FFFFFF"]
 
 from ui.themes import LIGHT_THEMES, DARK_THEMES
 
+
+class _GlobalHotkeyDispatcher(QObject):
+    def __init__(self, ui_manager: 'UIManager') -> None:
+        super().__init__()
+        self.ui_manager = ui_manager
+
+    @pyqtSlot()
+    def trigger_create_empty_memo(self) -> None:
+        self.ui_manager.create_empty_memo()
+
+    @pyqtSlot()
+    def trigger_create_code_memo(self) -> None:
+        self.ui_manager.create_code_memo()
+
+    @pyqtSlot()
+    def trigger_open_memo_explorer(self) -> None:
+        self.ui_manager.open_memo_explorer()
+
+    @pyqtSlot()
+    def trigger_toggle_all(self) -> None:
+        self.ui_manager.toggle_all()
+
+    @pyqtSlot()
+    def trigger_arrange_rolled_memos(self) -> None:
+        self.ui_manager.arrange_rolled_up_memos()
+
+    @pyqtSlot()
+    def trigger_arrange_all_memos(self) -> None:
+        self.ui_manager.arrange_memos()
 
 
 class UIManager:
@@ -51,6 +86,8 @@ class UIManager:
         self.explorer_window: Optional[MemoExplorerWindow] = None
         self.settings_window: Optional['SettingsWindow'] = None
         self._cascade_count: int = 0
+        self._global_hotkey_handles: List[Any] = []
+        self._hotkey_dispatcher = _GlobalHotkeyDispatcher(self)
         self.sync_manager.set_ui_manager(self)
         self.setup_tray()
     
@@ -156,10 +193,6 @@ class UIManager:
         act_sync = menu.addAction("지금 동기화")
         act_sync.setIcon(self.get_theme_icon("cloude.svg", is_dark))
         act_sync.triggered.connect(self.sync_manager.sync_push)
-
-        act_open_all = menu.addAction(self._fmt_sc("모든 메모 켜기", s.get('open_all_memos', 'Ctrl+Shift+O')))
-        act_open_all.setIcon(self.get_theme_icon("memo.svg", is_dark))
-        act_open_all.triggered.connect(self.open_all_memos)
         
         title_toggle = "모두 숨기기" if self._all_visible else "모두 보이기"
         self.toggle_action = menu.addAction(self._fmt_sc(title_toggle, s.get('toggle_all_memos', 'Ctrl+Shift+H')))
@@ -178,6 +211,60 @@ class UIManager:
         
         self._tray_menu = menu
         self.tray_icon.setContextMenu(self._tray_menu)
+        self.register_global_hotkeys()
+
+    def _normalize_keyboard_hotkey(self, shortcut: str) -> str:
+        normalized = shortcut.strip().replace(" ", "")
+        replacements = {
+            "Ctrl": "ctrl",
+            "Shift": "shift",
+            "Alt": "alt",
+            "Win": "windows",
+            "Meta": "windows",
+        }
+        for old, new in replacements.items():
+            normalized = normalized.replace(old, new)
+            normalized = normalized.replace(old.lower(), new)
+        return normalized.lower()
+
+    def _invoke_hotkey(self, method_name: str) -> None:
+        QMetaObject.invokeMethod(self._hotkey_dispatcher, method_name, Qt.ConnectionType.QueuedConnection)
+
+    def _clear_global_hotkeys(self) -> None:
+        if keyboard is None:
+            return
+        while self._global_hotkey_handles:
+            handle = self._global_hotkey_handles.pop()
+            try:
+                keyboard.remove_hotkey(handle)
+            except Exception:
+                pass
+
+    def register_global_hotkeys(self) -> None:
+        self._clear_global_hotkeys()
+        if keyboard is None:
+            return
+
+        shortcuts = self.sync_manager.settings.get("shortcuts", {})
+        bindings = [
+            ("new_memo", "trigger_create_empty_memo"),
+            ("new_code_memo", "trigger_create_code_memo"),
+            ("open_explorer", "trigger_open_memo_explorer"),
+            ("toggle_all_memos", "trigger_toggle_all"),
+            ("arrange_rolled_memos", "trigger_arrange_rolled_memos"),
+            ("arrange_all_memos", "trigger_arrange_all_memos"),
+        ]
+
+        for shortcut_key, method_name in bindings:
+            shortcut = shortcuts.get(shortcut_key, "")
+            if not shortcut:
+                continue
+            key_combo = self._normalize_keyboard_hotkey(shortcut)
+            try:
+                handle = keyboard.add_hotkey(key_combo, lambda name=method_name: self._invoke_hotkey(name), suppress=False)
+                self._global_hotkey_handles.append(handle)
+            except Exception as exc:
+                self.sync_manager.log_error(f"글로벌 단축키 등록 실패 ({shortcut_key}: {key_combo}): {exc}", exc)
 
     def enforce_z_order_layering(self) -> None:
         for w in self.memo_windows.values():
