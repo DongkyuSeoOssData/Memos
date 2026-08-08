@@ -89,24 +89,22 @@ class MemoWindow(QWidget):
         QShortcut(QKeySequence(s_cfg.get("search", "Ctrl+F")), self).activated.connect(self.show_search_only)
         QShortcut(QKeySequence(s_cfg.get("replace", "Ctrl+H")), self).activated.connect(self.show_search_and_replace)
         QShortcut(QKeySequence(s_cfg.get("rename", "F2")), self).activated.connect(self.enable_rename)
-        QShortcut(QKeySequence(s_cfg.get("eng_kor_convert", "Ctrl+Alt+E")), self).activated.connect(self.convert_selected_eng_kor)
-        QShortcut(QKeySequence(s_cfg.get("toggle_fmt_bar", "Ctrl+Shift+T")), self).activated.connect(self.toggle_sub_fmt_panel)
-        QShortcut(QKeySequence(s_cfg.get("copy_all", "Ctrl+Shift+C")), self).activated.connect(self.copy_all_content)
-        QShortcut(QKeySequence(s_cfg.get("format_code", "Ctrl+Shift+F")), self).activated.connect(self.prettify_code)
-        
-        QShortcut(QKeySequence(s_cfg.get("toggle_pin", "Ctrl+P")), self).activated.connect(self.toggle_pin)
-        QShortcut(QKeySequence(s_cfg.get("toggle_rollup", "Ctrl+M")), self).activated.connect(self.toggle_rollup)
-        QShortcut(QKeySequence(s_cfg.get("delete_memo", "Ctrl+D")), self).activated.connect(lambda: self.delete_callback(self))
-        QShortcut(QKeySequence(s_cfg.get("toggle_code_theme", "Ctrl+Shift+L")), self).activated.connect(self.toggle_code_theme)
-        
+        QShortcut(QKeySequence(s_cfg.get("eng_kor_convert", "Alt+E")), self).activated.connect(self.convert_selected_eng_kor)
+        QShortcut(QKeySequence(s_cfg.get("toggle_fmt_bar", "Alt+T")), self).activated.connect(self.toggle_sub_fmt_panel)
+        QShortcut(QKeySequence(s_cfg.get("copy_all", "Alt+C")), self).activated.connect(self.copy_all_content)
+        QShortcut(QKeySequence(s_cfg.get("format_code", "Alt+F")), self).activated.connect(self.prettify_code)
+
+        QShortcut(QKeySequence(s_cfg.get("toggle_pin", "Alt+P")), self).activated.connect(self.toggle_pin)
+        QShortcut(QKeySequence(s_cfg.get("toggle_rollup", "Alt+M")), self).activated.connect(self.toggle_rollup)
+        QShortcut(QKeySequence(s_cfg.get("delete_memo", "Alt+D")), self).activated.connect(lambda: self.delete_callback(self))
+        QShortcut(QKeySequence(s_cfg.get("toggle_code_theme", "Alt+L")), self).activated.connect(self.toggle_code_theme)
+        QShortcut(QKeySequence(s_cfg.get("toggle_line_numbers", "Alt+G")), self).activated.connect(self.toggle_line_numbers)
+        QShortcut(QKeySequence(s_cfg.get("toggle_line_bg",      "Alt+B")), self).activated.connect(self.toggle_line_bg)
+
         if getattr(self, 'ui_manager', None):
-            QShortcut(QKeySequence(s_cfg.get("open_explorer", "Ctrl+E")), self).activated.connect(self.ui_manager.open_memo_explorer)
-            QShortcut(QKeySequence(s_cfg.get("arrange_rolled_memos", "Ctrl+Alt+R")), self).activated.connect(self.ui_manager.arrange_rolled_up_memos)
-            QShortcut(QKeySequence(s_cfg.get("arrange_all_memos", "Ctrl+Alt+A")), self).activated.connect(self.ui_manager.arrange_memos)
-            QShortcut(QKeySequence(s_cfg.get("new_memo", "Ctrl+N")), self).activated.connect(self.ui_manager.create_empty_memo)
-            QShortcut(QKeySequence(s_cfg.get("new_code_memo", "Ctrl+Shift+N")), self).activated.connect(self.ui_manager.create_code_memo)
-            QShortcut(QKeySequence(s_cfg.get("open_all_memos", "Ctrl+Shift+O")), self).activated.connect(self.ui_manager.open_all_memos)
-            QShortcut(QKeySequence(s_cfg.get("toggle_all_memos", "Ctrl+Shift+H")), self).activated.connect(self.ui_manager.toggle_all)
+            # 글로벌 단축키(keyboard 훅)와 중복 방지를 위해 로컬 QShortcut에서는 제외함
+            # open_all_memos는 전역 단축키가 아니므로 로컬로 유지
+            QShortcut(QKeySequence(s_cfg.get("open_all_memos", "Alt+O")), self).activated.connect(self.ui_manager.open_all_memos)
 
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.close)
 
@@ -664,8 +662,12 @@ class MemoWindow(QWidget):
         # 📌 접힌 상태에서 맞닿아 있을 때만 12px 스냅 멈춤 & 15px 이상 끌면 이탈하여 가로 자유 조절
         if self._is_rolled_up:
             self.memo_data['rolled_width'] = self.width()
-            if self.height() != 53:
-                self.resize(self.width(), 53)
+            rolled_h = self._get_rolled_height()
+            if self.height() != rolled_h:
+                self.resize(self.width(), rolled_h)
+                return  # resize()가 또 resizeEvent를 발생시키므로 이번 이벤트는 여기서 종료
+            # 접힌 상태이면 버튼·타이틀 크기를 항상 재보정 (외부 resize/스케일 변경 대응)
+            self._apply_rolled_ui(rolled_h)
             target_win = self.find_snap_target_memo()
             if target_win:
                 target_w = target_win.width()
@@ -676,12 +678,12 @@ class MemoWindow(QWidget):
                     if abs(mouse_x - start_mouse_x) > 15:
                         self._sticky_snap_origin = None  # 15px 이상 당기면 자석 이탈!
                     else:
-                        self.resize(snap_w, 53)
+                        self.resize(snap_w, rolled_h)
                         return
                 
                 if not getattr(self, '_sticky_snap_origin', None):
                     if abs(self.width() - target_w) <= 12:
-                        self.resize(target_w, 53)
+                        self.resize(target_w, rolled_h)
                         self._sticky_snap_origin = (mouse_x, target_w)
             else:
                 self._sticky_snap_origin = None
@@ -915,10 +917,19 @@ class MemoWindow(QWidget):
     def change_font_size(self, size_str: str) -> None:
         if not size_str.isdigit(): return
         sz = int(size_str)
-        fmt = self.text_edit.currentCharFormat()
-        fmt.setFontPointSize(sz)
-        self.text_edit.mergeCurrentCharFormat(fmt)
+        # 전체 문서에 폰트 크기 적용
+        font_family = self.memo_data.get('font_family', 'D2Coding')
+        f = QFont(font_family, sz)
+        self.text_edit.setFont(f)
+        cursor = self.text_edit.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        fmt = QTextCharFormat()
+        fmt.setFont(f)
+        cursor.mergeCharFormat(fmt)
         self.memo_data['font_size'] = sz
+        # 스타일시트·행번호 동기화
+        self.apply_line_bg_style()
+        self.text_edit.update_line_number_area()
         self._auto_save_timer.start(1000)
 
     def choose_fg_color(self) -> None:
@@ -1045,6 +1056,59 @@ class MemoWindow(QWidget):
             cursor.setBlockFormat(fmt)
             self.manual_save()
 
+    def _get_rolled_height(self) -> int:
+        """settings의 default_rolled_height 값을 우선 읽고, 없으면 53을 반환합니다."""
+        if getattr(self, 'ui_manager', None):
+            h = self.ui_manager.sync_manager.settings.get('default_rolled_height', 53)
+        else:
+            h = 53
+        return max(36, int(h))
+
+    def _title_color_stylesheet(self, font_size_pt: float = 12.0) -> str:
+        """현재 메모 테마 팔레트 기준으로 title_edit에 적용할 stylesheet를 반환합니다.
+        
+        코드 메모는 accent 색상, 일반 메모는 text 색상을 사용합니다.
+        """
+        pal = self._memo_theme_palette() if hasattr(self, '_memo_theme_palette') else {}
+        is_code = self.memo_data.get('is_code_memo', False)
+        title_color = pal.get('accent', '#0A84FF') if is_code else pal.get('text', '#1C1C1E')
+        font_fam = "'D2Coding'" if is_code else "'D2Coding', 'Consolas', monospace"
+        return (
+            f"border:none; background:transparent; color:{title_color}; "
+            f"font-weight:bold; font-size:{font_size_pt}pt; font-family:{font_fam};"
+        )
+
+    def _apply_rolled_ui(self, rolled_h: int) -> None:
+        """접힌 상태일 때 타이틀바 높이·버튼 크기·폰트를 rolled_h에 비례하여 동적 조절합니다.
+        
+        제목 색상은 메모 테마 팔레트를 따르며 하드코딩 없이 통일됩니다.
+        """
+        # 버튼 크기: rolled_h 기준 비율 계산 (최소 18, 최대 32)
+        btn_h = max(18, min(32, int(rolled_h * 0.55)))
+        for btn in [self.btn_pin, self.btn_min, self.btn_close]:
+            btn.setFixedSize(btn_h + 2, btn_h)
+        # 타이틀 폰트 크기: rolled_h 기준 비율 계산 (최소 8pt, 최대 13pt)
+        title_pt = max(8.0, min(13.0, rolled_h * 0.22))
+        # 제목 색상 → 메모 테마 팔레트 색상으로 통일 (하드코딩 없음)
+        self.title_edit.setStyleSheet(self._title_color_stylesheet(title_pt))
+        # 타이틀바 여백 최소화
+        if hasattr(self, 'bg_layout'):
+            margin_v = max(2, int((rolled_h - btn_h) / 2) - 1)
+            self.bg_layout.setContentsMargins(10, margin_v, 10, margin_v)
+
+    def _restore_normal_ui(self) -> None:
+        """펼친 상태로 복원 시 타이틀바/버튼 크기를 기본값으로 되돌리고
+        제목 색상도 테마 팔레트로 통일합니다.
+        """
+        for btn in [self.btn_pin, self.btn_min, self.btn_close]:
+            btn.setFixedSize(28, 26)
+        if hasattr(self, 'btn_max'):
+            self.btn_max.setFixedSize(28, 26)
+        # 제목 색상 → 메모 테마 팔레트 색상으로 통일 (하드코딩 없음)
+        self.title_edit.setStyleSheet(self._title_color_stylesheet(12.0))
+        if hasattr(self, 'bg_layout'):
+            self.bg_layout.setContentsMargins(14, 10, 14, 14)
+
     def toggle_rollup(self) -> None:
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         scr_geom = screen.availableGeometry()
@@ -1062,7 +1126,9 @@ class MemoWindow(QWidget):
             self.memo_data['unrolled_height'] = self.height()
             self._normal_height = self.height()
             
-            rolled_h = self.memo_data.get('rolled_height', 53)
+            # settings의 default_rolled_height 값을 우선 적용
+            rolled_h = self._get_rolled_height()
+            self.memo_data['rolled_height'] = rolled_h
             rolled_w = self.memo_data.get('rolled_width', self.width())
             
             new_left_x = anchor_x - rolled_w if is_near_right else anchor_x
@@ -1078,8 +1144,6 @@ class MemoWindow(QWidget):
             self.memo_data['rolled_position_y'] = new_top_y
             
             self.content_container.hide()
-            if hasattr(self, 'bg_layout'):
-                self.bg_layout.setContentsMargins(14, 8, 14, 8)
             if hasattr(self, 'window_layout'):
                 self.window_layout.setContentsMargins(0, 0, 0, 0)
             self.setMinimumSize(0, 0)
@@ -1088,6 +1152,8 @@ class MemoWindow(QWidget):
             self.setGeometry(new_left_x, new_top_y, rolled_w, rolled_h)
             self.setMinimumHeight(rolled_h)
             self.setMaximumHeight(rolled_h)
+            # 타이틀바/버튼을 rolled_h에 맞게 동적 조절
+            self._apply_rolled_ui(rolled_h)
             self.btn_min.setToolTip("펼치기 (Ctrl+M)")
             self.btn_max.hide()
             if hasattr(self, 'btn_code_theme'): self.btn_code_theme.hide()
@@ -1120,10 +1186,10 @@ class MemoWindow(QWidget):
             self.setMaximumSize(16777215, 16777215)
             self.setGeometry(new_left_x, new_top_y, target_width, target_height)
             self.content_container.show()
-            if hasattr(self, 'bg_layout'):
-                self.bg_layout.setContentsMargins(14, 10, 14, 14)
             if hasattr(self, 'window_layout'):
                 self.window_layout.setContentsMargins(0, 0, 0, 0)
+            # 펼칠 때 타이틀바/버튼 크기 기본값으로 복원
+            self._restore_normal_ui()
                 
             if self.memo_data.get('is_code_memo', False):
                 if hasattr(self, 'btn_code_theme'): self.btn_code_theme.show()
@@ -1340,10 +1406,8 @@ class MemoWindow(QWidget):
                 code_text = pal['text']
 
             title_c = pal['accent']
-            self.title_edit.setStyleSheet(
-                f"border:none; background:transparent; color:{title_c}; "
-                f"font-weight:bold; font-size:12pt; font-family: 'D2Coding';"
-            )
+            # _title_color_stylesheet()로 통일 (하드코딩 font-size 제거)
+            self.title_edit.setStyleSheet(self._title_color_stylesheet(12.0))
 
             radius_px = "0px"
             self.bg.setStyleSheet(
@@ -1383,13 +1447,8 @@ class MemoWindow(QWidget):
                 bg_color = "#FFFFFF"
 
             text_c  = p_pal['text']
-            title_c = p_pal['text']
-
-            self.title_edit.setStyleSheet(
-                f"border:none; background:transparent; color:{title_c}; "
-                f"font-weight:bold; font-size:12pt; "
-                f"font-family: 'D2Coding', 'Consolas', monospace;"
-            )
+            # _title_color_stylesheet()로 통일 (하드코딩 font-size 제거)
+            self.title_edit.setStyleSheet(self._title_color_stylesheet(12.0))
             self.text_edit.setStyleSheet(
                 f"QTextEdit {{ border:none; background:transparent; color:{text_c}; }}"
             )
@@ -1492,7 +1551,9 @@ class MemoWindow(QWidget):
         
         if is_rolled:
             target_w = self.memo_data.get('rolled_width', self.width())
-            target_h = self.memo_data.get('rolled_height', 53)
+            # settings의 default_rolled_height를 우선 적용
+            target_h = self._get_rolled_height()
+            self.memo_data['rolled_height'] = target_h
             r_x = self.x() if self.isVisible() else self.memo_data.get('position_x', 100)
             r_y = self.y() if self.isVisible() else self.memo_data.get('rolled_position_y', 100)
             
@@ -1504,7 +1565,11 @@ class MemoWindow(QWidget):
             self._is_rolled_up = True
             self.memo_data['is_rolled_up'] = True
             self.memo_data['rolled_position_y'] = r_y
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(16777215, 16777215)
             self.setGeometry(r_x, r_y, target_w, target_h)
+            self.setMinimumHeight(target_h)
+            self.setMaximumHeight(target_h)
             
             self.content_container.hide()
             self.btn_min.setToolTip("펼치기 (Ctrl+M)")
@@ -1514,6 +1579,9 @@ class MemoWindow(QWidget):
             if hasattr(self, 'btn_format_code'): self.btn_format_code.hide()
             if hasattr(self, 'window_layout'):
                 self.window_layout.setContentsMargins(0, 0, 0, 0)
+            # 타이틀바/버튼을 target_h에 맞게 동적 조절
+            self._apply_rolled_ui(target_h)
+
         else:
             target_w = self.memo_data.get('unrolled_width', self.memo_data.get('width', 500))
             target_h = self.memo_data.get('unrolled_height', self.memo_data.get('height', 400))
@@ -1590,7 +1658,10 @@ class MemoWindow(QWidget):
         is_code = self.memo_data.get('is_code_memo', False)
         font_fam = "'D2Coding'" if is_code else "'D2Coding', 'Consolas', monospace"
         pal = self._memo_theme_palette()
-        self.title_edit.setStyleSheet(f"border:1px solid {pal['accent']}; background:transparent; color:{pal['text']}; font-weight:bold; font-size:12pt; border-radius:0px; font-family: {font_fam};")
+        is_rolled = getattr(self, '_is_rolled_up', False)
+        rolled_h = self._get_rolled_height()
+        title_pt = max(8.0, min(13.0, rolled_h * 0.22)) if is_rolled else 12.0
+        self.title_edit.setStyleSheet(f"border:1px solid {pal['accent']}; background:transparent; color:{pal['text']}; font-weight:bold; font-size:{title_pt}pt; border-radius:0px; font-family: {font_fam};")
         self.title_edit.setFocus()
         self.title_edit.setCursorPosition(len(self.title_edit.text()))
 
@@ -1611,12 +1682,10 @@ class MemoWindow(QWidget):
                 QMessageBox.warning(self, "중복", f"'{nt}' 존재.")
                 self.title_edit.setText(ot)
 
-        is_code = self.memo_data.get('is_code_memo', False)
-        
-        pal = self._memo_theme_palette()
-        title_color = pal['accent'] if is_code else pal['text']
-        font_fam = "'D2Coding'" if is_code else "'D2Coding', 'Consolas', monospace"
-        self.title_edit.setStyleSheet(f"border:none; background:transparent; color:{title_color}; font-weight:bold; font-size:12pt; font-family: {font_fam};")
+        is_rolled = getattr(self, '_is_rolled_up', False)
+        rolled_h = self._get_rolled_height()
+        title_pt = max(8.0, min(13.0, rolled_h * 0.22)) if is_rolled else 12.0
+        self.title_edit.setStyleSheet(self._title_color_stylesheet(title_pt))
         self.title_edit.setCursorPosition(0)
         if getattr(self, 'ui_manager', None) and self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
             self.ui_manager.explorer_window.update_table()

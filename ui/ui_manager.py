@@ -63,6 +63,11 @@ class _GlobalHotkeyDispatcher(QObject):
         self.ui_manager.open_memo_explorer()
 
     @pyqtSlot()
+    def trigger_toggle_explorer(self) -> None:
+        """탐색기 창을 토글합니다 (켜기/숨기기)."""
+        self.ui_manager.toggle_explorer()
+
+    @pyqtSlot()
     def trigger_toggle_all(self) -> None:
         self.ui_manager.toggle_all()
 
@@ -247,12 +252,12 @@ class UIManager:
 
         shortcuts = self.sync_manager.settings.get("shortcuts", {})
         bindings = [
-            ("new_memo", "trigger_create_empty_memo"),
-            ("new_code_memo", "trigger_create_code_memo"),
-            ("open_explorer", "trigger_open_memo_explorer"),
-            ("toggle_all_memos", "trigger_toggle_all"),
-            ("arrange_rolled_memos", "trigger_arrange_rolled_memos"),
-            ("arrange_all_memos", "trigger_arrange_all_memos"),
+            ("new_memo",            "trigger_create_empty_memo"),
+            ("new_code_memo",       "trigger_create_code_memo"),
+            ("open_explorer",       "trigger_toggle_explorer"),
+            ("toggle_all_memos",    "trigger_toggle_all"),
+            ("arrange_rolled_memos","trigger_arrange_rolled_memos"),
+            ("arrange_all_memos",   "trigger_arrange_all_memos"),
         ]
 
         for shortcut_key, method_name in bindings:
@@ -419,10 +424,17 @@ class UIManager:
                     self.create_new_memo(m, show_on_create=True)
         self.enforce_z_order_layering()
         
+    def toggle_explorer(self) -> None:
+        """메모 탐색기를 토글합니다. 보이면 숨기고, 숨어있으면 열어서 포커스를 줍니다."""
+        if self.explorer_window and self.explorer_window.isVisible():
+            self.explorer_window.hide()
+        else:
+            self.open_memo_explorer()
+
     def open_memo_explorer(self) -> None:
         if not self.ensure_unlocked():
             return
-        if not self.explorer_window: 
+        if not self.explorer_window:
             self.explorer_window = MemoExplorerWindow(self)
         self.explorer_window.setWindowState(self.explorer_window.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)
         self.explorer_window.show()

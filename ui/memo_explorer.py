@@ -53,24 +53,58 @@ class MemoExplorerWindow(QWidget):
         self.bind_global_shortcuts()
 
     def _apply_initial_window_size(self) -> None:
-        screen = QGuiApplication.primaryScreen()
-        if not screen:
+        """멀티모니터 환경에서 가장 작은 모니터 해상도의 1/6 크기로 창을 초기화합니다."""
+        screens = QGuiApplication.screens()
+        if not screens:
             return
-        geom = screen.geometry()
-        max_w = int(geom.width() * 0.8)
-        max_h = int(geom.height() * 0.8)
-        hint = self.sizeHint()
-        target_w = min(max(int(geom.width() * 0.4), hint.width()), max_w)
-        target_h = min(max(int(geom.height() * 0.4), hint.height()), max_h)
-        self.resize(target_w, target_h)
+        # 가장 작은 모니터 탐색 (너비 × 높이 면적 기준)
+        smallest = min(screens, key=lambda s: s.geometry().width() * s.geometry().height())
+        geom = smallest.availableGeometry()
+        # 1/6 크기 = 가로 1/3, 세로 1/3
+        base_w = int(geom.width() / 3)
+        base_h = int(geom.height() / 3)
+        target_w = max(base_w, 620)
+        target_h = max(base_h, 480)
+        target_w = min(target_w, int(geom.width() * 0.8))
+        target_h = min(target_h, int(geom.height() * 0.8))
+        cx = geom.center().x() - target_w // 2
+        cy = geom.center().y() - target_h // 2
+        self.setGeometry(cx, cy, target_w, target_h)
 
     def _apply_font_scale(self) -> None:
+        """현재 ui_font_pt 기준으로 창 전체의 폰트와 행 높이를 적용합니다."""
         base_font = QFont("D2Coding", self.ui_font_pt)
         self.setFont(base_font)
         self.bg.setFont(base_font)
         self.table.setFont(base_font)
         self.pv.setFont(QFont("D2Coding", max(9, self.ui_font_pt)))
+
+        # 상단 제어·필터 버튼 아이콘: 폰트 1.4배
+        ctrl_icon_sz = max(14, int(self.ui_font_pt * 1.4))
+        for btn in [self.btn_win_pin, self.btn_win_min, self.btn_win_max, self.btn_win_close,
+                    self.btn_filter_all, self.btn_filter_gen, self.btn_filter_code,
+                    self.btn_arrange_rolled, self.btn_arrange_memos, self.t_btn,
+                    self.p_b, self.n_b]:
+            btn.setIconSize(QSize(ctrl_icon_sz, ctrl_icon_sz))
+
+        # 하단 액션 버튼 아이콘: 폰트와 동일 크기 (텍스트와 나란히 보이도록 작게)
+        act_icon_sz = max(12, int(self.ui_font_pt * 1.1))
+        if hasattr(self, 'b_new'):
+            btn_h = max(30, int(self.ui_font_pt * 2.6))
+            for btn in [self.b_new, self.b_new_code, self.b_ref, self.b_sync,
+                        self.b_del, self.b_res, self.b_empty_trash]:
+                btn.setIconSize(QSize(act_icon_sz, act_icon_sz))
+                btn.setFixedHeight(btn_h)
         self.shortcut_font_refresh()
+
+    def _calc_font_pt_from_size(self) -> int:
+        """현재 창 너비를 기반으로 ui_font_pt를 동적으로 계산합니다.
+        
+        창 너비 440px 기준 9pt, 매 60px 증가마다 1pt 증가, 최대 16pt.
+        """
+        w = self.width()
+        pt = 9 + max(0, (w - 440) // 60)
+        return max(9, min(16, pt))
 
     def shortcut_font_refresh(self) -> None:
         row_h = max(38, int(self.ui_font_pt * 3.2))
@@ -80,12 +114,8 @@ class MemoExplorerWindow(QWidget):
 
     def bind_global_shortcuts(self) -> None:
         s_cfg = self.ui_manager.sync_manager.settings.get("shortcuts", {})
-        QShortcut(QKeySequence(s_cfg.get("new_memo", "Ctrl+N")), self).activated.connect(self.ui_manager.create_empty_memo)
-        QShortcut(QKeySequence(s_cfg.get("new_code_memo", "Ctrl+Shift+N")), self).activated.connect(self.ui_manager.create_code_memo)
-        QShortcut(QKeySequence(s_cfg.get("open_all_memos", "Ctrl+Shift+O")), self).activated.connect(self.ui_manager.open_all_memos)
-        QShortcut(QKeySequence(s_cfg.get("toggle_all_memos", "Ctrl+Shift+H")), self).activated.connect(self.ui_manager.toggle_all)
-        QShortcut(QKeySequence(s_cfg.get("arrange_rolled_memos", "Ctrl+Alt+R")), self).activated.connect(self.ui_manager.arrange_rolled_up_memos)
-        QShortcut(QKeySequence(s_cfg.get("arrange_all_memos", "Ctrl+Alt+A")), self).activated.connect(self.ui_manager.arrange_memos)
+        # 글로벌 단축키와 중복을 막기 위해 전역 훅 단축키는 QShortcut에서 제외
+        QShortcut(QKeySequence(s_cfg.get("open_all_memos", "Alt+O")), self).activated.connect(self.ui_manager.open_all_memos)
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.close)
 
     def keyPressEvent(self, e: Any) -> None:
@@ -102,6 +132,7 @@ class MemoExplorerWindow(QWidget):
             self.setGeometry(geom[0], geom[1], geom[2], geom[3])
         else:
             self._apply_initial_window_size()
+        self.setMinimumSize(580, 440)
             
         self.is_pinned = self.ui_manager.sync_manager.settings.get('explorer_is_pinned', True)
         f = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinimizeButtonHint
@@ -539,13 +570,15 @@ class MemoExplorerWindow(QWidget):
 
             btn_base = f"""
                 QPushButton {{
-                    padding: 8px 16px;
+                    padding: 5px 8px;
                     background-color: {pal['input']};
                     border: 1px solid {pal['border']};
-                    border-radius: 12px;
+                    border-radius: 10px;
                     color: {pal['text']};
                     font-weight: bold;
                     font-size: {base_pt}pt;
+                    font-family: 'D2Coding', 'Consolas', monospace;
+                    text-align: left;
                 }}
                 QPushButton:hover {{
                     background-color: rgba(255,255,255,0.12);
@@ -575,16 +608,18 @@ class MemoExplorerWindow(QWidget):
                 font-size: {base_pt}pt;
             """)
             self.b_del.setStyleSheet(
-                "QPushButton { padding: 8px 16px; background: rgba(255,69,58,0.12); "
-                "color: #FF453A; border: 1px solid rgba(255,69,58,0.35); "
-                "border-radius: 12px; font-weight: bold; } "
-                "QPushButton:hover { background: rgba(255,69,58,0.25); }"
+                f"QPushButton {{ padding: 5px 8px; background: rgba(255,69,58,0.12); "
+                f"color: #FF453A; border: 1px solid rgba(255,69,58,0.35); "
+                f"border-radius: 10px; font-weight: bold; font-size: {base_pt}pt; "
+                f"font-family: 'D2Coding','Consolas',monospace; text-align: left; }} "
+                f"QPushButton:hover {{ background: rgba(255,69,58,0.25); }}"
             )
             self.b_empty_trash.setStyleSheet(
-                "QPushButton { padding: 8px 16px; background: rgba(255,69,58,0.12); "
-                "color: #FF453A; border: 1px solid rgba(255,69,58,0.35); "
-                "border-radius: 12px; font-weight: bold; } "
-                "QPushButton:hover { background: rgba(255,69,58,0.25); }"
+                f"QPushButton {{ padding: 5px 8px; background: rgba(255,69,58,0.12); "
+                f"color: #FF453A; border: 1px solid rgba(255,69,58,0.35); "
+                f"border-radius: 10px; font-weight: bold; font-size: {base_pt}pt; "
+                f"font-family: 'D2Coding','Consolas',monospace; text-align: left; }} "
+                f"QPushButton:hover {{ background: rgba(255,69,58,0.25); }}"
             )
             self.t_btn.setStyleSheet(f"""
                 QPushButton {{ padding: 8px 16px; background-color: {pal['input']};
@@ -723,13 +758,15 @@ class MemoExplorerWindow(QWidget):
 
             btn_base = f"""
                 QPushButton {{
-                    padding: 8px 16px;
+                    padding: 5px 8px;
                     background-color: {pal['card']};
                     border: 1px solid {pal['border']};
-                    border-radius: 12px;
+                    border-radius: 10px;
                     color: {pal['text']};
                     font-weight: bold;
                     font-size: {base_pt}pt;
+                    font-family: 'D2Coding', 'Consolas', monospace;
+                    text-align: left;
                 }}
                 QPushButton:hover {{
                     background-color: {pal['accent']};
@@ -760,16 +797,18 @@ class MemoExplorerWindow(QWidget):
                 font-size: {base_pt}pt;
             """)
             self.b_del.setStyleSheet(
-                "QPushButton { padding: 8px 16px; background: rgba(255,59,48,0.07); "
-                "color: #FF3B30; border: 1px solid rgba(255,59,48,0.25); "
-                "border-radius: 12px; font-weight: bold; } "
-                "QPushButton:hover { background: rgba(255,59,48,0.15); }"
+                f"QPushButton {{ padding: 5px 8px; background: rgba(255,59,48,0.07); "
+                f"color: #FF3B30; border: 1px solid rgba(255,59,48,0.25); "
+                f"border-radius: 10px; font-weight: bold; font-size: {base_pt}pt; "
+                f"font-family: 'D2Coding','Consolas',monospace; text-align: left; }} "
+                f"QPushButton:hover {{ background: rgba(255,59,48,0.15); }}"
             )
             self.b_empty_trash.setStyleSheet(
-                "QPushButton { padding: 8px 16px; background: rgba(255,59,48,0.07); "
-                "color: #FF3B30; border: 1px solid rgba(255,59,48,0.25); "
-                "border-radius: 12px; font-weight: bold; } "
-                "QPushButton:hover { background: rgba(255,59,48,0.15); }"
+                f"QPushButton {{ padding: 5px 8px; background: rgba(255,59,48,0.07); "
+                f"color: #FF3B30; border: 1px solid rgba(255,59,48,0.25); "
+                f"border-radius: 10px; font-weight: bold; font-size: {base_pt}pt; "
+                f"font-family: 'D2Coding','Consolas',monospace; text-align: left; }} "
+                f"QPushButton:hover {{ background: rgba(255,59,48,0.15); }}"
             )
 
             if hasattr(self.ui_manager, 'get_theme_icon'):
@@ -836,9 +875,21 @@ class MemoExplorerWindow(QWidget):
         event.accept()
 
     def resizeEvent(self, event: Any) -> None:
+        """창 크기 변경 시 폰트와 아이콘 크기를 동적으로 재계산하여 적용하고,
+        버튼 텍스트 표시를 너비에 맞게 전환합니다.
+        """
         super().resizeEvent(event)
         self.grip.move(self.width() - 35, self.height() - 35)
         self.grip.resize(16, 16)
+        # 창 너비 변화 시 폰트 자동 스케일
+        new_pt = self._calc_font_pt_from_size()
+        if new_pt != self.ui_font_pt:
+            self.ui_font_pt = new_pt
+            self.ui_manager.sync_manager.settings["explorer_font_pt"] = self.ui_font_pt
+            self.apply_theme_style()
+        # 좌우 너비에 따라 버튼 텍스트 표시 전환
+        if hasattr(self, 'b_new'):
+            self._refresh_btn_labels()
 
     def closeEvent(self, event: Any) -> None:
         geom = [self.x(), self.y(), self.width(), self.height()]
@@ -875,7 +926,17 @@ class MemoExplorerWindow(QWidget):
         self.b_del        = QPushButton(" 삭제")
         self.b_res        = QPushButton(" 복구")
         self.b_empty_trash = QPushButton(" 비우기")
-        
+
+        # 툴팅 설정 (악은 너비에서 아이콘만 표시될 때 유용)
+        for btn, tip in [
+            (self.b_new, "새 메모 생성"), (self.b_new_code, "코드 메모 생성"),
+            (self.b_ref, "새로고침"), (self.b_sync, "클라우드 동기화"),
+            (self.b_del, "선택 메모 삭제"), (self.b_res, "선택 메모 복구"),
+            (self.b_empty_trash, "휴지통 비우기")
+        ]:
+            btn.setToolTip(tip)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+
         self.b_new.clicked.connect(self.ui_manager.create_empty_memo)
         self.b_new_code.clicked.connect(self.ui_manager.create_code_memo)
         self.b_ref.clicked.connect(self.refresh)
@@ -883,6 +944,35 @@ class MemoExplorerWindow(QWidget):
         self.b_del.clicked.connect(self.del_checked)
         self.b_res.clicked.connect(self.res_checked)
         self.b_empty_trash.clicked.connect(self.empty_trash)
+
+    def _refresh_btn_labels(self) -> None:
+        """숙 너비(px)에 따라 버튼을 "아이콘+텍스트" 또는 "아이콘만" 모드로 전환합니다.
+
+        기준: 창 너비 580px 미만 시 텍스트 숨김, 이상시 텍스트 표시.
+        """
+        show_text = self.width() >= 580
+        # 하단 액션 버튼: 아이콘 앞에 공백 최소화
+        labels = {
+            self.b_new:         " 새 메모",
+            self.b_new_code:    " 코드 메모",
+            self.b_ref:         " 새로고침",
+            self.b_sync:        " 동기화",
+            self.b_del:         " 삭제",
+            self.b_res:         " 복구",
+            self.b_empty_trash: " 비우기",
+        }
+        for btn, text in labels.items():
+            btn.setText(text if show_text else "")
+        # 필터/정렬 버튼
+        filter_labels = {
+            self.btn_filter_all:     " 전체",
+            self.btn_filter_gen:     " 일반",
+            self.btn_filter_code:    " 코드",
+            self.btn_arrange_rolled: " 접은 정렬",
+            self.btn_arrange_memos:  " 펼친 정렬",
+        }
+        for btn, text in filter_labels.items():
+            btn.setText(text if show_text else "")
 
     def empty_trash(self) -> None:
         if QMessageBox.question(self, "휴지통 비우기", "휴지통의 모든 메모를 영구 삭제할까요? (복구 불가)", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
@@ -1101,6 +1191,8 @@ class MemoExplorerWindow(QWidget):
             self.btn_l.addWidget(self.b_res)
             self.btn_l.addWidget(self.b_empty_trash)
             self.btn_l.addStretch()
+        # 레이아웃 후 다시 텍스트/아이콘 상태 원상 복원
+        self._refresh_btn_labels()
             
     def toggle_trash(self) -> None: 
         self.is_trash_mode = self.t_btn.isChecked()

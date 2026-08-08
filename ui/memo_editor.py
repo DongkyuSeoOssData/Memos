@@ -132,7 +132,8 @@ class MemoTextEdit(QTextEdit):
             
         painter.fillRect(event.rect(), bg_color) 
         painter.setPen(text_color) 
-        painter.setFont(self.font())
+        line_font = QFont(self.font().family(), self.memo_window.memo_data.get('font_size', 11))
+        painter.setFont(line_font)
         
         block = self.document().begin()
         scroll_y = self.verticalScrollBar().value()
@@ -377,7 +378,8 @@ class MemoTextEdit(QTextEdit):
         grid_color = QColor(255, 255, 255, 45) if is_dark_bg else QColor(0, 0, 0, 45)
         indent_color = QColor(142, 142, 147, 100) 
         scroll_y = self.verticalScrollBar().value()
-        fm = self.fontMetrics()
+        line_font = QFont(self.font().family(), self.memo_window.memo_data.get('font_size', 11))
+        fm = QFontMetrics(line_font)
         line_height = fm.lineSpacing()
         
         if show_bg:
@@ -406,8 +408,9 @@ class MemoTextEdit(QTextEdit):
         modifiers = QApplication.keyboardModifiers()
         delta = event.angleDelta().y()
         if modifiers == Qt.KeyboardModifier.ControlModifier:
+            current_size = self.memo_window.memo_data.get('font_size', 11)
+            s = max(6, min(72, current_size + (1 if delta > 0 else -1)))
             f = self.font()
-            s = max(8, min(40, f.pointSize() + (1 if delta > 0 else -1)))
             f.setPointSize(s)
             self.setFont(f)
             cursor = self.textCursor()
@@ -416,7 +419,16 @@ class MemoTextEdit(QTextEdit):
             fmt.setFont(f)
             cursor.mergeCharFormat(fmt)
             self.memo_window.memo_data['font_size'] = s
+            self.memo_window.apply_line_bg_style()
             self.update_line_number_area()
+            # size_box에 신호 차단 후 조용히 동기화
+            if hasattr(self.memo_window, 'size_box'):
+                sb = self.memo_window.size_box
+                sb.blockSignals(True)
+                sb.setCurrentText(str(s))
+                if sb.currentText() != str(s):  # 목록에 없는 값이면 직접 입력
+                    sb.setEditText(str(s)) if sb.isEditable() else None
+                sb.blockSignals(False)
             if hasattr(self.memo_window, '_wheel_save_timer'):
                 self.memo_window._wheel_save_timer.start(1000)
             self.memo_window.show_toast(f"폰트 크기: {s}pt")

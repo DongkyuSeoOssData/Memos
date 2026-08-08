@@ -15,7 +15,7 @@ from typing import Any, List, Dict, Optional, Tuple
 from pathlib import Path
 from PyQt6.QtCore import QTimer, QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import QSystemTrayIcon
-from crypto_manager import CryptoManager
+from utils.crypto_manager import CryptoManager
 
 class SyncWorker(QObject):
     finished = pyqtSignal(bool, str)
