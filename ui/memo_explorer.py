@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QDialog, QDialogButtonBox,
     QGraphicsDropShadowEffect, QFrame, QSizeGrip, QFontComboBox,
     QColorDialog, QTabWidget, QKeySequenceEdit, QGroupBox, QFormLayout,
-    QScrollArea, QSlider, QSpinBox, QWidgetAction
+    QScrollArea, QSlider, QSpinBox, QWidgetAction, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, QEvent, QRect, QByteArray, pyqtSlot
 from PyQt6.QtGui import (
@@ -225,12 +225,15 @@ class MemoExplorerWindow(QWidget):
         self.s_type.setFixedHeight(36)
         
         self.tag_combo = QComboBox()
-        self.tag_combo.addItem("#  태그 필터")
+        self.tag_combo.addItem("#")
         self.tag_combo.setFixedHeight(36)
+        # 💡 메인 콤보박스 버튼 크기가 절대 자동으로 늘어나지 않게 고정 정책 부여
+        self.tag_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.tag_combo.setFixedWidth(55) # 혹은 원하는 고정 폭 (예: 50~60px)
         self.tag_combo.currentIndexChanged.connect(self.on_search)
         
         self.s_in = QLineEdit()
-        self.s_in.setPlaceholderText("검색어를 입력하세요...")
+        self.s_in.setPlaceholderText("검색")
         self.s_in.setFixedHeight(36)
         self.s_in.textChanged.connect(self.on_search)
 
@@ -246,7 +249,7 @@ class MemoExplorerWindow(QWidget):
         bg_l.addLayout(sh_l)
         
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["선택", "♡", "구분 / 제목", "수정일시", "삭제 방지"])
+        self.table.setHorizontalHeaderLabels(["선택", "♡", "구분 / 제목", "수정일시\n(년월일.시분)", "잠금"])
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -269,9 +272,9 @@ class MemoExplorerWindow(QWidget):
         self.table.setColumnWidth(1, 50)
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         h.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(3, 140)
+        self.table.setColumnWidth(3, 120)
         h.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(4, 105)
+        self.table.setColumnWidth(4, 70)
         h.sectionClicked.connect(self.on_header_click)
         bg_l.addWidget(self.table)
         
@@ -919,13 +922,13 @@ class MemoExplorerWindow(QWidget):
         self._old_pos = None
     
     def setup_btns(self) -> None:
-        self.b_new        = QPushButton(" 새 메모")
-        self.b_new_code   = QPushButton(" 코드 메모")
-        self.b_ref        = QPushButton(" 새로고침")
-        self.b_sync       = QPushButton(" 동기화")
-        self.b_del        = QPushButton(" 삭제")
-        self.b_res        = QPushButton(" 복구")
-        self.b_empty_trash = QPushButton(" 비우기")
+        self.b_new        = QPushButton("새 메모")
+        self.b_new_code   = QPushButton("코드 메모")
+        self.b_ref        = QPushButton("새로고침")
+        self.b_sync       = QPushButton("동기화")
+        self.b_del        = QPushButton("삭제")
+        self.b_res        = QPushButton("복구")
+        self.b_empty_trash = QPushButton("비우기")
 
         # 툴팅 설정 (악은 너비에서 아이콘만 표시될 때 유용)
         for btn, tip in [
@@ -965,11 +968,11 @@ class MemoExplorerWindow(QWidget):
             btn.setText(text if show_text else "")
         # 필터/정렬 버튼
         filter_labels = {
-            self.btn_filter_all:     " 전체",
-            self.btn_filter_gen:     " 일반",
-            self.btn_filter_code:    " 코드",
-            self.btn_arrange_rolled: " 접은 정렬",
-            self.btn_arrange_memos:  " 펼친 정렬",
+            self.btn_filter_all:     "전체",
+            self.btn_filter_gen:     "일반",
+            self.btn_filter_code:    "코드",
+            self.btn_arrange_rolled: "접은정렬",
+            self.btn_arrange_memos:  "펼친정렬",
         }
         for btn, text in filter_labels.items():
             btn.setText(text if show_text else "")
@@ -1164,7 +1167,7 @@ class MemoExplorerWindow(QWidget):
                 w._is_updating_from_explorer = False
                 
             if self.table.item(r, 3):
-                self.table.item(r, 3).setText(datetime.datetime.now().strftime("%Y-%m-%d %H:%M"))
+                self.table.item(r, 3).setText(datetime.datetime.now().strftime("%y%m%d.%H%M"))
             
     def on_cell_double_click(self, r: int, c: int) -> None:
         if not self.is_trash_mode:
@@ -1250,14 +1253,29 @@ class MemoExplorerWindow(QWidget):
         cur_tag = self.tag_combo.currentText()
         self.tag_combo.blockSignals(True)
         self.tag_combo.clear()
-        self.tag_combo.addItem("🏷️ 모든 해시태그 (#)")
+        self.tag_combo.addItem("#")
+
+        max_len = 1  # 기본 '#' 기준 최소 길이
         for tag in sorted(hashtags):
-            self.tag_combo.addItem(f"#{tag}")
-        self.tag_combo.setCurrentText(cur_tag if cur_tag in [self.tag_combo.itemText(i) for i in range(self.tag_combo.count())] else "🏷️ 모든 해시태그 (#)")
+            tag_str = f"#{tag}"
+            self.tag_combo.addItem(tag_str)
+            if len(tag_str) > max_len:
+                max_len = len(tag_str)
+                
+        self.tag_combo.setCurrentText(cur_tag if cur_tag in [self.tag_combo.itemText(i) for i in range(self.tag_combo.count())] else "#")
+        
+        # 💡 동적 너비 계산 로직 추가: 폰트 사이즈(pt) 기준 대략적인 픽셀 계산 + 최소 너비 보장 (예: 기본 100px, 글자당 8px 추가)
+        dynamic_width = max(100, max_len * 9 + 30)
+        
+        view = self.tag_combo.view()
+        if view:
+            # 드롭다운 리스트 내부는 유동적으로 너비가 넓어지게 하되, 메인 버튼은 위에서 고정함
+            view.setMinimumWidth(dynamic_width)
+            
         self.tag_combo.blockSignals(False)
         
         selected_tag = self.tag_combo.currentText()
-        tag_filter = selected_tag.replace("🏷️ 모든 해시태그 (#)", "").strip()
+        tag_filter = "" if selected_tag == "#" else selected_tag
         
         all_m.sort(key=lambda x: (x.get('is_favorite', False), x.get('updated_at', '')), reverse=True)
         
@@ -1342,16 +1360,16 @@ class MemoExplorerWindow(QWidget):
             self.table.setItem(r, 2, t)
             
             up = m.get('updated_at', '')
-            ds = datetime.datetime.fromisoformat(up).strftime("%Y-%m-%d %H:%M") if up else ""
+            ds = datetime.datetime.fromisoformat(up).strftime("%y%m%d.%H%M") if up else ""
             dt = QTableWidgetItem(ds)
             dt.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             self.table.setItem(r, 3, dt)
             
             is_prot = m.get('is_protected', False)
-            prot_btn = QPushButton(" 잠김" if is_prot else " 해제")
+            prot_btn = QPushButton("잠김" if is_prot else "해제")
             if hasattr(self.ui_manager, 'get_theme_icon'):
                 prot_btn.setIcon(self.ui_manager.get_theme_icon("lock_close.svg" if is_prot else "lock_open.svg", is_dark))
-            prot_btn.setFixedSize(76, 28)
+            prot_btn.setFixedSize(50, 28)
             prot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             
             if is_prot:
