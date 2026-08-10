@@ -397,7 +397,7 @@ class SyncManager(QObject):
         if not memo_id: return
         self.trash_path.mkdir(parents=True, exist_ok=True)
         
-        # 1. ID 기반 파일 연동 이동
+        # 1. ID 기반 파일 우선 이동
         src = self.local_path / f"{memo_id}.json"
         dst = self.trash_path / f"{memo_id}.json"
         
@@ -408,17 +408,26 @@ class SyncManager(QObject):
             except Exception as e:
                 self.log_error(f"로컬 메모 휴지통 이동 실패 ({memo_id}): {e}", e)
 
-        # 2. 제목, ID 및 파일명 기반 레거시/중복 파생 파일 전수 수거 및 휴지통 이동
+        # 2. ID 기반으로만 탐색 — title 기준 삭제는 동명 메모 오삭제 위험이 있어 제거
+        #    (파일명이 memo_id가 아닌 레거시 파일 또는 JSON 내부 id가 memo_id인 경우만 이동)
         if self.local_path.exists():
             for f in list(self.local_path.glob("*.json")):
                 if "trash_bin" in str(f) or f.is_dir(): continue
+                if f.stem == memo_id:  # 이미 1단계에서 처리되었으나 혹시 남은 경우
+                    try:
+                        target_dst = self.trash_path / f.name
+                        if target_dst.exists(): target_dst.unlink()
+                        shutil.move(str(f), str(target_dst))
+                    except Exception:
+                        pass
+                    continue
                 try:
                     with open(f, "r", encoding="utf-8") as file:
                         m_data = json.load(file)
                     if isinstance(m_data, dict):
                         file_id = m_data.get('id')
-                        file_title = m_data.get('title')
-                        if file_id == memo_id or (title and file_title == title) or (f.stem == memo_id) or (title and f.stem == title):
+                        # id가 일치하는 경우만 이동 (title은 사용하지 않음)
+                        if file_id == memo_id:
                             target_dst = self.trash_path / f.name
                             if target_dst.exists(): target_dst.unlink()
                             shutil.move(str(f), str(target_dst))

@@ -486,10 +486,16 @@ class UIManager:
         if identifier in self.memo_windows:
             target_win = self.memo_windows[identifier]
         else:
-            for w in self.memo_windows.values():
-                if w.memo_data.get('title') == identifier:
-                    target_win = w
-                    break
+            # identifier가 id 형식(UUID 또는 숫자)이 아닐 때만 title로 탐색
+            # UUID 포맷(하이픈 포함) 또는 순수 숫자면 id 탐색에만 한정
+            looks_like_id = (
+                len(identifier) > 10 and '-' in identifier  # UUID 패턴
+            ) or identifier.isdigit()  # 숫자 id 패턴
+            if not looks_like_id:
+                for w in self.memo_windows.values():
+                    if w.memo_data.get('title') == identifier:
+                        target_win = w
+                        break
                     
         if target_win:
             target_win.memo_data['is_visible'] = True
@@ -497,13 +503,16 @@ class UIManager:
             target_win.show()
             target_win.raise_()
             target_win.activateWindow()
+            # 가시적 하이라이트: 메모 테두리를 일시적으로 강조
+            self._flash_memo_window(target_win)
         else:
             for m in self.sync_manager.load_local_memos():
-                if m.get('id') == identifier or m.get('title') == identifier: 
+                if m.get('id') == identifier or (not identifier.replace('-','').isalnum() and m.get('title') == identifier):
                     m['is_visible'] = True
                     self.sync_manager.save_memo_locally(m)
                     self.create_new_memo(m, show_on_create=True)
                     break
+
                     
     def create_empty_memo(self) -> None:
         if not self.ensure_unlocked(): return
@@ -704,7 +713,44 @@ class UIManager:
         if memo_id and memo_id in self.memo_windows:
             self.memo_windows.pop(memo_id)
 
+    def _flash_memo_window(self, target_win: 'MemoWindow') -> None:
+        """탐색기 더블클릭 시 해당 메모창을 가시적으로 강조합니다.
+        
+        연속 클릭 시 플래시가 중첩되지 않도록 플래그를 사용하며,
+        original_style을 호출 시점에 고정하여 클로저 캡처 문제를 방지합니다.
+        """
+        try:
+            # 이미 플래시 진행 중이면 무시 (중복 클릭 방지)
+            if getattr(target_win, '_is_flashing', False):
+                return
+            target_win._is_flashing = True
+
+            # 원본 스타일을 호출 시점에 스냅샷
+            original_style = target_win.bg.styleSheet()
+            flash_style = original_style + " QWidget#MemoBackground { border: 3px solid #007AFF; }"
+
+            def _apply_flash():
+                if target_win.isVisible():
+                    target_win.bg.setStyleSheet(flash_style)
+
+            def _restore(is_final=False):
+                if target_win.isVisible():
+                    target_win.bg.setStyleSheet(original_style)
+                if is_final:
+                    target_win._is_flashing = False
+
+            _apply_flash()
+            QTimer.singleShot(300, _restore)
+            QTimer.singleShot(550, _apply_flash)
+            QTimer.singleShot(850, lambda: _restore(is_final=True))
+        except Exception:
+            if hasattr(target_win, '_is_flashing'):
+                target_win._is_flashing = False
+
+
+
     def delete_memo(self, w: MemoWindow) -> None:
+
         memo_id = w.memo_data.get('id', '')
         title = w.memo_data.get('title', '')
         w._is_deleting = True

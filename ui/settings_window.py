@@ -561,7 +561,7 @@ class SettingsWindow(QWidget):
         self.sb.setStyleSheet(f"background: {pal['accent']}; color: white; padding: 12px; font-weight: bold; font-size: {base_pt + 1}pt; border-radius: 0px; border: none;")
         self._apply_font_scale()
 
-    def resizeEvent(self, event: Any) -> None:
+    def resizeEvent(self, event) -> None:
         """창 크기 변경 시 폰트 크기를 동적으로 재계산하여 적용합니다."""
         super().resizeEvent(event)
         new_pt = self._calc_font_pt_from_size()
@@ -570,7 +570,7 @@ class SettingsWindow(QWidget):
             self.sm.settings["settings_window_font_pt"] = self.ui_font_pt
             self.apply_theme_style()
 
-    def wheelEvent(self, event: Any) -> None:
+    def wheelEvent(self, event) -> None:
         if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
             super().wheelEvent(event)
             return
@@ -613,7 +613,6 @@ class SettingsWindow(QWidget):
             "모든 메모 숨기기/보이기 토글": "toggle_all_memos",
             "모든 메모 숨기기/보이기": "toggle_all_memos",
             "전체 메모 열기": "open_all_memos",
-            # 신규 추가
             "행번호 표시 토글": "toggle_line_numbers",
             "줄노트 배경 토글": "toggle_line_bg",
         }
@@ -666,6 +665,12 @@ class SettingsWindow(QWidget):
         if hasattr(self.sm, 'ui_manager') and hasattr(self.sm.ui_manager, 'update_tray_menu'):
             self.sm.ui_manager.update_tray_menu()
         
+        # ─── 단축키 변경 즉시 반영: 열려있는 모든 메모창 rebind ───────────────
+        if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager:
+            for w in self.sm.ui_manager.memo_windows.values():
+                if hasattr(w, 'rebind_shortcuts'):
+                    w.rebind_shortcuts()
+
         # default_rolled_height 변경 시 현재 접혀있는 모든 메모에 즉시 반영
         if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager:
             for w in self.sm.ui_manager.memo_windows.values():
@@ -680,6 +685,7 @@ class SettingsWindow(QWidget):
                     w._apply_rolled_ui(new_h)
             
         QMessageBox.information(self, "알림", "설정이 성공적으로 저장되었습니다.")
+
 
     def sel(self) -> None:
         p = QFileDialog.getExistingDirectory(self, "선택", self.path_input.text())

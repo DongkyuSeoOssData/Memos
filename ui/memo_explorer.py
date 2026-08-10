@@ -1175,7 +1175,13 @@ class MemoExplorerWindow(QWidget):
             if m_item:
                 m = m_item.data(Qt.ItemDataRole.UserRole)
                 if m:
-                    self.ui_manager.show_specific_memo(m.get('id') or m.get('title'))
+                    memo_id = m.get('id')
+                    if memo_id:
+                        # id가 있으면 반드시 id로만 열기 (title 폴백 없음)
+                        self.ui_manager.show_specific_memo(memo_id)
+                    else:
+                        self.ui_manager.show_specific_memo(m.get('title', ''))
+
                 
     def update_btns_visibility(self) -> None:
         while self.btn_l.count():

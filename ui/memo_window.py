@@ -83,6 +83,11 @@ class MemoWindow(QWidget):
         self._wheel_save_timer.timeout.connect(lambda: self.save_callback(self.memo_data))
 
     def bind_shortcuts(self) -> None:
+        # 기존 QShortcut 키를 비워 무력화 (rebind 시 중복 등록 방지)
+        for _sc in self.findChildren(QShortcut):
+            _sc.setEnabled(False)
+            _sc.setKey(QKeySequence())
+
         s_cfg = self.memo_window_get_settings().get("shortcuts", {})
         
         QShortcut(QKeySequence(s_cfg.get("save", "Ctrl+S")), self).activated.connect(self.manual_save)
@@ -107,6 +112,10 @@ class MemoWindow(QWidget):
             QShortcut(QKeySequence(s_cfg.get("open_all_memos", "Alt+O")), self).activated.connect(self.ui_manager.open_all_memos)
 
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.close)
+
+    def rebind_shortcuts(self) -> None:
+        """설정 변경 후 단축키를 새 설정으로 재등록합니다."""
+        self.bind_shortcuts()
 
     def memo_window_get_settings(self) -> Dict[str, Any]:
         return self.ui_manager.sync_manager.settings if getattr(self, 'ui_manager', None) else {}
@@ -1532,6 +1541,7 @@ class MemoWindow(QWidget):
             
         self.title_edit.setText(self.memo_data.get('title',''))
         self.title_edit.setCursorPosition(0)
+        self.title_edit.deselect()
             
         self._is_updating_from_explorer = True
         cnt = str(self.memo_data.get('content',''))
@@ -1687,6 +1697,7 @@ class MemoWindow(QWidget):
         title_pt = max(8.0, min(13.0, rolled_h * 0.22)) if is_rolled else 12.0
         self.title_edit.setStyleSheet(self._title_color_stylesheet(title_pt))
         self.title_edit.setCursorPosition(0)
+        self.title_edit.deselect()
         if getattr(self, 'ui_manager', None) and self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
             self.ui_manager.explorer_window.update_table()
         
