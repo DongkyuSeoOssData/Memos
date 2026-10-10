@@ -25,4 +25,8 @@ DEFAULT_SHORTCUTS: Dict[str, str] = {
     "open_all_memos":      "Alt+O",       # 전체 메모 열기
     "toggle_memo_lock":    "Ctrl+L",      # 암호 메모 잠그기 / 잠금 해제
     "set_memo_password":   "Ctrl+Shift+L",# 암호 걸기 / 암호 변경
+    "quick_search":        "Alt+Q",       # 빠른 검색 창 (전역)
+    "toggle_checklist":    "Alt+K",       # 체크리스트 켜기/끄기
+    "set_reminder":        "Ctrl+R",      # 알림 설정
+    "show_history":        "Ctrl+Shift+H",# 이전 내용 보기 / 되돌리기
 }

@@ -29,7 +29,7 @@ DEFAULT_STYLE = "modern"
 MEMO_BOX_CONTROLS = ("btn_code_theme", "code_lang_box", "btn_format_code", "font_box", "size_box", "btn_toggle_sub_fmt")
 # 켜짐/꺼짐이 표시되는 서식 버튼과, 표시 없이 동작만 하는 버튼(목록·들여쓰기)
 MEMO_TOGGLE_BUTTONS = ("btn_bold", "btn_italic", "btn_underline")
-MEMO_ACTION_BUTTONS = ("btn_bullet", "btn_num", "btn_indent", "btn_outdent")
+MEMO_ACTION_BUTTONS = ("btn_bullet", "btn_num", "btn_check", "btn_indent", "btn_outdent")
 
 
 def is_neo(settings: Dict[str, Any]) -> bool:
@@ -135,6 +135,81 @@ def menu_qss(settings: Dict[str, Any]) -> str:
     return (f"QMenu {{ background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']}; "
             f"border-radius: 0px; padding: 4px; }} "
             f"QMenu::item:selected {{ background-color: {on_bg}; color: {on_text}; }}")
+
+
+def popup_qss(settings: Dict[str, Any]) -> str:
+    """빠른 검색 창·알림 팝업처럼 잠깐 떴다 사라지는 작은 창. (앱 색 테마를 따르며, 디자인 스타일에 따라 강조색이 달라짐)"""
+    pal, is_dark = app_palette(settings)
+    neo = is_neo(settings)
+    on_bg, on_text = (pal['text'], pal['bg']) if neo else (pal['accent'], "white")
+    soft = _tint(is_dark, 0.08) if neo else _rgba(pal['accent'], 0.16)
+    return f"""
+        QWidget#QuickSearch, QWidget#ReminderPopup {{ background: {pal['card']}; border: 1px solid {pal['text'] if neo else pal['border']}; }}
+        QLabel {{ color: {pal['text']}; background: transparent; font-family: {UI_FONT}; font-size: 10pt; }}
+        QLabel[role="hint"] {{ color: {_muted(is_dark)}; font-size: 9pt; }}
+        QLabel[role="title"] {{ font-size: 11.5pt; font-weight: 700; }}
+        QLineEdit {{
+            padding: 9px 12px; border: 1px solid {pal['border']}; border-radius: 0px; background: {pal['input'] if is_dark else pal['bg']};
+            color: {pal['text']}; font-size: 12pt; font-family: {UI_FONT}; selection-background-color: {pal['accent']};
+        }}
+        QLineEdit:focus {{ border-color: {on_bg}; }}
+        QListWidget {{
+            background: transparent; border: none; outline: none; color: {pal['text']}; font-size: 10pt; font-family: {UI_FONT};
+        }}
+        QListWidget::item {{ padding: 6px 10px; border-left: 3px solid transparent; }}
+        QListWidget::item:selected {{ background: {soft}; color: {pal['text']}; border-left: 3px solid {on_bg}; }}
+        QPushButton {{
+            padding: 6px 10px; border: 1px solid {pal['border']}; border-radius: 0px; background: transparent;
+            color: {pal['text']}; font-size: 9.5pt; font-weight: 600; font-family: {UI_FONT};
+        }}
+        QPushButton:hover {{ border-color: {on_bg}; }}
+        QPushButton[role="primary"] {{ background: {on_bg}; border-color: {on_bg}; color: {on_text}; }}
+        {scrollbars(is_dark)}
+    """
+
+
+def dialog_qss(settings: Dict[str, Any]) -> str:
+    """알림 설정·이전 내용처럼 메모나 탐색기 위에 뜨는 대화상자. (부모 창의 색이 아니라 앱 색 테마를 따름)"""
+    pal, is_dark = app_palette(settings)
+    neo = is_neo(settings)
+    on_bg, on_text = (pal['text'], pal['bg']) if neo else (pal['accent'], "white")
+    soft = _tint(is_dark, 0.08) if neo else _rgba(pal['accent'], 0.16)
+    field = pal['input'] if is_dark else pal['bg']
+    return f"""
+        QDialog {{ background: {pal['card']}; }}
+        QLabel {{ color: {pal['text']}; background: transparent; font-family: {UI_FONT}; font-size: 10pt; }}
+        QLineEdit, QDateTimeEdit, QComboBox, QTextEdit, QListWidget {{
+            border: 1px solid {pal['border']}; border-radius: 0px; background: {field}; color: {pal['text']};
+            font-family: {UI_FONT}; font-size: 10pt; selection-background-color: {pal['accent']};
+        }}
+        QLineEdit, QDateTimeEdit, QComboBox {{ padding: 6px 8px; }}
+        QLineEdit:focus, QDateTimeEdit:focus, QComboBox:focus {{ border-color: {on_bg}; }}
+        QDateTimeEdit:disabled {{ color: {_muted(is_dark)}; }}
+        QComboBox QAbstractItemView {{
+            background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']};
+            selection-background-color: {soft}; selection-color: {pal['text']}; outline: none;
+        }}
+        QListWidget {{ outline: none; }}
+        QListWidget::item {{ padding: 6px 8px; border-left: 3px solid transparent; }}
+        QListWidget::item:selected {{ background: {soft}; color: {pal['text']}; border-left: 3px solid {on_bg}; }}
+        QTextEdit {{ padding: 8px; }}
+        QPushButton {{
+            padding: 6px 12px; border: 1px solid {pal['border']}; border-radius: 0px; background: transparent;
+            color: {pal['text']}; font-size: 9.5pt; font-weight: 600; font-family: {UI_FONT};
+        }}
+        QPushButton:hover {{ border-color: {on_bg}; }}
+        QPushButton:default {{ background: {on_bg}; border-color: {on_bg}; color: {on_text}; }}
+        QPushButton:disabled {{ color: {_muted(is_dark)}; background: transparent; border-color: {pal['border']}; }}
+        QSplitter::handle {{ background: transparent; }}
+        {scrollbars(is_dark)}
+    """
+
+
+def style_dialog(dialog: Any, parent: Any) -> None:
+    """parent(메모 창·탐색기)가 쓰는 설정을 찾아 대화상자에 앱 색 테마를 입힙니다."""
+    settings = getattr(getattr(getattr(parent, 'ui_manager', None), 'sync_manager', None), 'settings', None)
+    if settings is not None:
+        dialog.setStyleSheet(dialog_qss(settings))
 
 
 def _flat_button(ink: str, fill: str = "transparent") -> str:
@@ -539,3 +614,8 @@ def apply_memo_toolbar(w: Any) -> None:
         btn.setStyleSheet(on if btn.isChecked() else off)
     for name in MEMO_ACTION_BUTTONS:
         getattr(w, name).setStyleSheet(off)
+    # 알림이 걸려 있을 때 서식 줄 오른쪽에 보이는 알림 시각
+    w.btn_reminder.setStyleSheet(
+        f"QPushButton {{ border: 1px solid {_rgba(ink, 0.25)}; border-radius: 0px; background: transparent; color: {ink}; "
+        f"font-size: 8.5pt; font-weight: 600; padding: 0 6px; font-family: {UI_FONT}; }} "
+        f"QPushButton:hover {{ background: {_rgba(ink, 0.12)}; }}")

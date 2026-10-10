@@ -5,7 +5,7 @@ from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QTextListFormat
 from PyQt6.QtWidgets import QColorDialog, QMenu
 
-from ui import modern_style
+from ui import checklist, modern_style
 
 
 class MemoFormatMixin:
@@ -259,6 +259,33 @@ class MemoFormatMixin:
 
     def apply_number(self) -> None:
         self._toggle_list(QTextListFormat.Style.ListDecimal)
+
+    def toggle_checklist(self) -> None:
+        """선택한 줄들 앞에 체크 상자(☐)를 붙이거나 뗍니다. 모두 체크리스트 줄이면 떼고, 아니면 없는 줄에 붙입니다."""
+        if self.is_sealed():
+            return
+        blocks = self._selected_blocks()
+        if not blocks:
+            return
+        new_lines = checklist.toggle_boxes([b.text() for b in blocks])
+        cursor = self.text_edit.textCursor()
+        cursor.beginEditBlock()
+        for block, new_text in zip(blocks, new_lines):
+            if block.text() == new_text:
+                continue
+            # 줄 전체를 바꾸면 굵게·색 같은 서식이 사라지므로, 상자 글자만 넣거나 뺍니다.
+            index = checklist.box_index(block.text())
+            edit = QTextCursor(block)
+            if index >= 0:
+                edit.setPosition(block.position() + index)
+                edit.setPosition(block.position() + index + len(block.text()) - len(new_text), QTextCursor.MoveMode.KeepAnchor)
+                edit.removeSelectedText()
+            else:
+                indent = len(block.text()) - len(block.text().lstrip(" \t"))
+                edit.setPosition(block.position() + indent)
+                edit.insertText(checklist.UNCHECKED + " ")
+        cursor.endEditBlock()
+        self._mark_edited()
 
     def apply_indent(self) -> None:
         self._shift_indent(1)

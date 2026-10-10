@@ -4,6 +4,7 @@ from core.sync_worker import SyncWorker, shared_hash
 from core.defaults import DEFAULT_SHORTCUTS
 from core.folders import DEFAULT_FOLDERS
 from core import shared_settings
+from core import reminders
 import copy
 import os
 import traceback
@@ -64,6 +65,11 @@ class SyncManager(QObject):
     REMOTE_CHECK_SEC = 15 * 60
     # 변경 뒤 동기화까지 기다리는 시간 (환경설정의 sync_interval_index 로 고름)
     PUSH_DELAYS_SEC = [60, 600, 1800, 3600]
+    # 메모 변경 기록: 메모마다 보관하는 이전 내용의 개수와, 연달아 저장할 때 기록을 남기는 최소 간격
+    HISTORY_KEEP = 20
+    HISTORY_MIN_GAP_SEC = 10 * 60
+    # 메모의 알림이 바뀌었음을 알립니다. (화면 쪽에서 다음 알림 시각을 다시 잡음)
+    reminders_changed = pyqtSignal()
     DEFAULT_SETTINGS: Dict[str, Any] = {
         "use_sync": False,
         "drive_folder_id": "",
@@ -151,6 +157,9 @@ class SyncManager(QObject):
         self.local_path.mkdir(parents=True, exist_ok=True)
         self.trash_path = self.local_path / "trash_bin"
         self.trash_path.mkdir(parents=True, exist_ok=True)
+        # 메모 id → 알림. 알림 시각을 확인할 때마다 모든 메모 파일을 읽지 않도록 메모리에 모아 둡니다.
+        self.reminders: Dict[str, Dict[str, Any]] = {}
+        self._reminders_loaded = False
 
         self.drive_api.set_web_app_url(self.settings.get("drive_folder_id", ""))
         self._apply_access_token()
@@ -447,6 +456,7 @@ class SyncManager(QObject):
                         continue
 
                     memos.append(m)
+                    self._note_reminder(memo_id, m.get('reminder'), quiet=True)
 
                     expected_file = self.local_path / f"{memo_id}.json"
                     if f.name != expected_file.name:
@@ -463,7 +473,130 @@ class SyncManager(QObject):
             except Exception as e:
                 self.log_error(f"로컬 메모 파일 읽기 에러 ({f.name}): {e}", e)
 
+        # 사라진 메모(삭제·다른 기기에서 지움)의 알림은 목록에서 뺍니다.
+        gone = set(self.reminders) - seen_ids
+        for memo_id in gone:
+            self.reminders.pop(memo_id, None)
+        first_load, self._reminders_loaded = not self._reminders_loaded, True
+        if gone or first_load:
+            self.reminders_changed.emit()
         return memos
+
+    # ── 알림 ─────────────────────────────────────────────────────────────────
+    def _note_reminder(self, memo_id: str, reminder: Any, quiet: bool = False) -> None:
+        """메모의 알림을 메모리 목록에 반영합니다. 바뀌었으면 화면 쪽에 알립니다."""
+        normal = reminders.normalize(reminder)
+        if self.reminders.get(memo_id) == normal or (normal is None and memo_id not in self.reminders):
+            return
+        if normal is None:
+            self.reminders.pop(memo_id, None)
+        else:
+            self.reminders[memo_id] = normal
+        if not quiet or self._reminders_loaded:
+            self.reminders_changed.emit()
+
+    def set_reminder(self, memo: Dict[str, Any], reminder: Optional[Dict[str, Any]]) -> bool:
+        """메모에 알림을 걸거나(reminder) 풉니다(None). 본문을 고친 것이 아니므로 수정일시는 그대로 둡니다."""
+        normal = reminders.normalize(reminder) if reminder else None
+        if normal is None:
+            memo.pop('reminder', None)
+        else:
+            memo['reminder'] = normal
+        memo['meta_updated_at'] = datetime.now().isoformat()
+        return self.save_memo_locally(memo)
+
+    # ── 변경 기록 ────────────────────────────────────────────────────────────
+    # 메모를 덮어쓰기 전의 내용을 메모 폴더의 history_bin/{id}.json 에 쌓아 둡니다. 이 PC에만 두며 동기화하지 않습니다.
+    @property
+    def history_path(self) -> Path:
+        return self.local_path / "history_bin"
+
+    def _history_file(self, memo_id: str) -> Path:
+        return self.history_path / f"{memo_id}.json"
+
+    def _read_history(self, memo_id: str) -> List[Dict[str, Any]]:
+        try:
+            with open(self._history_file(memo_id), "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            return [e for e in loaded if isinstance(e, dict)] if isinstance(loaded, list) else []
+        except Exception:
+            return []
+
+    def _snapshot(self, memo_id: str, old: Dict[str, Any], reason: str = "", force: bool = False) -> None:
+        """old(덮어쓰기 직전의 메모 파일 내용)를 변경 기록에 남깁니다.
+
+        연달아 저장할 때마다 쌓이지 않도록, 마지막 기록에서 HISTORY_MIN_GAP_SEC 이 지났을 때만 남깁니다.
+        (다른 기기의 내용으로 덮어쓰는 경우처럼 force 가 켜진 경우는 항상 남깁니다)
+        """
+        try:
+            with MEMO_IO_LOCK:
+                entries = self._read_history(memo_id)
+                now = datetime.now()
+                if entries and not force:
+                    try:
+                        if (now - datetime.fromisoformat(entries[-1].get("saved_at", ""))).total_seconds() < self.HISTORY_MIN_GAP_SEC:
+                            return
+                    except (TypeError, ValueError):
+                        pass
+                if entries and entries[-1].get("content") == old.get("content") and entries[-1].get("title") == old.get("title"):
+                    return
+                entries.append({
+                    "saved_at": now.isoformat(), "reason": reason,
+                    "title": old.get("title", ""), "content": old.get("content", ""),
+                    "updated_at": old.get("updated_at", ""), "is_locked": bool(old.get("is_locked")),
+                })
+                self.history_path.mkdir(parents=True, exist_ok=True)
+                atomic_write_json(self._history_file(memo_id), entries[-self.HISTORY_KEEP:])
+        except Exception as e:
+            self.log_error(f"변경 기록 저장 실패 ({memo_id}): {e}", e)
+
+    def snapshot_before_overwrite(self, memo_id: str, old: Dict[str, Any], reason: str) -> None:
+        """다른 기기의 내용으로 덮어쓰기 직전에 부릅니다. (동기화 워커가 사용)"""
+        if is_safe_memo_id(memo_id) and isinstance(old, dict):
+            self._snapshot(memo_id, old, reason=reason, force=True)
+
+    def list_history(self, memo_id: str) -> List[Dict[str, Any]]:
+        """이 메모의 이전 내용들. 최근 것이 앞에 옵니다. 암호 메모의 기록은 본문 대신 'locked' 표시만 줍니다."""
+        out = []
+        for index, entry in reversed(list(enumerate(self._read_history(memo_id)))):
+            content = entry.get("content", "")
+            sealed = isinstance(content, dict)
+            out.append({
+                "index": index, "saved_at": entry.get("saved_at", ""), "reason": entry.get("reason", ""),
+                "title": entry.get("title", ""), "locked": sealed,
+                "text": "" if sealed else clean_plain_text(content),
+            })
+        return out
+
+    def restore_history(self, memo_id: str, index: int) -> bool:
+        """index 번째 기록의 제목·본문으로 되돌립니다. 지금 내용은 먼저 기록에 남깁니다."""
+        entries = self._read_history(memo_id)
+        if not (0 <= index < len(entries)):
+            return False
+        entry = entries[index]
+        path = self.local_path / f"{memo_id}.json"
+        try:
+            with MEMO_IO_LOCK:
+                with open(path, "r", encoding="utf-8") as f:
+                    current = json.load(f)
+                self._snapshot(memo_id, current, reason="되돌리기 전", force=True)
+                current["title"] = entry.get("title", current.get("title", ""))
+                current["content"] = entry.get("content", "")
+                current["is_locked"] = isinstance(entry.get("content"), dict)
+                current["updated_at"] = datetime.now().isoformat()
+                atomic_write_json(path, current)
+        except Exception as e:
+            self.log_error(f"변경 기록 되돌리기 실패 ({memo_id}): {e}", e)
+            return False
+        self._shared_hashes.pop(memo_id, None)
+        self.mark_dirty(memo_id)
+        return True
+
+    def _drop_history(self, memo_id: str) -> None:
+        try:
+            self._history_file(memo_id).unlink()
+        except OSError:
+            pass
 
     def load_trash_memos(self) -> List[Dict[str, Any]]:
         memos: List[Dict[str, Any]] = []
@@ -543,10 +676,28 @@ class SyncManager(QObject):
             memo_to_save['content'] = plain_content
 
         try:
-            atomic_write_json(f, memo_to_save)
+            with MEMO_IO_LOCK:
+                # 본문이나 제목이 바뀌는 저장이면, 덮어쓰기 전의 내용을 변경 기록에 남깁니다.
+                old = None
+                if f.exists():
+                    try:
+                        with open(f, "r", encoding="utf-8") as existing:
+                            old = json.load(existing)
+                    except Exception:
+                        old = None
+                if isinstance(old, dict) and (old.get("content") != memo_to_save.get("content")
+                                              or old.get("title") != memo_to_save.get("title")):
+                    # 암호문은 저장할 때마다 달라지므로, 암호 메모는 수정일시가 바뀐 경우에만 기록합니다.
+                    sealed_same = (isinstance(old.get("content"), dict) and isinstance(memo_to_save.get("content"), dict)
+                                   and old.get("updated_at") == memo_to_save.get("updated_at")
+                                   and old.get("title") == memo_to_save.get("title"))
+                    if not sealed_same:
+                        self._snapshot(memo_id, old)
+                atomic_write_json(f, memo_to_save)
         except Exception as e:
             self.log_error(f"로컬 메모 저장 실패 ({memo_id}): {e}", e)
             return False
+        self._note_reminder(memo_id, memo_to_save.get('reminder'))
         # 다른 기기와 공유하는 부분(본문·제목·폴더 등)이 실제로 바뀐 경우에만 동기화 대상으로 표시합니다.
         # 창 위치·크기처럼 이 PC에만 속한 값만 바뀐 저장은 동기화를 일으키지 않습니다.
         new_hash = shared_hash(memo_to_save)
@@ -569,6 +720,7 @@ class SyncManager(QObject):
             self._delete_memo_locally(memo_id)
             self._stamp_deleted(self.trash_path / f"{memo_id}.json")
         self.relock_memo(memo_id)
+        self._note_reminder(memo_id, None)
         if self._trash_retention_days() < 0:
             self.purge_trash()
 
@@ -613,6 +765,7 @@ class SyncManager(QObject):
                     expired = days < 0 or datetime.now() - datetime.fromisoformat(stamp) >= timedelta(days=days)
                     if expired:
                         f.unlink()
+                        self._drop_history(f.stem)
                         count += 1
                 except Exception as e:
                     self.log_error(f"휴지통 자동 삭제 실패 ({f.name}): {e}", e)
@@ -660,6 +813,7 @@ class SyncManager(QObject):
                 for f in list(self.trash_path.glob("*.json")):
                     try:
                         f.unlink()
+                        self._drop_history(f.stem)
                         count += 1
                     except Exception as e:
                         self.log_error(f"휴지통 비우기 실패 ({f.name}): {e}", e)
@@ -769,6 +923,8 @@ class SyncManager(QObject):
             self.ui_manager.apply_settings_to_windows(reload_settings_window=True)
 
     def on_memos_pulled(self, memo_ids: List[str]) -> None:
+        if memo_ids:
+            self.load_local_memos()         # 다른 기기에서 걸거나 푼 알림을 알림 목록에 반영
         if memo_ids and self.ui_manager:
             self.ui_manager.reload_pulled_memos(memo_ids)
 

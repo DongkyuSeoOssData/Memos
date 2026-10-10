@@ -314,6 +314,10 @@ class SyncWorker(QObject):
                         if locally_changed and not self._same_content(local_memo, data_json):
                             self._keep_conflict_copy(local_memo)
 
+                    if local and (local[0].get("content") != data_json.get("content")
+                                  or local[0].get("title") != data_json.get("title")):
+                        # 받은 내용으로 덮어쓰기 전에 이 PC의 내용을 변경 기록에 남겨, 필요하면 되돌릴 수 있게 합니다.
+                        self.sm.snapshot_before_overwrite(memo_id, local[0], "다른 기기의 내용을 받기 전")
                     # 창 위치·크기·표시 여부는 이 PC의 값을 유지합니다. 처음 받는 메모는 숨긴 채로 둡니다.
                     merged = {**shared_part(data_json), **(device_part(local[0]) if local else {"is_visible": False})}
                     entry["hash"] = self._write_local(memo_id, merged)

@@ -1,4 +1,6 @@
-from ui.dialogs import ConflictDialog, FolderPickDialog
+from ui.dialogs import ConflictDialog, FolderPickDialog, HistoryDialog
+from ui.reminder_ui import ask_reminder
+from core import reminders
 from ui import modern_style
 from core import folders
 from ui.tab_strip import TabStrip
@@ -811,6 +813,9 @@ class MemoExplorerWindow(QWidget):
         self._add_lock_menu(menu, m)
 
         menu.addSeparator()
+        has_reminder = bool(reminders.normalize(m.get('reminder')))
+        menu.addAction("⏰ 알림 바꾸기…" if has_reminder else "⏰ 알림 설정…").triggered.connect(lambda: self.edit_reminder(m))
+        menu.addAction("이전 내용 보기…").triggered.connect(lambda: self.show_history(m))
         self._add_folder_menu(menu, m)
         cm = menu.addMenu("메모 색상 변경")
         if hasattr(self.ui_manager, 'get_theme_icon'):
@@ -1171,6 +1176,35 @@ class MemoExplorerWindow(QWidget):
         sub.addSeparator()
         sub.addAction("＋ 새 폴더로…").triggered.connect(lambda: self.move_memos_to_folder(m, None))
 
+    # ── 알림 · 변경 기록 ─────────────────────────────────────────────────────
+    def edit_reminder(self, memo: Dict[str, Any]) -> None:
+        """메모의 알림을 걸거나 풉니다. 메모 창이 열려 있으면 그 창이 들고 있는 데이터에 반영합니다."""
+        w = self.ui_manager.memo_windows.get(memo.get('id', ''))
+        target = w.memo_data if w else memo
+        changed, reminder = ask_reminder(self, target.get('reminder'), str(target.get('title', '')))
+        if not changed:
+            return
+        self.ui_manager.sync_manager.set_reminder(target, reminder)
+        if w:
+            w.refresh_reminder_badge()
+        self.show_toast("⏰ " + reminders.describe(reminder) if reminder else "알림을 해제했습니다")
+        self.refresh()
+
+    def show_history(self, memo: Dict[str, Any]) -> None:
+        """메모의 이전 내용을 보여 주고, 고른 내용으로 되돌립니다."""
+        memo_id = memo.get('id', '')
+        sm = self.ui_manager.sync_manager
+        w = self.ui_manager.memo_windows.get(memo_id)
+        if w:
+            w.flush_auto_save()
+        self._flush_preview_save()
+        dialog = HistoryDialog(self, str(memo.get('title', '')), sm.list_history(memo_id))
+        if dialog.exec() and dialog.chosen_index is not None and sm.restore_history(memo_id, dialog.chosen_index):
+            self.ui_manager.reload_pulled_memos([memo_id])
+            self.pv.clear()
+            self.show_toast("이전 내용으로 되돌렸습니다")
+            self.refresh()
+
     def _save_memo_meta(self, memo: Dict[str, Any], **changes: Any) -> None:
         """즐겨찾기·고정·색상 같은 메모 속성을 저장합니다.
 
@@ -1490,8 +1524,13 @@ class MemoExplorerWindow(QWidget):
                 badge_text = f"{title_text}"
             if m.get('is_locked'):
                 badge_text = f"🔒 {badge_text}"
+            reminder_text = reminders.describe(m.get('reminder'))
+            if reminder_text:
+                badge_text = f"⏰ {badge_text}"
 
             t = QTableWidgetItem(badge_text)
+            if reminder_text:
+                t.setToolTip("알림: " + reminder_text)
             if hasattr(self.ui_manager, 'get_theme_icon'):
                 if is_pinned:
                     t.setIcon(self.ui_manager.get_theme_icon("pin_icon_True.svg", is_dark))

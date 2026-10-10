@@ -191,6 +191,9 @@
       <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
     </button>
     <span id="save-state" class="status" style="flex:1"></span>
+    <button id="btn-check" class="icon-btn" aria-label="체크리스트">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/><path d="M8 12l3 3 5-6"/></svg>
+    </button>
     <button id="btn-fav" class="icon-btn" aria-label="즐겨찾기">
       <svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
     </button>
@@ -655,6 +658,7 @@ function renderList() {
     stripe.style.background = safeColor(r.memo.bg_color);
     const top = el("div", {className: "item-top"}, [el("div", {className: "item-title", textContent: r.title || "(제목 없음)"})]);
     if (r.memo.is_favorite) top.appendChild(el("span", {className: "badge star", textContent: "★"}));
+    if (reminderText(r.memo.reminder)) top.appendChild(el("span", {className: "badge", textContent: "⏰"}));
     if (r.locked) top.appendChild(el("span", {className: "badge", textContent: "암호"}));
     if (r.memo.is_code_memo) top.appendChild(el("span", {className: "badge", textContent: "코드"}));
     const snippet = r.locked ? "암호 메모입니다" : r.text.replace(/\s+/g, " ").trim().slice(0, 120);
@@ -782,10 +786,75 @@ function startEditing(state) {
     notice.textContent = "서식이 있는 메모입니다. 여기서 본문을 고쳐 저장하면 굵게·색 같은 서식은 사라지고 글자만 남습니다.";
   }
   notice.hidden = !(state.readOnly || rich);
-  for (const id of ["btn-fav", "btn-folder", "btn-color", "btn-lock", "btn-del"]) $(id).hidden = state.readOnly && id !== "btn-del";
+  for (const id of ["btn-check", "btn-fav", "btn-folder", "btn-color", "btn-lock", "btn-del"]) $(id).hidden = state.readOnly && id !== "btn-del";
   refreshEditBar();
   show("v-edit");
   if (state.isNew) setTimeout(() => $("body").focus(), 50);
+}
+
+// ── 체크리스트 · 알림 (PC 앱과 같은 규칙) ─────────────────────────────────────
+const BOX_OFF = "☐", BOX_ON = "☑";
+
+// 줄에서 체크 상자가 있는 위치. 체크리스트 줄이 아니면 -1.
+function boxIndex(line) {
+  const indent = line.length - line.replace(/^[ \t]+/, "").length;
+  return line[indent] === BOX_OFF || line[indent] === BOX_ON ? indent : -1;
+}
+
+// 한 줄을 다음 단계로: 상자 없음 → ☐ → ☑ → ☐
+function cycleBox(line) {
+  const at = boxIndex(line);
+  if (at < 0) {
+    const indent = line.length - line.replace(/^[ \t]+/, "").length;
+    return line.slice(0, indent) + BOX_OFF + " " + line.slice(indent);
+  }
+  return line.slice(0, at) + (line[at] === BOX_ON ? BOX_OFF : BOX_ON) + line.slice(at + 1);
+}
+
+// 커서가 있는 줄(여러 줄을 골랐으면 그 줄들)의 체크 상자를 바꿉니다.
+function cycleChecklist() {
+  if (!editing || editing.readOnly) return;
+  const body = $("body");
+  const text = body.value;
+  const start = text.lastIndexOf("\n", body.selectionStart - 1) + 1;
+  let end = text.indexOf("\n", Math.max(body.selectionEnd - (body.selectionEnd > body.selectionStart ? 1 : 0), start));
+  if (end < 0) end = text.length;
+  const lines = text.slice(start, end).split("\n");
+  const changed = lines.map((line) => (line.trim() || lines.length === 1 ? cycleBox(line) : line)).join("\n");
+  const caret = body.selectionStart + (changed.length - (end - start));
+  body.setRangeText(changed, start, end, "preserve");
+  if (lines.length === 1) body.setSelectionRange(Math.max(start, caret), Math.max(start, caret));
+  markDirty(true);
+}
+
+// 체크리스트 줄 끝에서 Enter: 다음 줄도 상자로 시작. 상자만 있는 빈 줄이면 상자를 지워 끝냅니다.
+function continueChecklist() {
+  const body = $("body");
+  if (body.selectionStart !== body.selectionEnd) return false;
+  const text = body.value, pos = body.selectionStart;
+  const start = text.lastIndexOf("\n", pos - 1) + 1;
+  let end = text.indexOf("\n", pos);
+  if (end < 0) end = text.length;
+  const line = text.slice(start, end);
+  const at = boxIndex(line);
+  if (at < 0 || pos !== end) return false;
+  if (!line.slice(at + 1).trim()) body.setRangeText(line.slice(0, at), start, end, "end");
+  else body.setRangeText("\n" + line.slice(0, at) + BOX_OFF + " ", pos, pos, "end");
+  markDirty(true);
+  return true;
+}
+
+const REPEAT_NAMES = {daily: "매일", weekdays: "평일", weekly: "매주", monthly: "매월"};
+
+// 알림을 사람이 읽을 말로. 알림이 없거나 값이 이상하면 "".
+function reminderText(reminder) {
+  if (!reminder || typeof reminder !== "object") return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(reminder.at || ""));
+  if (!m) return "";
+  const day = "일월화수목금토"[new Date(+m[1], +m[2] - 1, +m[3]).getDay()];
+  const when = `${+m[2]}.${m[3]}(${day}) ${m[4]}:${m[5]}`;
+  if (reminder.repeat === "cron") return `${when} · 크론 ${String(reminder.cron || "")}`;
+  return REPEAT_NAMES[reminder.repeat] ? `${when} · ${REPEAT_NAMES[reminder.repeat]}` : when;
 }
 
 function refreshEditBar() {
@@ -794,7 +863,9 @@ function refreshEditBar() {
   $("save-state").textContent = editing.saving ? "저장 중…" : editing.dirty ? "저장 안 됨" : editing.isNew ? "" : "저장됨";
   const kind = (editing.memo.is_code_memo ? "코드 메모" : "일반 메모") + (editing.lockCtx ? " · 암호 메모(열림)" : "");
   const folder = normFolder(editing.memo.folder);
-  $("meta").textContent = (folder ? "📁 " + folder + " · " : "") + kind + (editing.memo.updated_at ? " · " + shortDate(editing.memo.updated_at) : "");
+  const alarm = reminderText(editing.memo.reminder);
+  $("meta").textContent = (folder ? "📁 " + folder + " · " : "") + kind + (editing.memo.updated_at ? " · " + shortDate(editing.memo.updated_at) : "")
+    + (alarm ? " · ⏰ " + alarm + " (PC에서 울림)" : "");
 }
 
 function markDirty(textEdited) {
@@ -1024,7 +1095,12 @@ $("btn-fav").onclick = () => {
 };
 $("title").oninput = () => markDirty(false);
 $("body").oninput = () => markDirty(true);
+$("btn-check").onclick = cycleChecklist;
 $("body").onkeydown = (ev) => {
+  if (ev.key === "Enter" && !ev.isComposing && !ev.shiftKey && editing && !editing.readOnly && continueChecklist()) {
+    ev.preventDefault();
+    return;
+  }
   // 키보드를 연결한 아이패드 등: 코드 메모에서 Tab 은 공백 4칸
   if (ev.key !== "Tab" || !editing || !editing.memo.is_code_memo || editing.readOnly) return;
   ev.preventDefault();

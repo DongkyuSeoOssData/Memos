@@ -22,7 +22,10 @@ PASTEL_COLORS = ["#E0F2FE", "#DCFCE7", "#FEF9C3", "#FCE7F3", "#FFFFFF"]
 from ui.themes import app_palette
 from ui import modern_style
 from core.defaults import DEFAULT_SHORTCUTS
-from core import folders
+from core import folders, reminders
+from ui.quick_search import QuickSearch
+from ui.reminder_ui import ReminderPopup
+from utils.text_utils import clean_plain_text
 
 
 class UIManager:
@@ -39,6 +42,14 @@ class UIManager:
         self._hotkeys = GlobalHotkeys()
         # (아이콘 파일, 색, 화면 배율) → 그려 둔 아이콘. 같은 아이콘을 쓸 때마다 SVG를 다시 읽고 그리지 않습니다.
         self._icon_cache: Dict[tuple, QIcon] = {}
+        self.quick_search: Optional[QuickSearch] = None
+        # 알림: 가장 가까운 알림 시각에 맞춰 한 번만 깨어나는 타이머 (주기적으로 훑지 않음)
+        self._reminder_popups: List[ReminderPopup] = []
+        self._reminder_timer = QTimer()
+        self._reminder_timer.setSingleShot(True)
+        self._reminder_timer.timeout.connect(self.check_reminders)
+        self.sync_manager.reminders_changed.connect(self.schedule_reminders)
+        self.schedule_reminders()               # 이미 읽어 둔 알림이 있으면 바로 예약
         self.sync_manager.set_ui_manager(self)
         self.setup_tray()
         app = QApplication.instance()
@@ -149,6 +160,10 @@ class UIManager:
         act_arr_r.setIcon(self.get_theme_icon("정렬1.svg", is_dark))
         act_arr_r.triggered.connect(self.arrange_rolled_up_memos)
 
+        act_find = menu.addAction(self._fmt_sc("빠른 검색", s['quick_search']))
+        act_find.setIcon(self.get_theme_icon("search.svg", is_dark))
+        act_find.triggered.connect(self.toggle_quick_search)
+
         act_exp = menu.addAction(self._fmt_sc("메모 탐색기", s['open_explorer']))
         act_exp.setIcon(self.get_theme_icon("memo.svg", is_dark))
         act_exp.triggered.connect(self.open_memo_explorer)
@@ -211,6 +226,81 @@ class UIManager:
                 w.setMaximumHeight(rolled_h)
                 w._apply_rolled_ui(rolled_h)
 
+    # ── 빠른 검색 ────────────────────────────────────────────────────────────
+    def toggle_quick_search(self) -> None:
+        if self.quick_search is None:
+            self.quick_search = QuickSearch(self)
+        self.quick_search.toggle()
+
+    # ── 알림 ─────────────────────────────────────────────────────────────────
+    MAX_REMINDER_WAIT_MS = 60 * 60 * 1000       # PC 절전·시계 변경에 대비해 길어도 1시간마다는 다시 계산
+
+    def schedule_reminders(self) -> None:
+        """가장 가까운 알림 시각에 맞춰 타이머를 겁니다. 알림이 하나도 없으면 타이머를 끕니다."""
+        due = [d for d in (reminders.due_at(r) for r in self.sync_manager.reminders.values()) if d is not None]
+        if not due:
+            self._reminder_timer.stop()
+            return
+        wait_ms = int((min(due) - datetime.datetime.now()).total_seconds() * 1000) + 300
+        self._reminder_timer.start(max(0, min(wait_ms, self.MAX_REMINDER_WAIT_MS)))
+
+    def check_reminders(self) -> None:
+        """시각이 된 알림을 울립니다. (앱이 꺼져 있던 동안 지나간 알림도 여기서 한 번 울립니다)"""
+        now = datetime.datetime.now()
+        for memo_id, reminder in list(self.sync_manager.reminders.items()):
+            due = reminders.due_at(reminder)
+            if due is not None and due <= now:
+                self.fire_reminder(memo_id, reminder, now)
+        self.schedule_reminders()
+
+    def _memo_for(self, memo_id: str) -> Optional[Dict[str, Any]]:
+        """메모 데이터. 창이 열려 있으면 창이 들고 있는 것을 써서, 창이 나중에 예전 값으로 덮어쓰지 않게 합니다."""
+        if memo_id in self.memo_windows:
+            return self.memo_windows[memo_id].memo_data
+        return next((m for m in self.sync_manager.load_local_memos() if m.get('id') == memo_id), None)
+
+    def fire_reminder(self, memo_id: str, reminder: Dict[str, Any], now: datetime.datetime) -> None:
+        memo = self._memo_for(memo_id)
+        if memo is None:
+            self.sync_manager.reminders.pop(memo_id, None)
+            return
+        # 반복 알림이면 다음 시각으로 넘기고, 한 번짜리면 풉니다.
+        self.sync_manager.set_reminder(memo, reminders.following(reminder, now))
+        if memo_id in self.memo_windows:
+            self.memo_windows[memo_id].refresh_reminder_badge()
+
+        title = str(memo.get('title', '')) or "(제목 없음)"
+        sealed = memo.get('_locked') or memo.get('_unreadable')
+        detail = "" if sealed else " ".join(clean_plain_text(memo.get('content', '')).split())[:120]
+        late = (now - (reminders.due_at(reminder) or now)).total_seconds() > 120
+        self._reminder_popups = [p for p in self._reminder_popups if self._still_open(p)]
+        popup = ReminderPopup(self.sync_manager.settings, memo_id, title,
+                              ("(지나간 알림) " if late else "") + detail,
+                              self.show_specific_memo, self.snooze_reminder, slot=len(self._reminder_popups))
+        self._reminder_popups.append(popup)
+        popup.show()
+        self.tray_icon.showMessage("⏰ " + title, detail or "알림 시각입니다.", QSystemTrayIcon.MessageIcon.Information, 5000)
+        if self.explorer_window and self.explorer_window.isVisible():
+            self.explorer_window.refresh()
+
+    @staticmethod
+    def _still_open(popup: Any) -> bool:
+        try:
+            return popup.isVisible()
+        except RuntimeError:            # 닫혀서 이미 지워진 창
+            return False
+
+    def snooze_reminder(self, memo_id: str, minutes: int) -> None:
+        """알림을 잠시 뒤로 미룹니다. 반복 알림의 원래 일정은 그대로 유지됩니다."""
+        memo = self._memo_for(memo_id)
+        if memo is None:
+            return
+        self.sync_manager.set_reminder(memo, reminders.snoozed(memo.get('reminder'), minutes, datetime.datetime.now()))
+        if memo_id in self.memo_windows:
+            self.memo_windows[memo_id].refresh_reminder_badge()
+        if self.explorer_window and self.explorer_window.isVisible():
+            self.explorer_window.refresh()
+
     def register_global_hotkeys(self) -> None:
         """전역 단축키를 (재)등록합니다. 등록된 조합은 이 앱만 받고 다른 프로그램에는 전달되지 않습니다."""
         self._hotkeys.unregister_all()
@@ -223,6 +313,7 @@ class UIManager:
             ("toggle_all_memos",    self.toggle_all),
             ("arrange_rolled_memos",self.arrange_rolled_up_memos),
             ("arrange_all_memos",   self.arrange_memos),
+            ("quick_search",        self.toggle_quick_search),
         ]
 
         failed = []

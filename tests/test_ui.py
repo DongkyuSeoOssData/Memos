@@ -132,7 +132,7 @@ class UiTestCase(unittest.TestCase):
 class StartupTest(UiTestCase):
     def test_starts_without_login_and_registers_hotkeys(self) -> None:
         self.assertEqual(len(self.ui.memo_windows), 0)     # 숨겨 둔 메모는 창을 미리 만들지 않음
-        self.assertEqual(len(self.ui._hotkeys.registered), 6)
+        self.assertEqual(len(self.ui._hotkeys.registered), 7)
 
 
 class WindowManagementTest(UiTestCase):

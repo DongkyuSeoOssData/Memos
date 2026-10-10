@@ -1,3 +1,4 @@
+from ui import checklist
 from typing import List, Any
 from PyQt6.QtWidgets import *
 from PyQt6.QtGui import *
@@ -96,10 +97,62 @@ class MemoTextEdit(QTextEdit):
         self.verticalScrollBar().valueChanged.connect(self.line_number_area.update)
         self.textChanged.connect(self.update_line_number_area)
 
+    # ── 체크리스트 (줄 앞의 ☐ / ☑) ───────────────────────────────────────────
+    def toggle_check_at(self, pos: Any) -> bool:
+        """pos(편집기 안의 좌표)가 체크 상자 위면 체크 상태를 뒤집고 True 를 돌려줍니다."""
+        if self.isReadOnly():
+            return False
+        block = self.cursorForPosition(pos).block()
+        index = checklist.box_index(block.text())
+        if index < 0:
+            return False
+        probe = QTextCursor(block)
+        probe.setPosition(block.position() + index)
+        left = self.cursorRect(probe)
+        probe.setPosition(block.position() + index + 1)
+        right = self.cursorRect(probe)
+        if not (left.left() - 3 <= pos.x() <= right.left() + 3 and left.top() <= pos.y() <= left.bottom()):
+            return False
+        edit = QTextCursor(block)
+        edit.setPosition(block.position() + index)
+        edit.setPosition(block.position() + index + 1, QTextCursor.MoveMode.KeepAnchor)
+        edit.insertText(checklist.CHECKED if block.text()[index] == checklist.UNCHECKED else checklist.UNCHECKED)
+        self.memo_window._mark_edited()
+        return True
+
+    def continue_checklist(self) -> bool:
+        """체크리스트 줄에서 Enter: 다음 줄도 체크 상자로 시작합니다. 상자만 있는 빈 줄이면 상자를 지워 체크리스트를 끝냅니다."""
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            return False
+        block = cursor.block()
+        prefix, clear_box = checklist.continuation(block.text())
+        if clear_box:
+            cursor.beginEditBlock()
+            cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
+            cursor.insertText(checklist.without_box(block.text()).rstrip())
+            cursor.endEditBlock()
+            self.setTextCursor(cursor)
+            return True
+        if not prefix or not cursor.atBlockEnd():
+            return False
+        cursor.beginEditBlock()
+        cursor.insertBlock()
+        cursor.insertText(prefix)
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
+        self.ensureCursorVisible()
+        return True
+
     def mousePressEvent(self, e: Any) -> None:
         if e.button() == Qt.MouseButton.LeftButton and self.memo_window.memo_data.get('_locked'):
             # 잠긴 암호 메모: 본문을 클릭하면 암호를 묻습니다.
             self.memo_window.prompt_unlock()
+            e.accept()
+            return
+        if e.button() == Qt.MouseButton.LeftButton and not e.modifiers() and self.toggle_check_at(e.pos()):
+            # 체크 상자(☐/☑)를 누르면 체크 상태만 바꾸고 커서는 옮기지 않습니다.
             e.accept()
             return
         if e.button() == Qt.MouseButton.LeftButton and (e.modifiers() & Qt.KeyboardModifier.AltModifier):
@@ -167,29 +220,29 @@ class MemoTextEdit(QTextEdit):
         painter = QPainter(self.line_number_area)
         theme = self.memo_window.memo_window_get_settings().get('app_theme', 'white')
         is_dark = (theme == "dark")
-        
+
         bg_color = QColor(0, 0, 0, 40) if is_dark else QColor(0, 0, 0, 15)
         text_color = QColor("#8E8E93")
-            
-        painter.fillRect(event.rect(), bg_color) 
-        painter.setPen(text_color) 
+
+        painter.fillRect(event.rect(), bg_color)
+        painter.setPen(text_color)
         line_font = QFont(self.font().family(), self.memo_window.memo_data.get('font_size', 11))
         painter.setFont(line_font)
-        
+
         block = self.document().begin()
         scroll_y = self.verticalScrollBar().value()
         block_number = 0
-        
+
         while block.isValid():
             block_bb = self.document().documentLayout().blockBoundingRect(block)
             pos_y = block_bb.top() - scroll_y
-            
+
             if pos_y <= event.rect().bottom() and pos_y + block_bb.height() >= event.rect().top():
                 painter.drawText(
                     0, int(pos_y), self.line_number_area.width() - 5, self.fontMetrics().height(),
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, str(block_number + 1)
                 )
-                                 
+
             block = block.next()
             block_number += 1
 
@@ -201,6 +254,11 @@ class MemoTextEdit(QTextEdit):
                 self.viewport().update()
             else:
                 self.memo_window.close()
+            e.accept()
+            return
+
+        if (e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not e.modifiers() and not self.extra_cursors
+                and not self.isReadOnly() and self.continue_checklist()):
             e.accept()
             return
 
@@ -219,7 +277,7 @@ class MemoTextEdit(QTextEdit):
                 moved = new_cursor.movePosition(QTextCursor.MoveOperation.Down)
             else:
                 moved = new_cursor.movePosition(QTextCursor.MoveOperation.Up)
-            
+
             if moved:
                 self.extra_cursors.append(new_cursor)
                 self.viewport().update()
@@ -365,7 +423,7 @@ class MemoTextEdit(QTextEdit):
                 # (2) 일반 엔터 누를 시 이전 줄의 들여쓰기(공백)를 지속 유지 + 여는 기호 수용
                 line_text = cursor.block().text()
                 indent_str = line_text[:len(line_text) - len(line_text.lstrip())]
-                
+
                 stripped_line = line_text[:cursor.positionInBlock()].rstrip()
                 if stripped_line and stripped_line[-1] in ('{', '[', '(', ':'):
                     indent_str += "    "
@@ -393,14 +451,14 @@ class MemoTextEdit(QTextEdit):
                 bf.setIndent(current_indent)
                 new_cursor.setBlockFormat(bf)
             return
-            
+
         super().keyPressEvent(e)
 
     def paintEvent(self, event: Any) -> None:
         painter = QPainter(self.viewport())
         show_bg = self.memo_window.memo_data.get('show_line_bg', False)
         is_code = self.memo_window.memo_data.get('is_code_memo', False)
-        
+
         if is_code:
             code_theme = self.memo_window.memo_data.get('code_theme', 'dark')
             is_dark_bg = (code_theme == "dark")
@@ -416,12 +474,12 @@ class MemoTextEdit(QTextEdit):
                         is_dark_bg = True
 
         grid_color = QColor(255, 255, 255, 45) if is_dark_bg else QColor(0, 0, 0, 45)
-        indent_color = QColor(142, 142, 147, 100) 
+        indent_color = QColor(142, 142, 147, 100)
         scroll_y = self.verticalScrollBar().value()
         line_font = QFont(self.font().family(), self.memo_window.memo_data.get('font_size', 11))
         fm = QFontMetrics(line_font)
         line_height = fm.lineSpacing()
-        
+
         if show_bg:
             painter.setPen(grid_color)
             block = self.document().begin()
@@ -434,7 +492,7 @@ class MemoTextEdit(QTextEdit):
                     painter.drawLine(0, line_bottom, self.viewport().width(), line_bottom)
                 last_bottom = line_bottom
                 block = block.next()
-            
+
             y = last_bottom + line_height if last_bottom > 0 else int(line_height - (scroll_y % line_height))
             while y < self.viewport().height():
                 painter.drawLine(0, y, self.viewport().width(), y)
@@ -473,7 +531,7 @@ class MemoTextEdit(QTextEdit):
             if hasattr(self.memo_window, '_wheel_save_timer'):
                 self.memo_window._wheel_save_timer.start(1000)
             self.memo_window.show_toast(f"폰트 크기: {s}pt")
-            event.accept() 
+            event.accept()
             return
         elif modifiers == Qt.KeyboardModifier.ShiftModifier:
             op = max(0.3, min(1.0, self.memo_window.windowOpacity() + (0.05 if delta > 0 else -0.05)))
@@ -482,6 +540,6 @@ class MemoTextEdit(QTextEdit):
             if hasattr(self.memo_window, '_wheel_save_timer'):
                 self.memo_window._wheel_save_timer.start(1000)
             self.memo_window.show_toast(f"투명도: {int(op * 100)}%")
-            event.accept() 
+            event.accept()
             return
         super().wheelEvent(event)

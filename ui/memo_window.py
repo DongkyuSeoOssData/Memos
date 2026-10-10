@@ -3,6 +3,9 @@ from ui.themes import memo_palette
 from ui import modern_style
 from ui.wheel_guard import guard_wheel
 from ui import screen_bounds
+from core import reminders
+from ui.reminder_ui import ask_reminder
+from ui.dialogs import HistoryDialog
 from ui.memo_lock import MemoLockMixin
 from ui.memo_format import MemoFormatMixin
 import re
@@ -110,6 +113,9 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
         QShortcut(QKeySequence(s_cfg.get("toggle_memo_lock", "Ctrl+L")), self).activated.connect(self.toggle_memo_lock)
         QShortcut(QKeySequence(s_cfg.get("set_memo_password", "Ctrl+Shift+L")), self).activated.connect(self.set_memo_password)
+        QShortcut(QKeySequence(s_cfg.get("toggle_checklist", "Alt+K")), self).activated.connect(self.toggle_checklist)
+        QShortcut(QKeySequence(s_cfg.get("set_reminder", "Ctrl+R")), self).activated.connect(self.edit_reminder)
+        QShortcut(QKeySequence(s_cfg.get("show_history", "Ctrl+Shift+H")), self).activated.connect(self.show_history)
 
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.close)
 
@@ -302,6 +308,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
         self.btn_bullet = QPushButton("")
         self.btn_num = QPushButton("")
+        self.btn_check = QPushButton("☑")
+        self.btn_check.setToolTip("체크리스트 (선택한 줄에 체크 상자 붙이기/떼기)")
         self.btn_indent = QPushButton("")
         self.btn_outdent = QPushButton("")
 
@@ -309,7 +317,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.btn_italic = QPushButton("I")
         self.btn_underline = QPushButton("U")
 
-        for b in [self.btn_bullet, self.btn_num, self.btn_indent, self.btn_outdent, self.btn_bold, self.btn_italic, self.btn_underline]:
+        for b in [self.btn_bullet, self.btn_num, self.btn_check, self.btn_indent, self.btn_outdent, self.btn_bold, self.btn_italic, self.btn_underline]:
             b.setFixedSize(24, 24)
             # 굵게·기울임·밑줄만 '켜짐/꺼짐'이 표시됩니다. 목록·들여쓰기는 누를 때 동작만 하는 버튼입니다.
             b.setCheckable(b in (self.btn_bold, self.btn_italic, self.btn_underline))
@@ -320,6 +328,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
         self.btn_bullet.clicked.connect(self.apply_bullet)
         self.btn_num.clicked.connect(self.apply_number)
+        self.btn_check.clicked.connect(self.toggle_checklist)
         self.btn_indent.clicked.connect(self.apply_indent)
         self.btn_outdent.clicked.connect(self.apply_outdent)
         self.btn_bold.clicked.connect(self.toggle_bold)
@@ -340,6 +349,15 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.fmt_bar.addWidget(self.btn_toggle_sub_fmt)
 
         self.fmt_bar.addStretch()
+
+        # 알림이 걸려 있으면 그 시각을 보여 줍니다. 누르면 알림 설정 창이 열립니다.
+        self.btn_reminder = QPushButton("")
+        self.btn_reminder.setFixedHeight(24)
+        self.btn_reminder.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reminder.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_reminder.clicked.connect(self.edit_reminder)
+        self.btn_reminder.hide()
+        self.fmt_bar.addWidget(self.btn_reminder)
 
         self.sub_fmt_widget = QWidget()
         sub_l = QHBoxLayout(self.sub_fmt_widget)
@@ -385,6 +403,53 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.update_toolbar_button_states()
         bg_l.addWidget(self.content_container)
         self.grip = QSizeGrip(self)
+
+    # ── 알림 ─────────────────────────────────────────────────────────────────
+    def refresh_reminder_badge(self) -> None:
+        """서식 줄 오른쪽의 알림 표시를 지금 알림에 맞춥니다."""
+        text = reminders.describe(self.memo_data.get('reminder'))
+        self.btn_reminder.setToolTip("알림: " + text + " (눌러서 바꾸기)" if text else "")
+        self.btn_reminder.setVisible(bool(text) and not self._is_rolled_up)
+        if not text:
+            self.btn_reminder.setText("")
+            return
+        # 메모 폭에 들어가는 가장 자세한 표기를 고릅니다. (좁은 메모에서는 시계만)
+        due = reminders.due_at(self.memo_data.get('reminder'))
+        used = sum(item.widget().width() + self.fmt_bar.spacing() for item in map(self.fmt_bar.itemAt, range(self.fmt_bar.count()))
+                   if item.widget() and item.widget() is not self.btn_reminder and not item.widget().isHidden())
+        room = self.bg.width() - used - 36
+        metrics = self.btn_reminder.fontMetrics()
+        choices = ("⏰ " + text, f"⏰ {due.month}.{due.day:02d} {due.hour:02d}:{due.minute:02d}", f"⏰ {due.month}.{due.day:02d}", "⏰")
+        label = next((c for c in choices if metrics.horizontalAdvance(c) + 18 <= room), choices[-1])
+        self.btn_reminder.setText(label)
+        self.btn_reminder.setFixedWidth(metrics.horizontalAdvance(label) + 18)
+
+    def edit_reminder(self) -> None:
+        """알림 설정 창을 띄워 이 메모의 알림을 걸거나 풉니다."""
+        sm = self._sync_manager()
+        if not sm:
+            return
+        changed, reminder = ask_reminder(self._dlg_parent(), self.memo_data.get('reminder'), str(self.memo_data.get('title', '')))
+        if not changed:
+            return
+        sm.set_reminder(self.memo_data, reminder)
+        self.refresh_reminder_badge()
+        self._refresh_explorer()
+        self.show_toast("⏰ " + reminders.describe(reminder) if reminder else "알림을 해제했습니다")
+
+    # ── 변경 기록 ────────────────────────────────────────────────────────────
+    def show_history(self) -> None:
+        """이전 내용을 보여 주고, 고른 내용으로 되돌립니다."""
+        sm = self._sync_manager()
+        memo_id = self.memo_data.get('id', '')
+        if not sm or not memo_id:
+            return
+        self.flush_auto_save()                  # 지금 치던 내용도 기록에 남도록 먼저 저장
+        dialog = HistoryDialog(self._dlg_parent(), str(self.memo_data.get('title', '')), sm.list_history(memo_id))
+        if dialog.exec() and dialog.chosen_index is not None and sm.restore_history(memo_id, dialog.chosen_index):
+            self.ui_manager.reload_pulled_memos([memo_id])
+            self._refresh_explorer()
+            self.show_toast("이전 내용으로 되돌렸습니다")
 
     def toggle_maximize(self) -> None:
         """100% 정상 작동하는 최대화/복원 토글"""
@@ -534,6 +599,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
+        if hasattr(self, 'btn_reminder') and not self.btn_reminder.isHidden():
+            self.refresh_reminder_badge()
         if hasattr(self, 'grip'):
             # 📌 접힌 메모와 동일하게 메모 안쪽에 딱 알맞게 안착 (삐져나옴 방지)
             if self._is_rolled_up:
@@ -635,6 +702,12 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             cm = menu.addMenu("창 배경색 변경")
             for n, c in {"다크그레이": "#2E3440", "하늘색": "#E0F2FE", "연두색": "#DCFCE7", "노란색": "#FEF9C3", "분홍색": "#FCE7F3", "흰색": "#FFFFFF"}.items():
                 cm.addAction(n).triggered.connect(lambda checked, code=c: self.change_color(code))
+
+        menu.addSeparator()
+        menu.addAction(_fmt_sc("체크리스트 켜기/끄기", "toggle_checklist", "Alt+K")).triggered.connect(self.toggle_checklist)
+        has_reminder = bool(reminders.normalize(self.memo_data.get('reminder')))
+        menu.addAction(_fmt_sc("⏰ 알림 바꾸기…" if has_reminder else "⏰ 알림 설정…", "set_reminder", "Ctrl+R")).triggered.connect(self.edit_reminder)
+        menu.addAction(_fmt_sc("이전 내용 보기…", "show_history", "Ctrl+Shift+H")).triggered.connect(self.show_history)
 
         menu.addSeparator()
         if self.memo_data.get('_locked'):
@@ -866,6 +939,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         show_code_controls = not rolled and bool(self.memo_data.get('is_code_memo', False))
         for control in (self.btn_code_theme, self.code_lang_box, self.btn_format_code, self.btn_lang_icon):
             control.setVisible(show_code_controls)
+        if hasattr(self, 'btn_reminder'):
+            self.refresh_reminder_badge()
 
     def _rolled_stack_span(self) -> Optional[tuple]:
         """이 접은 메모가 다른 접은 메모들과 한 줄로 쌓여 있으면 그 줄의 (왼쪽 끝, 오른쪽 끝)을, 아니면 None 을 돌려줍니다."""
@@ -1125,6 +1200,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.title_edit.setText(self.memo_data.get('title',''))
         self.title_edit.setCursorPosition(0)
         self.title_edit.deselect()
+        self.refresh_reminder_badge()
 
         self._is_updating_from_explorer = True
         cnt = str(self.memo_data.get('content',''))

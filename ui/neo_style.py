@@ -357,3 +357,8 @@ def apply_memo_toolbar(w: Any) -> None:
         btn.setStyleSheet(on if btn.isChecked() else off)
     for name in MEMO_ACTION_BUTTONS:
         getattr(w, name).setStyleSheet(off)
+    # 알림이 걸려 있을 때 서식 줄 오른쪽에 보이는 알림 시각
+    w.btn_reminder.setStyleSheet(
+        f"QPushButton {{ border: 1px solid {_rgba(ink, 0.25)}; border-radius: 0px; background: transparent; color: {ink}; "
+        f"font-size: 8.5pt; font-weight: 600; padding: 0 6px; font-family: {UI_FONT}; }} "
+        f"QPushButton:hover {{ background: {_rgba(ink, 0.12)}; }}")
