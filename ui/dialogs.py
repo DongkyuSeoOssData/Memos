@@ -1,20 +1,9 @@
-from ui.ui_utils import apply_ios_shadow
-from ui.themes import LIGHT_THEMES, DARK_THEMES
-from typing import Dict, Any
+from typing import Dict
 from PyQt6.QtWidgets import (
     QTextEdit, QVBoxLayout, QHBoxLayout, QApplication, QLabel, QDialog, QDialogButtonBox
 )
 from PyQt6.QtGui import QPalette
 from utils.text_utils import clean_plain_text
-
-
-def _theme_palette_from_settings(sync_manager: Any) -> Dict[str, Any]:
-    theme = sync_manager.settings.get('app_theme', 'white')
-    if theme == 'dark':
-        mode = sync_manager.settings.get('dark_theme_mode', 'dark')
-        return DARK_THEMES.get(mode, DARK_THEMES['dark'])
-    mode = sync_manager.settings.get('light_theme_mode', 'white')
-    return LIGHT_THEMES.get(mode, LIGHT_THEMES['white'])
 
 
 def _system_dialog_palette() -> Dict[str, str]:
@@ -48,7 +37,7 @@ class ConflictDialog(QDialog):
             te = QTextEdit()
             te.setPlainText(content_text)
             te.setReadOnly(True)
-            te.setStyleSheet(f"border: 1px solid {pal['border']}; border-radius: 12px; padding: 10px; color: {pal['text']}; background: {pal['card']};")
+            te.setStyleSheet(f"border: 1px solid {pal['border']}; border-radius: 0px; padding: 10px; color: {pal['text']}; background: {pal['card']};")
             box.addWidget(te)
             diff.addLayout(box)
             
@@ -57,4 +46,3 @@ class ConflictDialog(QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         layout.addWidget(btns)
-        apply_ios_shadow(self)

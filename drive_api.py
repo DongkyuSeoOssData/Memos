@@ -10,6 +10,8 @@ class DriveAPI:
     def __init__(self) -> None:
         """DriveAPI 클래스 초기화"""
         self.web_app_url: Optional[str] = None
+        # 요청마다 새로 연결하지 않도록 세션 하나를 재사용합니다. (메모가 많을 때 동기화 시간 단축)
+        self._session = requests.Session()
 
     def set_web_app_url(self, url: str) -> None:
         """
@@ -40,7 +42,7 @@ class DriveAPI:
             return False
         try:
             params = {"action": "list"}
-            response = requests.get(self.web_app_url, params=params, timeout=5)
+            response = self._session.get(self.web_app_url, params=params, timeout=5)
             return response.status_code == 200
         except Exception as e:
             print(f"GAS Ping Error: {e}")
@@ -58,7 +60,7 @@ class DriveAPI:
             return None
         try:
             params = {"action": "list"}
-            response = requests.get(self.web_app_url, params=params, timeout=10)
+            response = self._session.get(self.web_app_url, params=params, timeout=10)
             if response.status_code == 200:
                 files = response.json().get("files")
                 if isinstance(files, list):
@@ -86,7 +88,7 @@ class DriveAPI:
                 "filename": filename,
                 "content": json.dumps(content, ensure_ascii=False)
             }
-            response = requests.post(self.web_app_url, data=json.dumps(data), timeout=10)
+            response = self._session.post(self.web_app_url, data=json.dumps(data), timeout=10)
             # GAS는 스크립트 오류·권한 문제도 200 + HTML로 돌려주므로, 스크립트가 보낸 "Success" 본문까지 확인합니다.
             return response.status_code == 200 and response.text.strip().startswith("Success")
         except Exception as e:
@@ -107,7 +109,7 @@ class DriveAPI:
             return None
         try:
             params = {"action": "download", "filename": filename}
-            response = requests.get(self.web_app_url, params=params, timeout=10)
+            response = self._session.get(self.web_app_url, params=params, timeout=10)
             if response.status_code == 200:
                 res_data = response.json()
                 content = res_data.get("content")
@@ -133,29 +135,8 @@ class DriveAPI:
             return False
         try:
             data = {"action": "delete", "filename": filename}
-            response = requests.post(self.web_app_url, data=json.dumps(data), timeout=10)
+            response = self._session.post(self.web_app_url, data=json.dumps(data), timeout=10)
             return response.status_code == 200 and response.text.strip().startswith("Moved to Trash")
         except Exception as e:
             print(f"GAS Delete Error: {e}")
             return False
-
-    def permanent_delete_file(self, filename: str) -> bool:
-        """
-        GAS를 통해 구글 드라이브에서 특정 파일을 영구 삭제 처리합니다.
-
-        Args:
-            filename (str): 영구 삭제 대상 파일명
-
-        Returns:
-            bool: 삭제 성공 여부.
-        """
-        if not self.is_available() or not self.web_app_url:
-            return False
-        try:
-            data = {"action": "permanentDelete", "filename": filename}
-            response = requests.post(self.web_app_url, data=json.dumps(data), timeout=10)
-            return response.status_code == 200
-        except Exception as e:
-            print(f"GAS Permanent Delete Error: {e}")
-            return False
-

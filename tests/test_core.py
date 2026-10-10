@@ -401,6 +401,61 @@ class SyncTest(SyncManagerTestCase):
         self.assertNotIn("top secret", json.dumps(self.drive.files["memo-lock.json"][0]))
 
 
+class DeviceStateSyncTest(SyncManagerTestCase):
+    """창 위치·크기·표시 여부는 PC마다 따로 두고 동기화하지 않습니다."""
+
+    def test_moving_a_window_does_not_upload(self) -> None:
+        self.sm.save_memo_locally(self._memo("memo-aaaa", "one"))
+        self._sync()
+        self._sync()
+        self.drive.uploads.clear()
+        memo = self._disk("memo-aaaa")
+        memo.update({"position_x": 900, "position_y": 40, "width": 512, "is_visible": False,
+                     "is_rolled_up": True, "rolled_width": 200, "unrolled_height": 380})
+        self.sm.save_memo_locally(memo)
+        self._sync()
+        self.assertEqual(self.drive.uploads, [])
+
+    def test_uploaded_file_has_no_device_state(self) -> None:
+        memo = self._memo("memo-aaaa", "one")
+        memo.update({"position_x": 900, "width": 512, "is_visible": True, "rolled_position_y": 7})
+        self.sm.save_memo_locally(memo)
+        self._sync()
+        uploaded = self.drive.files["memo-aaaa.json"][0]
+        self.assertEqual(uploaded["content"], "one")
+        for key in ("position_x", "width", "is_visible", "rolled_position_y"):
+            self.assertNotIn(key, uploaded)
+
+    def test_pull_keeps_this_pcs_window_placement(self) -> None:
+        memo = self._memo("memo-aaaa", "one")
+        memo.update({"position_x": 900, "position_y": 40, "is_visible": True})
+        self.sm.save_memo_locally(memo)
+        self._sync()
+        remote = dict(self.drive.files["memo-aaaa.json"][0])
+        remote.update({"content": "from other pc", "updated_at": "2026-02-01T00:00:00",
+                       "position_x": 5, "position_y": 5, "is_visible": False})     # 예전 버전이 올린 파일
+        self.drive.put("memo-aaaa.json", remote)
+        self._sync()
+        disk = self._disk("memo-aaaa")
+        self.assertEqual(disk["content"], "from other pc")
+        self.assertEqual((disk["position_x"], disk["position_y"], disk["is_visible"]), (900, 40, True))
+
+    def test_memo_first_seen_from_remote_starts_hidden(self) -> None:
+        self.drive.put("memo-cccc.json", self._memo("memo-cccc", "new from other pc"))
+        self._sync()
+        self.assertFalse(self._disk("memo-cccc")["is_visible"])
+
+    def test_remote_id_that_escapes_the_folder_is_ignored(self) -> None:
+        for bad in ("../evil", "..\\evil", "a/b", ""):
+            evil = self._memo(bad, "x")
+            self.drive.put("evil.json", evil)
+            self._sync()
+        self.assertFalse((self.memo_dir.parent / "evil.json").exists())
+        self.assertEqual(self._contents(), [])
+        self.assertFalse(self.sm.save_memo_locally(self._memo("../evil", "x")))
+        self.assertFalse((self.memo_dir.parent / "evil.json").exists())
+
+
 class TrashRetentionTest(SyncManagerTestCase):
     def _trash(self, memo_id: str) -> Path:
         return self.sm.trash_path / f"{memo_id}.json"
@@ -531,13 +586,26 @@ class CryptoTest(unittest.TestCase):
 
 
 class TextUtilsTest(unittest.TestCase):
+    def test_extract_hashtags(self) -> None:
+        from utils.text_utils import extract_hashtags
+        self.assertEqual(extract_hashtags("#a b #한글 c#no ##x #FFFFFF #ffffff80 #abc # 제목"), ["a", "한글", "abc"])
+        self.assertEqual(extract_hashtags(""), [])
+
     def test_eng_kor_roundtrip(self) -> None:
         self.assertEqual(eng_to_kor("dkssudgktpdy"), "안녕하세요")
         self.assertEqual(kor_to_eng("안녕하세요"), "dkssudgktpdy")
 
     def test_clean_plain_text_strips_markup(self) -> None:
-        html_doc = "<html><style>p{color:red}</style><body><p>a &amp; b</p></body></html>"
+        # 편집기가 서식 있는 메모를 저장할 때 만드는 형태
+        html_doc = ('<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0//EN" "http://www.w3.org/TR/REC-html40/strict.dtd">'
+                    '<html><head><meta name="qrichtext" content="1" /><style>p{color:red}</style></head>'
+                    '<body><p>a &amp; b</p></body></html>')
         self.assertEqual(clean_plain_text(html_doc), "a & b")
+
+    def test_clean_plain_text_keeps_plain_text_as_is(self) -> None:
+        # 순수 텍스트 메모·코드 메모의 '<', '>' 는 태그가 아니므로 지우면 안 됨
+        self.assertEqual(clean_plain_text("if a < b and c > d: List<int>"), "if a < b and c > d: List<int>")
+        self.assertEqual(clean_plain_text("<html><body>my page</body></html>"), "<html><body>my page</body></html>")
 
 
 if __name__ == "__main__":

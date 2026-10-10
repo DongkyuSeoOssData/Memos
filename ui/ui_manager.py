@@ -11,7 +11,7 @@ import datetime
 import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from PyQt6.QtWidgets import QWidget, QMenu, QSystemTrayIcon, QApplication
+from PyQt6.QtWidgets import QMenu, QSystemTrayIcon, QApplication
 from PyQt6.QtCore import Qt, QTimer, QByteArray
 from PyQt6.QtGui import QIcon, QPixmap, QPainter
 from PyQt6.QtSvg import QSvgRenderer
@@ -19,7 +19,8 @@ import threading
 
 PASTEL_COLORS = ["#E0F2FE", "#DCFCE7", "#FEF9C3", "#FCE7F3", "#FFFFFF"]
 
-from ui.themes import LIGHT_THEMES, DARK_THEMES
+from ui.themes import app_palette
+from ui import modern_style
 from core.defaults import DEFAULT_SHORTCUTS
 
 
@@ -35,6 +36,8 @@ class UIManager:
         self.settings_window: Optional['SettingsWindow'] = None
         self._cascade_count: int = 0
         self._hotkeys = GlobalHotkeys()
+        # (아이콘 파일, 색, 화면 배율) → 그려 둔 아이콘. 같은 아이콘을 쓸 때마다 SVG를 다시 읽고 그리지 않습니다.
+        self._icon_cache: Dict[tuple, QIcon] = {}
         self.sync_manager.set_ui_manager(self)
         self.setup_tray()
         app = QApplication.instance()
@@ -51,13 +54,31 @@ class UIManager:
         if self.explorer_window:
             self.explorer_window._flush_preview_save()
         self._hotkeys.unregister_all()
-    
+
     def get_theme_icon(self, svg_name: str, is_dark: Optional[bool] = None, override_color: Optional[str] = None) -> QIcon:
         if getattr(sys, 'frozen', False):
             base_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent))
         else:
             base_dir = Path(__file__).parent.parent
-            
+
+        if override_color:
+            target_color = override_color
+        else:
+            if is_dark is None:
+                is_dark = self.sync_manager.settings.get("app_theme", "white") == "dark"
+            # 아이콘 색은 고른 색 테마에서 가져오되, 밝기(is_dark)는 호출한 쪽이 정한 값을 따릅니다.
+            pal, _ = app_palette({**self.sync_manager.settings, "app_theme": "dark" if is_dark else "white"})
+            target_color = pal["icon"]
+            if is_dark and svg_name in ["rollup.svg", "maximize.svg"]:
+                target_color = "#FFFFFF"
+
+        screen = QApplication.primaryScreen()
+        scale = max(1.0, float(screen.devicePixelRatio())) if screen else 1.0
+        cache_key = (svg_name, target_color, scale)
+        cached = self._icon_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         svg_path = base_dir / "icons" / svg_name
         if not svg_path.exists():
             svg_path = Path("icons") / svg_name
@@ -66,35 +87,26 @@ class UIManager:
         try:
             with open(svg_path, "r", encoding="utf-8") as f:
                 svg_data = f.read()
-            if override_color:
-                target_color = override_color
-            else:
-                if is_dark is None:
-                    theme = self.sync_manager.settings.get("app_theme", "white")
-                    is_dark = (theme == "dark")
-                if is_dark:
-                    mode = self.sync_manager.settings.get("dark_theme_mode", "dark")
-                    target_color = DARK_THEMES.get(mode, DARK_THEMES["dark"])["icon"]
-                    if svg_name in ["rollup.svg", "maximize.svg"]:
-                        target_color = "#FFFFFF"
-                else:
-                    mode = self.sync_manager.settings.get("light_theme_mode", "white")
-                    target_color = LIGHT_THEMES.get(mode, LIGHT_THEMES["white"])["icon"]
-            
+
             svg_data = re.sub(r'stroke="[^"]+"', f'stroke="{target_color}"', svg_data)
             if re.search(r'fill="#[0-9a-fA-F]{3,6}"', svg_data):
                 svg_data = re.sub(r'fill="#[0-9a-fA-F]{3,6}"', f'fill="{target_color}"', svg_data)
             elif "stroke=" not in svg_data:
                 svg_data = re.sub(r'<path(?![^>]*(?:stroke="none"|fill="none"))', f'<path fill="{target_color}" ', svg_data)
-                
+
             renderer = QSvgRenderer(QByteArray(svg_data.encode('utf-8')))
-            pixmap = QPixmap(24, 24)
+            # 화면 배율만큼 크게 그려 두어야 고배율(125%·150%…) 화면에서 흐려지지 않습니다.
+            side = round(24 * scale)
+            pixmap = QPixmap(side, side)
             pixmap.fill(Qt.GlobalColor.transparent)
             painter = QPainter(pixmap)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             renderer.render(painter)
             painter.end()
-            return QIcon(pixmap)
+            pixmap.setDevicePixelRatio(scale)
+            icon = QIcon(pixmap)
+            self._icon_cache[cache_key] = icon
+            return icon
         except Exception:
             return QIcon()
 
@@ -103,11 +115,11 @@ class UIManager:
             base_dir = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent))
         else:
             base_dir = Path(__file__).parent.parent
-            
+
         icon_path = base_dir / "icons" / "memo.ico"
         if not icon_path.exists():
             icon_path = Path("icons") / "memo.ico"
-            
+
         self.tray_icon = QSystemTrayIcon(QIcon(str(icon_path)))
         self.tray_icon.activated.connect(self.on_tray_activated)
         self.update_tray_menu()
@@ -120,15 +132,8 @@ class UIManager:
         menu = QMenu()
         theme = self.sync_manager.settings.get('app_theme', 'white')
         is_dark = (theme == "dark")
-        if is_dark:
-            mode = self.sync_manager.settings.get("dark_theme_mode", "dark")
-            pal = DARK_THEMES.get(mode, DARK_THEMES["dark"])
-        else:
-            mode = self.sync_manager.settings.get("light_theme_mode", "white")
-            pal = LIGHT_THEMES.get(mode, LIGHT_THEMES["white"])
+        menu.setStyleSheet(modern_style.menu_qss(self.sync_manager.settings))
 
-        menu.setStyleSheet(f"QMenu {{ background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']}; border-radius: 10px; padding: 4px; }} QMenu::item:selected {{ background-color: {pal['accent']}; color: white; border-radius: 6px; }}")
-        
         s = {**DEFAULT_SHORTCUTS, **self.sync_manager.settings.get("shortcuts", {})}
 
         act_new = menu.addAction(self._fmt_sc("새 메모", s['new_memo']))
@@ -154,22 +159,22 @@ class UIManager:
         act_sync = menu.addAction("지금 동기화")
         act_sync.setIcon(self.get_theme_icon("cloude.svg", is_dark))
         act_sync.triggered.connect(self.sync_manager.sync_all)
-        
+
         title_toggle = "모두 숨기기" if self._all_visible else "모두 보이기"
         self.toggle_action = menu.addAction(self._fmt_sc(title_toggle, s['toggle_all_memos']))
         self.toggle_action.setIcon(self.get_theme_icon("minimize.svg", is_dark))
         self.toggle_action.triggered.connect(self.toggle_all)
-        
+
         menu.addSeparator()
         act_set = menu.addAction("환경설정")
         act_set.setIcon(self.get_theme_icon("setting.svg", is_dark))
         act_set.triggered.connect(self.open_settings)
-        
+
         menu.addSeparator()
         act_quit = menu.addAction("종료")
         act_quit.setIcon(self.get_theme_icon("close.svg", is_dark, override_color="#FF453A"))
         act_quit.triggered.connect(QApplication.quit)
-        
+
         self._tray_menu = menu
         self.tray_icon.setContextMenu(self._tray_menu)
         self.register_global_hotkeys()
@@ -205,11 +210,11 @@ class UIManager:
         for w in self.memo_windows.values():
             if w.isVisible() and w._is_rolled_up:
                 w.raise_()
-                
+
         for w in self.memo_windows.values():
             if w.isVisible() and not w._is_rolled_up:
                 w.raise_()
-                
+
         if self.explorer_window and self.explorer_window.isVisible():
             self.explorer_window.raise_()
             self.explorer_window.activateWindow()
@@ -218,7 +223,7 @@ class UIManager:
         def _task():
             for w in memos_list:
                 try:
-                    w.memo_data['updated_at'] = datetime.datetime.now().isoformat()
+                    # 창을 옮긴 것은 내용 수정이 아니므로 수정 시각은 그대로 둡니다.
                     self.sync_manager.save_memo_locally(w.memo_data)
                 except Exception as e:
                     self.sync_manager.log_error(f"정렬 후 메모 저장 실패: {e}", e)
@@ -227,101 +232,80 @@ class UIManager:
         import threading
         threading.Thread(target=_task, daemon=True).start()
 
+    def _by_screen(self, windows: list) -> list:
+        """창들을 지금 놓여 있는 모니터별로 묶습니다. → [(그 모니터의 작업 영역, [창…]), …]"""
+        groups: Dict[Any, list] = {}
+        for w in windows:
+            screen = QApplication.screenAt(w.geometry().center()) or QApplication.primaryScreen()
+            groups.setdefault(screen, []).append(w)
+        return [(screen.availableGeometry(), ws) for screen, ws in groups.items()]
+
+    @staticmethod
+    def _place(w: Any, x: int, y: int) -> None:
+        w.move(x, y)
+        w.memo_data.update({'position_x': x, 'position_y': y})
+
+    def _toast(self, text: str) -> None:
+        if self.explorer_window and self.explorer_window.isVisible():
+            self.explorer_window.show_toast(text)
+
     def arrange_rolled_up_memos(self) -> None:
-        screen = QApplication.primaryScreen().availableGeometry()
-        rolled_gen = [w for w in self.memo_windows.values() if w.isVisible() and w._is_rolled_up and not w.memo_data.get('is_code_memo')]
-        rolled_code = [w for w in self.memo_windows.values() if w.isVisible() and w._is_rolled_up and w.memo_data.get('is_code_memo')]
-        
-        if not rolled_gen and not rolled_code:
-            if self.explorer_window and self.explorer_window.isVisible():
-                self.explorer_window.show_toast("접혀 있는 메모가 없습니다.")
+        """접은 메모를 각자 놓여 있는 모니터의 아래쪽에 쌓습니다. (일반: 왼쪽, 코드: 오른쪽)"""
+        rolled = [w for w in self.memo_windows.values() if w.isVisible() and w._is_rolled_up]
+        if not rolled:
+            self._toast("접혀 있는 메모가 없습니다.")
             return
 
-        left_base_x = screen.left()
-        right_base_x = screen.right()
+        for screen, windows in self._by_screen(rolled):
+            for is_code in (False, True):
+                group = [w for w in windows if bool(w.memo_data.get('is_code_memo')) == is_code]
+                for idx, w in enumerate(group):
+                    col, row = idx // 12, idx % 12
+                    x = screen.right() - (col + 1) * w.width() if is_code else screen.left() + col * w.width()
+                    y = screen.bottom() - (row + 1) * w.height()
+                    self._place(w,
+                                max(screen.left(), min(x, screen.right() - w.width())),
+                                max(screen.top(), min(y, screen.bottom() - w.height())))
 
-        for idx, w in enumerate(rolled_gen):
-            w_h = w.height()
-            w_w = w.width()
-            col = idx // 12
-            row = idx % 12
-            target_x = left_base_x + (col * w_w)
-            target_y = screen.bottom() - ((row + 1) * w_h)
-            target_x = max(screen.left(), min(target_x, screen.right() - w_w))
-            target_y = max(screen.top(), min(target_y, screen.bottom() - w_h))
-            w.move(target_x, target_y)
-            w.memo_data.update({'position_x': target_x, 'position_y': target_y})
-
-        for idx, w in enumerate(rolled_code):
-            w_h = w.height()
-            w_w = w.width()
-            col = idx // 12
-            row = idx % 12
-            target_x = right_base_x - ((col + 1) * w_w)
-            target_y = screen.bottom() - ((row + 1) * w_h)
-            target_x = max(screen.left(), min(target_x, screen.right() - w_w))
-            target_y = max(screen.top(), min(target_y, screen.bottom() - w_h))
-            w.move(target_x, target_y)
-            w.memo_data.update({'position_x': target_x, 'position_y': target_y})
-            
-        self._async_save_memos(rolled_gen + rolled_code)
+        self._async_save_memos(rolled)
         self.enforce_z_order_layering()
-        if self.explorer_window and self.explorer_window.isVisible():
-            self.explorer_window.show_toast(f"🧱 접은 메모 정렬 완료 (일반:좌하단 {len(rolled_gen)}개 | 코드:우하단 {len(rolled_code)}개)")
+        code_cnt = sum(1 for w in rolled if w.memo_data.get('is_code_memo'))
+        self._toast(f"🧱 접은 메모 정렬 완료 (일반:좌하단 {len(rolled) - code_cnt}개 | 코드:우하단 {code_cnt}개)")
 
     def arrange_memos(self) -> None:
-        screen = QApplication.primaryScreen().availableGeometry()
-        center_x = screen.x() + (screen.width() // 2)
-        
-        gen_memos = [w for w in self.memo_windows.values() if w.isVisible() and not w._is_rolled_up and not w.memo_data.get('is_code_memo')]
-        code_memos = [w for w in self.memo_windows.values() if w.isVisible() and not w._is_rolled_up and w.memo_data.get('is_code_memo')]
-
-        if not gen_memos and not code_memos:
-            if self.explorer_window and self.explorer_window.isVisible():
-                self.explorer_window.show_toast("⚠️ 펼쳐진 메모가 없습니다.")
+        """펼친 메모를 각자 놓여 있는 모니터 안에서 바둑판으로 놓습니다. (일반: 왼쪽 절반, 코드: 오른쪽 절반)"""
+        opened = [w for w in self.memo_windows.values() if w.isVisible() and not w._is_rolled_up]
+        if not opened:
+            self._toast("⚠️ 펼쳐진 메모가 없습니다.")
             return
 
-        gx, gy = screen.x() + 20, screen.y() + 20
-        g_max_h = 0
-        for idx, w in enumerate(gen_memos):
-            w_width = w.width()
-            w_height = w.height()
-            if gx + w_width > center_x - 10:
-                gx = screen.x() + 20
-                gy += g_max_h + 20
-                g_max_h = 0
-            target_x = max(screen.left(), min(gx, screen.right() - w_width - 10))
-            w.move(target_x, gy)
-            w.memo_data.update({'position_x': target_x, 'position_y': gy})
-            gx += w_width + 20
-            g_max_h = max(g_max_h, w_height)
+        for screen, windows in self._by_screen(opened):
+            center_x = screen.x() + screen.width() // 2
+            # (창 목록, 시작 x, 줄바꿈 기준 x)
+            halves = (
+                ([w for w in windows if not w.memo_data.get('is_code_memo')], screen.x() + 20, center_x - 10),
+                ([w for w in windows if w.memo_data.get('is_code_memo')], center_x + 10, screen.right() - 20),
+            )
+            for group, start_x, limit_x in halves:
+                x, y, row_h = start_x, screen.y() + 20, 0
+                for w in group:
+                    if x + w.width() > limit_x:
+                        x, y, row_h = start_x, y + row_h + 20, 0
+                    self._place(w, max(screen.left(), min(x, screen.right() - w.width() - 10)), y)
+                    x += w.width() + 20
+                    row_h = max(row_h, w.height())
 
-        cx, cy = center_x + 10, screen.y() + 20
-        c_max_h = 0
-        for idx, w in enumerate(code_memos):
-            w_width = w.width()
-            w_height = w.height()
-            if cx + w_width > screen.right() - 20:
-                cx = center_x + 10
-                cy += c_max_h + 20
-                c_max_h = 0
-            target_x = max(screen.left(), min(cx, screen.right() - w_width - 10))
-            w.move(target_x, cy)
-            w.memo_data.update({'position_x': target_x, 'position_y': cy})
-            cx += w_width + 20
-            c_max_h = max(c_max_h, w_height)
-
-        self._async_save_memos(gen_memos + code_memos)
+        self._async_save_memos(opened)
         self.enforce_z_order_layering()
-        if self.explorer_window and self.explorer_window.isVisible():
-            self.explorer_window.show_toast(f"📐 펼친 메모 정렬 완료 (일반: {len(gen_memos)}개 | 코드: {len(code_memos)}개)")
+        code_cnt = sum(1 for w in opened if w.memo_data.get('is_code_memo'))
+        self._toast(f"📐 펼친 메모 정렬 완료 (일반: {len(opened) - code_cnt}개 | 코드: {code_cnt}개)")
 
     def on_tray_activated(self, reason: Any = None) -> None:
         try:
             val = reason.value if hasattr(reason, 'value') else int(reason)
         except Exception:
             val = 3
-            
+
         if val in (2, 3):
             if self.explorer_window and self.explorer_window.isVisible():
                 self.explorer_window.hide()
@@ -353,7 +337,7 @@ class UIManager:
                     m['is_visible'] = True
                     self.create_new_memo(m, show_on_create=True)
         self.enforce_z_order_layering()
-        
+
     def toggle_explorer(self) -> None:
         """메모 탐색기를 토글합니다. 보이면 숨기고, 숨어있으면 열어서 포커스를 줍니다."""
         if self.explorer_window and self.explorer_window.isVisible():
@@ -369,6 +353,12 @@ class UIManager:
         self.enforce_z_order_layering()
 
     def open_settings(self) -> None:
+        if self.settings_window and self.settings_window.isVisible():
+            # 이미 열려 있으면 새로 만들지 않습니다. (고치던 값이 사라지지 않도록)
+            self.settings_window.setWindowState(self.settings_window.windowState() & ~Qt.WindowState.WindowMinimized)
+            self.settings_window.raise_()
+            self.settings_window.activateWindow()
+            return
         self.settings_window = SettingsWindow(self.sync_manager)
         self.settings_window.show()
 
@@ -377,10 +367,12 @@ class UIManager:
         if not ms:
             self.create_empty_memo()
         else:
+            # 숨겨 둔 메모는 창을 만들지 않고, 탐색기 등에서 열 때 만듭니다. (시작 시간·메모리 절약)
             for m in ms:
-                self.create_new_memo(m, show_on_create=m.get('is_visible', True))
+                if m.get('is_visible', True):
+                    self.create_new_memo(m, show_on_create=True)
             self.enforce_z_order_layering()
-                
+
     def show_specific_memo(self, identifier: str) -> None:
         self._show_specific_memo(identifier)
         # 잠긴 암호 메모를 열었으면 바로 암호를 묻습니다.
@@ -403,7 +395,7 @@ class UIManager:
                     if w.memo_data.get('title') == identifier:
                         target_win = w
                         break
-                    
+
         if target_win:
             target_win.memo_data['is_visible'] = True
             self.notify_save(target_win.memo_data)
@@ -420,153 +412,107 @@ class UIManager:
                     self.create_new_memo(m, show_on_create=True)
                     break
 
-                    
+
     def create_empty_memo(self) -> None:
-        memo_id = str(uuid.uuid4())
-        
-        cfg = getattr(self.sync_manager, 'settings', {})
-        default_ln = cfg.get('default_gen_line_numbers', cfg.get('default_show_line_numbers', False))
-        default_bg = cfg.get('default_gen_line_bg', cfg.get('default_show_line_bg', False))
-        default_font = cfg.get('default_font_family', 'D2Coding')
-        default_pin = cfg.get('default_is_pinned', False)
-        default_opacity = float(cfg.get('default_memo_opacity', 1.0))
-        
-        existing_titles = [w.memo_data.get('title', '') for w in self.memo_windows.values()]
-        
-        base_title = "새 메모"
-        title = base_title
-        idx = 1
-        while title in existing_titles:
-            idx += 1
-            title = f"{base_title} {idx}"
-            
-        step = (self._cascade_count % 12)
-        pos_x = 60 + (step * 35)
-        pos_y = 60 + (step * 35)
-        self._cascade_count += 1
-        
-        default_color = cfg.get('default_memo_color', '#FFFFFF')
-        if default_color == "random":
-            default_color = random.choice(["#E0F2FE", "#DCFCE7", "#FEF9C3", "#FCE7F3", "#FFFFFF"])
-
-        default_w = cfg.get('default_memo_width', 350)
-        default_h = cfg.get('default_memo_height', 380)
-
-        memo_data = {
-            'id': memo_id,
-            'title': title,
-            'content': '',
-            'bg_color': default_color,
-            'font_size': 11,
-            'font_family': default_font,
-            'opacity': default_opacity,
-            'is_pinned': default_pin,
-            'is_visible': True,
-            'is_code_memo': False,
-            'position_x': pos_x,
-            'position_y': pos_y,
-            'width': default_w,
-            'height': default_h,
-            'show_line_numbers': default_ln,
-            'show_line_bg': default_bg,
-            'is_draft': True,
-            'is_manually_saved': False,
-            'updated_at': datetime.datetime.now().isoformat()
-        }
-        
-        self.create_new_memo(memo_data, show_on_create=True)
+        self._create_blank_memo(is_code=False)
 
     def create_code_memo(self) -> None:
-        memo_id = str(uuid.uuid4())
-        cfg = getattr(self.sync_manager, 'settings', {})
-        default_code_lang = cfg.get('default_code_lang', 'JSON')
-        default_code_font = cfg.get('default_code_font_family', 'D2Coding')
-        default_code_theme = cfg.get('default_code_theme', 'dark')
-        
-        default_code_ln = cfg.get('default_code_line_numbers', True)
-        default_code_bg = cfg.get('default_code_line_bg', False)
-        default_opacity = float(cfg.get('default_memo_opacity', 1.0))
-        
-        default_w = cfg.get('default_code_memo_width', cfg.get('default_memo_width', 350) * 2)
-        default_h = cfg.get('default_code_memo_height', cfg.get('default_memo_height', 380))
-        
-        existing_titles = [w.memo_data.get('title', '') for w in self.memo_windows.values()]
-        
-        base_title = "코드 메모"
-        title = base_title
-        idx = 1
-        while title in existing_titles:
-            idx += 1
-            title = f"{base_title} {idx}"
-            
-        step = (self._cascade_count % 12)
-        pos_x = 80 + (step * 35)
-        pos_y = 80 + (step * 35)
-        self._cascade_count += 1
-        
-        memo_data = {
-            'id': memo_id,
-            'title': title,
-            'content': '',
-            'bg_color': '#2E3440' if default_code_theme == 'dark' else '#FFFFFF',
-            'font_size': 11,
-            'font_family': default_code_font,
-            'opacity': default_opacity,
-            'is_pinned': cfg.get('default_is_pinned', False),
-            'is_visible': True,
-            'is_code_memo': True,
-            'code_lang': default_code_lang,
-            'code_theme': default_code_theme,
-            'position_x': pos_x,
-            'position_y': pos_y,
-            'width': default_w,
-            'height': default_h,
-            'show_line_numbers': default_code_ln,
-            'show_line_bg': default_code_bg,
-            'is_draft': True,
-            'is_manually_saved': False,
-            'updated_at': datetime.datetime.now().isoformat()
-        }
-        
-        self.create_new_memo(memo_data, show_on_create=True)
+        self._create_blank_memo(is_code=True)
         if self.explorer_window and self.explorer_window.isVisible():
             self.explorer_window.refresh()
-        
+
+    def _unused_title(self, base_title: str) -> str:
+        """'새 메모', '새 메모 2' … 중 아직 쓰이지 않은 제목. (창이 닫혀 있는 메모의 제목도 피함)"""
+        taken = {w.memo_data.get('title', '') for w in self.memo_windows.values()}
+        taken.update(m.get('title', '') for m in self.sync_manager.load_local_memos())
+        title, idx = base_title, 1
+        while title in taken:
+            idx += 1
+            title = f"{base_title} {idx}"
+        return title
+
+    def _create_blank_memo(self, is_code: bool) -> None:
+        cfg = self.sync_manager.settings
+        step = self._cascade_count % 12
+        self._cascade_count += 1
+        origin = 80 if is_code else 60
+
+        memo_data = {
+            'id': str(uuid.uuid4()),
+            'title': self._unused_title("코드 메모" if is_code else "새 메모"),
+            'content': '',
+            'font_size': 11,
+            'opacity': float(cfg.get('default_memo_opacity', 1.0)),
+            'is_pinned': cfg.get('default_is_pinned', False),
+            'is_visible': True,
+            'is_code_memo': is_code,
+            'position_x': origin + step * 35,
+            'position_y': origin + step * 35,
+            'is_draft': True,
+            'is_manually_saved': False,
+            'updated_at': datetime.datetime.now().isoformat(),
+        }
+        if is_code:
+            code_theme = cfg.get('default_code_theme', 'dark')
+            memo_data.update({
+                'bg_color': '#2E3440' if code_theme == 'dark' else '#FFFFFF',
+                'font_family': cfg.get('default_code_font_family', 'D2Coding'),
+                'code_lang': cfg.get('default_code_lang', 'JSON'),
+                'code_theme': code_theme,
+                'width': cfg.get('default_code_memo_width', cfg.get('default_memo_width', 350) * 2),
+                'height': cfg.get('default_code_memo_height', cfg.get('default_memo_height', 380)),
+                'show_line_numbers': cfg.get('default_code_line_numbers', True),
+                'show_line_bg': cfg.get('default_code_line_bg', False),
+            })
+        else:
+            color = cfg.get('default_memo_color', '#FFFFFF')
+            if color == "random":
+                color = random.choice(["#E0F2FE", "#DCFCE7", "#FEF9C3", "#FCE7F3", "#FFFFFF"])
+            memo_data.update({
+                'bg_color': color,
+                'font_family': cfg.get('default_font_family', 'D2Coding'),
+                'width': cfg.get('default_memo_width', 350),
+                'height': cfg.get('default_memo_height', 380),
+                'show_line_numbers': cfg.get('default_gen_line_numbers', cfg.get('default_show_line_numbers', False)),
+                'show_line_bg': cfg.get('default_gen_line_bg', cfg.get('default_show_line_bg', False)),
+            })
+        self.create_new_memo(memo_data, show_on_create=True)
+
     def resolve_memo_overlap(self, memo_win: 'MemoWindow') -> None:
         """메모 익스플로러나 로드 시 다른 메모와 좌표 겹침이 있으면 계단식 오프셋을 부여합니다."""
-        screen = QApplication.primaryScreen().availableGeometry()
         rect = memo_win.geometry()
-        
+        screen = (QApplication.screenAt(rect.center()) or QApplication.primaryScreen()).availableGeometry()
+
         offset_step = 35
         max_attempts = 15
         attempt = 0
-        
+
         current_x = rect.x()
         current_y = rect.y()
-        
+
         while attempt < max_attempts:
             has_overlap = False
             for other_id, other_win in self.memo_windows.items():
                 if other_win is memo_win or not other_win.isVisible():
                     continue
-                
+
                 if abs(other_win.x() - current_x) < 15 and abs(other_win.y() - current_y) < 15:
                     has_overlap = True
                     break
-                    
+
             if not has_overlap:
                 break
-                
+
             current_x += offset_step
             current_y += offset_step
-            
+
             if current_x + rect.width() > screen.right() - 20:
                 current_x = screen.left() + 40
             if current_y + rect.height() > screen.bottom() - 20:
                 current_y = screen.top() + 40
-                
+
             attempt += 1
-            
+
         if current_x != rect.x() or current_y != rect.y():
             memo_win.move(current_x, current_y)
             memo_win.memo_data.update({'position_x': current_x, 'position_y': current_y})
@@ -578,7 +524,7 @@ class UIManager:
             memo_id = str(uuid.uuid4())
             m['id'] = memo_id
 
-        if memo_id in self.memo_windows: 
+        if memo_id in self.memo_windows:
             w = self.memo_windows[memo_id]
             w.memo_data = m
             w.apply_data()
@@ -586,27 +532,19 @@ class UIManager:
                 self.resolve_memo_overlap(w)
                 w.show()
                 w.raise_()
-        else: 
+        else:
             w = MemoWindow(m, self.notify_save, self.delete_memo, self.sync_manager.rename_memo_locally, self.on_close)
             self.memo_windows[memo_id] = w
             if show_on_create:
                 self.resolve_memo_overlap(w)
                 w.show()
-            
+
     def close_memo_window_by_id(self, memo_id: str, is_deleting: bool = False) -> None:
         if memo_id in self.memo_windows:
             w = self.memo_windows.pop(memo_id)
             if is_deleting:
                 w._is_deleting = True
             w.close()
-
-    def close_memo_window(self, identifier: str) -> None:
-        if identifier in self.memo_windows:
-            self.memo_windows[identifier].close()
-        else:
-            for w in list(self.memo_windows.values()):
-                if w.memo_data.get('title') == identifier:
-                    w.close()
 
     def reload_pulled_memos(self, memo_ids: List[str]) -> None:
         """동기화로 디스크 내용이 바뀐 메모 중 열려 있는 창을 새 내용으로 갱신합니다."""
@@ -624,11 +562,11 @@ class UIManager:
             w.memo_data = m
             w.apply_data()
 
-    def notify_save(self, m: Dict[str, Any]) -> None: 
+    def notify_save(self, m: Dict[str, Any]) -> None:
         self.sync_manager.save_memo_locally(m)
         if self.explorer_window and self.explorer_window.isVisible():
             self.explorer_window.refresh()
-            
+
     def on_close(self, w: MemoWindow) -> None:
         memo_id = w.memo_data.get('id')
         if memo_id and memo_id in self.memo_windows:
@@ -636,7 +574,7 @@ class UIManager:
 
     def _flash_memo_window(self, target_win: 'MemoWindow') -> None:
         """탐색기 더블클릭 시 해당 메모창을 가시적으로 강조합니다.
-        
+
         연속 클릭 시 플래시가 중첩되지 않도록 플래그를 사용하며,
         original_style을 호출 시점에 고정하여 클로저 캡처 문제를 방지합니다.
         """

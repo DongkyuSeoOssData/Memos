@@ -1,7 +1,5 @@
 from ui.dialogs import ConflictDialog
-from ui.ui_utils import apply_ios_shadow
-from ui.themes import LIGHT_THEMES, DARK_THEMES
-import re
+from ui import modern_style
 import datetime
 from typing import List, Dict, Any, Optional
 from PyQt6.QtWidgets import (
@@ -10,8 +8,8 @@ from PyQt6.QtWidgets import (
     QSizeGrip, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, pyqtSlot
-from PyQt6.QtGui import QGuiApplication, QShortcut, QKeySequence, QFont
-from utils.text_utils import clean_plain_text
+from PyQt6.QtGui import QGuiApplication, QShortcut, QKeySequence, QFont, QIcon
+from utils.text_utils import clean_plain_text, extract_hashtags
 
 class MemoExplorerWindow(QWidget):
     """
@@ -19,6 +17,8 @@ class MemoExplorerWindow(QWidget):
     - 윈도우 우측 창 제어 버튼 (─, □/❐, ✕) & 100% 정상 작동하는 최대화/복원
     - 실시간 라이트 / 다크 모드 전환 지원
     """
+    FAVORITE_COLOR = "#F5A623"
+
     def __init__(self, ui_manager: Any) -> None:
         super().__init__()
         self.ui_manager = ui_manager
@@ -92,7 +92,7 @@ class MemoExplorerWindow(QWidget):
 
     def _calc_font_pt_from_size(self) -> int:
         """현재 창 너비를 기반으로 ui_font_pt를 동적으로 계산합니다.
-        
+
         창 너비 440px 기준 9pt, 매 60px 증가마다 1pt 증가, 최대 16pt.
         """
         w = self.width()
@@ -109,7 +109,69 @@ class MemoExplorerWindow(QWidget):
         s_cfg = self.ui_manager.sync_manager.settings.get("shortcuts", {})
         # 글로벌 단축키와 중복을 막기 위해 전역 훅 단축키는 QShortcut에서 제외
         QShortcut(QKeySequence(s_cfg.get("open_all_memos", "Alt+O")), self).activated.connect(self.ui_manager.open_all_memos)
+        QShortcut(QKeySequence(s_cfg.get("toggle_memo_lock", "Ctrl+L")), self).activated.connect(
+            lambda: self._lock_action_on_current("toggle_memo_lock"))
+        QShortcut(QKeySequence(s_cfg.get("set_memo_password", "Ctrl+Shift+L")), self).activated.connect(
+            lambda: self._lock_action_on_current("set_memo_password"))
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.close)
+
+    # ── 암호 메모 관리 ───────────────────────────────────────────────────────
+    def _lock_action(self, memo: Dict[str, Any], action: str) -> None:
+        """선택한 메모에 암호 관련 동작을 수행합니다. (메모 창의 기능을 그대로 사용, 창은 띄우지 않음)"""
+        memo_id = memo.get('id', '')
+        if not memo_id or self.is_trash_mode:
+            return
+        self._flush_preview_save()
+        w = self.ui_manager.memo_windows.get(memo_id)
+        if w is None:
+            fresh = next((x for x in self.ui_manager.sync_manager.load_local_memos() if x.get('id') == memo_id), None)
+            if not fresh:
+                return
+            self.ui_manager.create_new_memo(fresh, show_on_create=False)
+            w = self.ui_manager.memo_windows.get(memo_id)
+        if w is None:
+            return
+        w._dialog_parent = self
+        try:
+            getattr(w, action)()
+        finally:
+            w._dialog_parent = None
+        self.pv.clear()
+        self.refresh()
+
+    def _lock_action_on_current(self, action: str) -> None:
+        r = self.table.currentRow()
+        item = self.table.item(r, 2) if r >= 0 else None
+        memo = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if memo:
+            self._lock_action(memo, action)
+        else:
+            self.show_toast("먼저 목록에서 메모를 선택하세요.")
+
+    def _add_lock_menu(self, menu: Any, m: Dict[str, Any]) -> None:
+        if m.get('_unreadable'):
+            return
+        sc = self.ui_manager.sync_manager.settings.get("shortcuts", {})
+        def _label(text: str, key: str) -> str:
+            return f"{text} ({sc[key]})" if sc.get(key) else text
+
+        menu.addSeparator()
+        if m.get('_locked'):
+            menu.addAction(_label("🔓 잠금 해제 (암호 입력)", "toggle_memo_lock")).triggered.connect(
+                lambda: self._lock_action(m, "prompt_unlock"))
+            if self.ui_manager.sync_manager.memo_has_master_recovery(m.get('id', '')):
+                menu.addAction("관리자 키로 복구…").triggered.connect(
+                    lambda: self._lock_action(m, "recover_with_master_key"))
+        elif m.get('is_locked'):
+            menu.addAction(_label("🔒 지금 잠그기", "toggle_memo_lock")).triggered.connect(
+                lambda: self._lock_action(m, "lock_now"))
+            menu.addAction(_label("암호 변경", "set_memo_password")).triggered.connect(
+                lambda: self._lock_action(m, "set_memo_password"))
+            menu.addAction("암호 제거 (일반 메모로)").triggered.connect(
+                lambda: self._lock_action(m, "remove_memo_password"))
+        else:
+            menu.addAction(_label("🔒 이 메모에 암호 걸기", "set_memo_password")).triggered.connect(
+                lambda: self._lock_action(m, "set_memo_password"))
 
     def keyPressEvent(self, e: Any) -> None:
         if e.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
@@ -126,7 +188,7 @@ class MemoExplorerWindow(QWidget):
         else:
             self._apply_initial_window_size()
         self.setMinimumSize(580, 440)
-            
+
         self.is_pinned = self.ui_manager.sync_manager.settings.get('explorer_is_pinned', True)
         f = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinimizeButtonHint
         if self.is_pinned:
@@ -135,20 +197,18 @@ class MemoExplorerWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         main_l = QVBoxLayout(self)
         main_l.setContentsMargins(15, 15, 15, 15)
-        
+
         self.bg = QFrame()
         self.bg.setObjectName("ExplorerBg")
         bg_l = QVBoxLayout(self.bg)
         bg_l.setContentsMargins(20, 20, 20, 20)
         main_l.addWidget(self.bg)
-        apply_ios_shadow(self.bg)
-        
+
         # 📌 상단 헤더: 좌측 제목 & 우측 윈도우 스타일 컨트롤 버튼 (─, □, ✕)
         ctrl = QHBoxLayout()
-        
-        title_l = QLabel("Memos")
-        title_l.setStyleSheet("font-size: 14pt; border: none; font-weight: 700; letter-spacing: -0.5px; font-family: 'D2Coding', 'Consolas', monospace;")
-        ctrl.addWidget(title_l)
+
+        self.title_label = QLabel("Memos")
+        ctrl.addWidget(self.title_label)
 
         self.btn_app_theme = QPushButton("")
         self.btn_app_theme.setFixedSize(100, 30)
@@ -157,7 +217,6 @@ class MemoExplorerWindow(QWidget):
 
         # 알림(토스트)은 '미리보기' 제목 바로 옆에 표시합니다.
         self.toast = QLabel("")
-        self.toast.setStyleSheet("background-color: rgba(0, 122, 255, 0.8); color: white; font-weight: bold; font-size: 9.5pt; border-radius: 8px; padding: 2px 10px;")
         self.toast.hide()
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
@@ -189,38 +248,38 @@ class MemoExplorerWindow(QWidget):
         self.btn_filter_all  = QPushButton(" 전체")
         self.btn_filter_gen  = QPushButton(" 일반")
         self.btn_filter_code = QPushButton(" 코드")
-        
+
         for fb in [self.btn_filter_all, self.btn_filter_gen, self.btn_filter_code]:
             fb.setFixedHeight(34)
             fb.setCheckable(True)
             fb.setCursor(Qt.CursorShape.PointingHandCursor)
             filter_layout.addWidget(fb)
-            
+
         self.btn_filter_all.clicked.connect(lambda: self.set_filter_mode("ALL"))
         self.btn_filter_gen.clicked.connect(lambda: self.set_filter_mode("GENERAL"))
         self.btn_filter_code.clicked.connect(lambda: self.set_filter_mode("CODE"))
         self.update_filter_buttons()
-        
+
         filter_layout.addStretch()
-        
+
         self.btn_arrange_rolled = QPushButton(" 접은 메모 정렬")
         self.btn_arrange_memos  = QPushButton(" 펼친 메모 정렬")
-        
+
         for ab in [self.btn_arrange_rolled, self.btn_arrange_memos]:
             ab.setFixedHeight(34)
             ab.setCursor(Qt.CursorShape.PointingHandCursor)
             filter_layout.addWidget(ab)
-            
+
         self.btn_arrange_rolled.clicked.connect(self.ui_manager.arrange_rolled_up_memos)
         self.btn_arrange_memos.clicked.connect(self.ui_manager.arrange_memos)
-        
+
         bg_l.addLayout(filter_layout)
 
         sh_l = QHBoxLayout()
         self.s_type = QComboBox()
         self.s_type.addItems(["제목 검색", "본문 검색"])
         self.s_type.setFixedHeight(36)
-        
+
         self.tag_combo = QComboBox()
         self.tag_combo.addItem("#")
         self.tag_combo.setFixedHeight(36)
@@ -228,7 +287,7 @@ class MemoExplorerWindow(QWidget):
         self.tag_combo.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.tag_combo.setFixedWidth(55) # 혹은 원하는 고정 폭 (예: 50~60px)
         self.tag_combo.currentIndexChanged.connect(self.on_search)
-        
+
         self.s_in = QLineEdit()
         self.s_in.setPlaceholderText("검색")
         self.s_in.setFixedHeight(36)
@@ -238,15 +297,16 @@ class MemoExplorerWindow(QWidget):
         self.t_btn.setCheckable(True)
         self.t_btn.setFixedHeight(36)
         self.t_btn.clicked.connect(self.toggle_trash)
-        
+
         sh_l.addWidget(self.s_type)
         sh_l.addWidget(self.tag_combo)
         sh_l.addWidget(self.s_in)
         sh_l.addWidget(self.t_btn)
         bg_l.addLayout(sh_l)
-        
+
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["선택", "♡", "구분 / 제목", "수정일시\n(년월일.시분)", "잠금"])
+        self.table.setHorizontalHeaderLabels(["선택", "★", "구분 / 제목", "수정일시", "잠금"])
+        self.table.horizontalHeaderItem(1).setToolTip("즐겨찾기")
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -255,18 +315,18 @@ class MemoExplorerWindow(QWidget):
         self.table.cellDoubleClicked.connect(self.on_cell_double_click)
         self.table.itemSelectionChanged.connect(self.sync_selection_and_checkboxes)
         self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
-        
+
         self.table.verticalHeader().setVisible(False)
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_table_context_menu)
-        self.table.setFocusPolicy(Qt.FocusPolicy.StrongFocus) 
-        
+        self.table.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
         h = self.table.horizontalHeader()
         h.setSectionsMovable(False)
         h.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(0, 50)
         h.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(1, 50)
+        self.table.setColumnWidth(1, 44)
         h.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         h.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(3, 120)
@@ -274,26 +334,25 @@ class MemoExplorerWindow(QWidget):
         self.table.setColumnWidth(4, 70)
         h.sectionClicked.connect(self.on_header_click)
         bg_l.addWidget(self.table)
-        
+
         pg_l = QHBoxLayout()
         self.p_b = QPushButton("‹")
         self.p_b.setFixedSize(30, 30)
         self.p_b.clicked.connect(self.go_prev)
 
         self.p_l = QLabel("1 / 1")
-        self.p_l.setStyleSheet("font-weight: bold; margin: 0 16px; font-size: 10pt;")
 
         self.n_b = QPushButton("›")
         self.n_b.setFixedSize(30, 30)
         self.n_b.clicked.connect(self.go_next)
-        
+
         pg_l.addStretch()
         pg_l.addWidget(self.p_b)
         pg_l.addWidget(self.p_l)
         pg_l.addWidget(self.n_b)
         pg_l.addStretch()
         bg_l.addLayout(pg_l)
-        
+
         pv_head = QHBoxLayout()
         pv_head.setSpacing(10)
         pv_title = QLabel("미리보기")
@@ -303,24 +362,23 @@ class MemoExplorerWindow(QWidget):
         pv_head.addStretch()
         bg_l.addLayout(pv_head)
         self.pv = QTextEdit()
-        self.pv.setFixedHeight(120)
-        self.pv.setReadOnly(False) 
+        self.pv.setFixedHeight(100)
+        self.pv.setReadOnly(False)
         bg_l.addWidget(self.pv)
         self.pv.textChanged.connect(self.on_preview_changed)
-        
+
         # 총 n개 메모 알림 + total.svg 아이콘 적용
         self.stat_box = QWidget()
         stat_layout = QHBoxLayout(self.stat_box)
         stat_layout.setContentsMargins(0, 4, 0, 0)
         stat_layout.setSpacing(6)
-        
+
         self.stat_icon = QLabel()
         if hasattr(self.ui_manager, 'get_theme_icon'):
             self.stat_icon.setPixmap(self.ui_manager.get_theme_icon("total.svg", False, override_color="#8E8E93").pixmap(16, 16))
-            
+
         self.stat_label = QLabel("총 0개")
-        self.stat_label.setStyleSheet("font-size: 9pt; font-weight: bold; color: #8E8E93;")
-        
+
         stat_layout.addWidget(self.stat_icon)
         stat_layout.addWidget(self.stat_label)
         stat_layout.addStretch()
@@ -330,10 +388,10 @@ class MemoExplorerWindow(QWidget):
         self.btn_l = QHBoxLayout(self.btn_box)
         self.btn_l.setContentsMargins(0, 10, 0, 0)
         bg_l.addWidget(self.btn_box)
-        
+
         self.setup_btns()
         self.refresh()
-        
+
         self.grip = QSizeGrip(self)
         self._apply_font_scale()
         self.apply_size_settings()
@@ -374,7 +432,7 @@ class MemoExplorerWindow(QWidget):
         new_theme = "dark" if cur == "white" else "white"
         self.ui_manager.sync_manager.settings['app_theme'] = new_theme
         self.ui_manager.sync_manager.save_settings(self.ui_manager.sync_manager.settings)
-        
+
         self.apply_theme_style()
         self.update_filter_buttons()
         self.update_table()
@@ -392,20 +450,29 @@ class MemoExplorerWindow(QWidget):
         self.ui_manager.sync_manager.settings['explorer_is_pinned'] = self.is_pinned
         self.ui_manager.sync_manager.save_settings(self.ui_manager.sync_manager.settings)
         f = self.windowFlags()
-        
+
         was_visible = self.isVisible()
-        
+
         if self.is_pinned:
             self.setWindowFlags(f | Qt.WindowType.WindowStaysOnTopHint)
             self.show_toast("화면 고정 켜짐")
         else:
             self.setWindowFlags(f & ~Qt.WindowType.WindowStaysOnTopHint)
             self.show_toast("화면 고정 해제됨")
-        
+
         if was_visible:
             self.show()
-            
+
         self.update_icons()
+
+    def favorite_icon(self, is_fav: bool) -> Any:
+        """즐겨찾기 별: 등록된 메모는 노란 별, 아니면 테두리만 있는 옅은 별."""
+        if not hasattr(self.ui_manager, 'get_theme_icon'):
+            return QIcon()
+        is_dark = self.ui_manager.sync_manager.settings.get('app_theme', 'white') == "dark"
+        if is_fav:
+            return self.ui_manager.get_theme_icon("star_true.svg", is_dark, override_color=self.FAVORITE_COLOR)
+        return self.ui_manager.get_theme_icon("star_false.svg", is_dark, override_color="#8E8E93")
 
     def update_icons(self) -> None:
         if not hasattr(self.ui_manager, 'get_theme_icon'): return
@@ -415,26 +482,6 @@ class MemoExplorerWindow(QWidget):
         self.btn_win_min.setText("")
         self.btn_win_max.setText("")
         self.btn_win_close.setText("")
-        is_pinned = getattr(self, 'is_pinned', False)
-        icon_color_pinned = "#FFFFFF"
-        # 테마에 따라 비고정 아이콘 색상 결정: 다크→흰색, 라이트→검정
-        icon_color_unpinned = "#FFFFFF" if is_dark else "#000000"
-        if is_pinned:
-            # 고정 상태: 파란 배경, 흰 아이콘
-            self.btn_win_pin.setStyleSheet(
-                "QPushButton { background: #0A84FF; color: white; border: none; border-radius: 4px; }"
-                " QPushButton:hover { background: #007AFF; }"
-            )
-            self.btn_win_pin.setIcon(self.ui_manager.get_theme_icon("pin_icon_True.svg", is_dark, override_color=icon_color_pinned))
-        else:
-            # 비고정 상태: 투명 배경, 호버 시 배경 색칠 형태
-            hover_bg = "rgba(255,255,255,0.18)" if is_dark else "rgba(0,0,0,0.10)"
-            self.btn_win_pin.setStyleSheet(
-                f"QPushButton {{ background: transparent; border: none; border-radius: 4px; }}"
-                f" QPushButton:hover {{ background: {hover_bg}; }}"
-                f" QPushButton:pressed {{ background: {hover_bg}; }}"
-            )
-            self.btn_win_pin.setIcon(self.ui_manager.get_theme_icon("pin_icon_False.svg", is_dark, override_color=icon_color_unpinned))
         self.btn_app_theme.setIcon(self.ui_manager.get_theme_icon("litemode.svg" if is_dark else "darkmod.svg", is_dark))
         self.btn_win_min.setIcon(self.ui_manager.get_theme_icon("minimize.svg", is_dark))
         self.btn_win_max.setIcon(self.ui_manager.get_theme_icon("maximize.svg", is_dark))
@@ -450,415 +497,21 @@ class MemoExplorerWindow(QWidget):
         self.n_b.setText("")
         self.p_b.setIcon(self.ui_manager.get_theme_icon("arrow left.svg", is_dark))
         self.n_b.setIcon(self.ui_manager.get_theme_icon("arrow right.svg", is_dark))
-        self.b_new.setIcon(self.ui_manager.get_theme_icon("pluse.svg", is_dark))
         self.b_new_code.setIcon(self.ui_manager.get_theme_icon("codememo.svg", is_dark))
         self.b_ref.setIcon(self.ui_manager.get_theme_icon("restart-icon.svg", is_dark))
         self.b_sync.setIcon(self.ui_manager.get_theme_icon("cloude.svg", is_dark))
         self.b_del.setIcon(self.ui_manager.get_theme_icon("minus.svg", is_dark))
         self.b_res.setIcon(self.ui_manager.get_theme_icon("restart-icon.svg", is_dark))
         self.b_empty_trash.setIcon(self.ui_manager.get_theme_icon("trashbucket.svg", is_dark))
+        # 고정·새 메모 버튼의 아이콘과 창 버튼 모양은 디자인 스타일이 정합니다.
+        modern_style.apply_explorer_chrome(self)
 
     def apply_theme_style(self) -> None:
-        """iOS 울트라 미니멀 화이트 & 블랙 양방향 스타일시트"""
-        self.update_icons()
-        theme = self.ui_manager.sync_manager.settings.get('app_theme', 'white')
-        is_dark = (theme == "dark")
-        base_pt = int(getattr(self, "ui_font_pt", 10))
-        
+        """현재 색 테마·디자인 스타일을 창 전체에 입힙니다."""
+        is_dark = self.ui_manager.sync_manager.settings.get('app_theme', 'white') == "dark"
         self.btn_app_theme.setText(" 라이트" if is_dark else " 다크")
-        
-        win_btn_style_dark = "QPushButton { background: transparent; color: #FFFFFF; font-weight: bold; border: none; border-radius: 6px; } QPushButton:hover { background: rgba(255, 255, 255, 0.15); }"
-        win_btn_style_light = "QPushButton { background: transparent; color: #000000; font-weight: bold; border: none; border-radius: 6px; } QPushButton:hover { background: rgba(0, 0, 0, 0.08); }"
-        close_btn_style = "QPushButton { background: transparent; color: #FF453A; font-weight: bold; border: none; border-radius: 6px; } QPushButton:hover { background: #FF453A; color: white; }"
-
-        if is_dark:
-            mode = self.ui_manager.sync_manager.settings.get("dark_theme_mode", "dark")
-            pal = DARK_THEMES.get(mode, DARK_THEMES["dark"])
-            self.bg.setStyleSheet(f"""
-                QFrame#ExplorerBg {{
-                    background-color: {pal['bg']};
-                    border: 1px solid {pal['border']};
-                    border-radius: 0px;
-                }}
-                QLabel {{
-                    color: {pal['text']};
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    font-size: {base_pt}pt;
-                }}
-                QPushButton {{
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    color: {pal['text']};
-                    border-radius: 0px;
-                    font-size: {base_pt}pt;
-                }}
-                QLineEdit, QComboBox {{
-                    padding: 8px 14px;
-                    border: 1px solid {pal['border']};
-                    border-radius: 0px;
-                    color: {pal['text']};
-                    background-color: {pal['input']};
-                    selection-background-color: {pal['accent']};
-                    font-size: {base_pt}pt;
-                }}
-                QLineEdit:focus, QComboBox:focus {{
-                    border: 1.5px solid {pal['accent']};
-                    background-color: {pal['card']};
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: {pal['input']};
-                    color: {pal['text']};
-                    selection-background-color: {pal['accent']};
-                    selection-color: white;
-                    border: 1px solid {pal['border']};
-                }}
-            """)
-            self.table.setStyleSheet(f"""
-                QTableWidget {{
-                    border: none;
-                    border-radius: 0px;
-                    background-color: {pal['card']};
-                    color: {pal['text']};
-                    outline: none;
-                    gridline-color: transparent;
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    font-size: {base_pt}pt;
-                }}
-                QTableWidget::item {{
-                    border: none;
-                    border-bottom: 1px solid {pal['border']};
-                    color: {pal['text']};
-                    padding: 4px 8px;
-                    background-color: transparent;
-                }}
-                QTableWidget::item:alternate {{
-                    background-color: rgba(255, 255, 255, 0.025);
-                }}
-                QTableWidget::item:selected {{
-                    background-color: rgba(10, 132, 255, 0.28);
-                    color: #FFFFFF;
-                    font-weight: bold;
-                    border-bottom: 1px solid rgba(10, 132, 255, 0.5);
-                }}
-                QHeaderView {{
-                    background-color: transparent;
-                    border: none;
-                }}
-                QHeaderView::section {{
-                    background-color: {pal['input']};
-                    color: {pal['accent']};
-                    font-weight: 600;
-                    font-size: {max(8, base_pt - 1)}pt;
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    border: none;
-                    border-bottom: 1px solid {pal['border']};
-                    padding: 8px 10px;
-                    letter-spacing: 0.3px;
-                    text-transform: uppercase;
-                }}
-                QTableWidget::indicator {{
-                    width: 18px;
-                    height: 18px;
-                    margin-left: 12px;
-                    border-radius: 5px;
-                }}
-                QTableWidget::indicator:unchecked {{
-                    border: 1.5px solid rgba(255,255,255,0.25);
-                    background: transparent;
-                    border-radius: 5px;
-                }}
-                QTableWidget::indicator:checked {{
-                    background: {pal['accent']};
-                    border: 1.5px solid {pal['accent']};
-                    border-radius: 5px;
-                }}
-                QTableCornerButton::section {{
-                    background-color: {pal['input']};
-                    border: none;
-                }}
-                QScrollBar:vertical {{
-                    width: 6px;
-                    background: transparent;
-                    margin: 4px 2px 4px 0;
-                }}
-                QScrollBar::handle:vertical {{
-                    background: rgba(255,255,255,0.18);
-                    border-radius: 3px;
-                    min-height: 24px;
-                }}
-                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-            """)
-            self.table.setAlternatingRowColors(True)
-            self.pv.setStyleSheet(f"""
-                background-color: {pal['input']};
-                border: 1px solid {pal['border']};
-                border-radius: 12px; padding: 12px;
-                color: {pal['text']}; font-size: {base_pt}pt;
-                font-family: 'D2Coding', 'Consolas', monospace;
-            """)
-
-            btn_base = f"""
-                QPushButton {{
-                    padding: 5px 8px;
-                    background-color: {pal['input']};
-                    border: 1px solid {pal['border']};
-                    border-radius: 10px;
-                    color: {pal['text']};
-                    font-weight: bold;
-                    font-size: {base_pt}pt;
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    text-align: left;
-                }}
-                QPushButton:hover {{
-                    background-color: rgba(255,255,255,0.12);
-                    border-color: rgba(255,255,255,0.25);
-                }}
-            """
-            self.b_new.setStyleSheet(btn_base)
-            self.b_new_code.setStyleSheet(btn_base)
-            self.b_ref.setStyleSheet(btn_base)
-            self.b_sync.setStyleSheet(btn_base)
-            self.b_res.setStyleSheet(btn_base)
-            self.btn_app_theme.setStyleSheet(f"""
-                padding: 0 14px; border: 1.5px solid {pal['accent']}; border-radius: 14px;
-                font-weight: bold; background: rgba(10,132,255,0.15); color: {pal['accent']};
-                font-size: {base_pt}pt;
-            """)
-            self.btn_arrange_rolled.setStyleSheet(f"""
-                padding: 6px 14px; background: rgba(10,132,255,0.12);
-                border: 1px solid rgba(10,132,255,0.4); color: {pal['accent']};
-                font-weight: bold; border-radius: 12px;
-                font-size: {base_pt}pt;
-            """)
-            self.btn_arrange_memos.setStyleSheet(f"""
-                padding: 6px 14px; background: rgba(10,132,255,0.12);
-                border: 1px solid rgba(10,132,255,0.4); color: {pal['accent']};
-                font-weight: bold; border-radius: 12px;
-                font-size: {base_pt}pt;
-            """)
-            self.b_del.setStyleSheet(
-                f"QPushButton {{ padding: 5px 8px; background: rgba(255,69,58,0.12); "
-                f"color: #FF453A; border: 1px solid rgba(255,69,58,0.35); "
-                f"border-radius: 10px; font-weight: bold; font-size: {base_pt}pt; "
-                f"font-family: 'D2Coding','Consolas',monospace; text-align: left; }} "
-                f"QPushButton:hover {{ background: rgba(255,69,58,0.25); }}"
-            )
-            self.b_empty_trash.setStyleSheet(
-                f"QPushButton {{ padding: 5px 8px; background: rgba(255,69,58,0.12); "
-                f"color: #FF453A; border: 1px solid rgba(255,69,58,0.35); "
-                f"border-radius: 10px; font-weight: bold; font-size: {base_pt}pt; "
-                f"font-family: 'D2Coding','Consolas',monospace; text-align: left; }} "
-                f"QPushButton:hover {{ background: rgba(255,69,58,0.25); }}"
-            )
-            self.t_btn.setStyleSheet(f"""
-                QPushButton {{ padding: 8px 16px; background-color: {pal['input']};
-                border: 1px solid {pal['border']}; border-radius: 10px;
-                color: {pal['text']}; font-weight: bold; }}
-                QPushButton:checked {{ background-color: rgba(10,132,255,0.85);
-                color: white; border-color: {pal['accent']}; }}
-            """)
-            self.btn_win_min.setStyleSheet(win_btn_style_dark)
-            self.btn_win_max.setStyleSheet(win_btn_style_dark)
-            self.btn_win_close.setStyleSheet(close_btn_style)
-        else:
-            mode = self.ui_manager.sync_manager.settings.get("light_theme_mode", "white")
-            pal = LIGHT_THEMES.get(mode, LIGHT_THEMES["white"])
-            self.bg.setStyleSheet(f"""
-                QFrame#ExplorerBg {{
-                    background-color: {pal['bg']};
-                    border: 1px solid {pal['border']};
-                    border-radius: 0px;
-                }}
-                QLabel {{
-                    color: {pal['text']};
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    font-size: {base_pt}pt;
-                }}
-                QPushButton {{
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    color: {pal['text']};
-                    border-radius: 0px;
-                    font-size: {base_pt}pt;
-                }}
-                QLineEdit, QComboBox {{
-                    padding: 8px 14px;
-                    border: 1px solid {pal['border']};
-                    border-radius: 0px;
-                    color: {pal['text']};
-                    background-color: {pal['input']};
-                    selection-background-color: {pal['accent']};
-                    font-size: {base_pt}pt;
-                }}
-                QLineEdit:focus, QComboBox:focus {{
-                    border: 1.5px solid {pal['accent']};
-                    background-color: {pal['input']};
-                }}
-                QComboBox QAbstractItemView {{
-                    background-color: {pal['input']};
-                    color: {pal['text']};
-                    selection-background-color: {pal['accent']};
-                    selection-color: white;
-                    border: 1px solid {pal['border']};
-                }}
-            """)
-            self.table.setStyleSheet(f"""
-                QTableWidget {{
-                    border: none;
-                    border-radius: 0px;
-                    background-color: {pal['card']};
-                    color: {pal['text']};
-                    outline: none;
-                    gridline-color: transparent;
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    font-size: {base_pt}pt;
-                }}
-                QTableWidget::item {{
-                    border: none;
-                    border-bottom: 1px solid {pal['border']};
-                    color: {pal['text']};
-                    padding: 4px 8px;
-                    background-color: transparent;
-                }}
-                QTableWidget::item:alternate {{
-                    background-color: rgba(0, 0, 0, 0.018);
-                }}
-                QTableWidget::item:selected {{
-                    background-color: rgba(0, 122, 255, 0.14);
-                    color: {pal['accent']};
-                    font-weight: bold;
-                    border-bottom: 1px solid rgba(0, 122, 255, 0.3);
-                }}
-                QHeaderView {{
-                    background-color: transparent;
-                    border: none;
-                }}
-                QHeaderView::section {{
-                    background-color: {pal['bg']};
-                    color: #8E8E93;
-                    font-weight: 600;
-                    font-size: {max(8, base_pt - 1)}pt;
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    border: none;
-                    border-bottom: 1px solid {pal['border']};
-                    padding: 8px 10px;
-                    letter-spacing: 0.3px;
-                    text-transform: uppercase;
-                }}
-                QTableWidget::indicator {{
-                    width: 18px;
-                    height: 18px;
-                    margin-left: 12px;
-                    border-radius: 5px;
-                }}
-                QTableWidget::indicator:unchecked {{
-                    border: 1.5px solid rgba(0,0,0,0.25);
-                    background: transparent;
-                    border-radius: 5px;
-                }}
-                QTableWidget::indicator:checked {{
-                    background: {pal['accent']};
-                    border: 1.5px solid {pal['accent']};
-                    border-radius: 5px;
-                }}
-                QTableCornerButton::section {{
-                    background-color: {pal['bg']};
-                    border: none;
-                }}
-                QScrollBar:vertical {{
-                    width: 6px;
-                    background: transparent;
-                    margin: 4px 2px 4px 0;
-                }}
-                QScrollBar::handle:vertical {{
-                    background: rgba(0,0,0,0.15);
-                    border-radius: 3px;
-                    min-height: 24px;
-                }}
-                QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-            """)
-            self.table.setAlternatingRowColors(True)
-            self.pv.setStyleSheet(f"""
-                background-color: {pal['card']};
-                border: 1px solid {pal['border']};
-                border-radius: 12px; padding: 12px;
-                color: {pal['text']}; font-size: {base_pt}pt;
-                font-family: 'D2Coding', 'Consolas', monospace;
-            """)
-
-            btn_base = f"""
-                QPushButton {{
-                    padding: 5px 8px;
-                    background-color: {pal['card']};
-                    border: 1px solid {pal['border']};
-                    border-radius: 10px;
-                    color: {pal['text']};
-                    font-weight: bold;
-                    font-size: {base_pt}pt;
-                    font-family: 'D2Coding', 'Consolas', monospace;
-                    text-align: left;
-                }}
-                QPushButton:hover {{
-                    background-color: {pal['accent']};
-                    color: white;
-                    border-color: {pal['accent']};
-                }}
-            """
-            self.b_new.setStyleSheet(btn_base)
-            self.b_new_code.setStyleSheet(btn_base)
-            self.b_ref.setStyleSheet(btn_base)
-            self.b_sync.setStyleSheet(btn_base)
-            self.b_res.setStyleSheet(btn_base)
-            self.btn_app_theme.setStyleSheet(f"""
-                padding: 0 14px; border: 1.5px solid {pal['accent']}; border-radius: 14px;
-                font-weight: bold; background: rgba(0,122,255,0.08); color: {pal['accent']};
-                font-size: {base_pt}pt;
-            """)
-            self.btn_arrange_rolled.setStyleSheet(f"""
-                padding: 6px 14px; background: rgba(0,122,255,0.08);
-                border: 1px solid rgba(0,122,255,0.35); color: {pal['accent']};
-                font-weight: bold; border-radius: 12px;
-                font-size: {base_pt}pt;
-            """)
-            self.btn_arrange_memos.setStyleSheet(f"""
-                padding: 6px 14px; background: rgba(0,122,255,0.08);
-                border: 1px solid rgba(0,122,255,0.35); color: {pal['accent']};
-                font-weight: bold; border-radius: 12px;
-                font-size: {base_pt}pt;
-            """)
-            self.b_del.setStyleSheet(
-                f"QPushButton {{ padding: 5px 8px; background: rgba(255,59,48,0.07); "
-                f"color: #FF3B30; border: 1px solid rgba(255,59,48,0.25); "
-                f"border-radius: 10px; font-weight: bold; font-size: {base_pt}pt; "
-                f"font-family: 'D2Coding','Consolas',monospace; text-align: left; }} "
-                f"QPushButton:hover {{ background: rgba(255,59,48,0.15); }}"
-            )
-            self.b_empty_trash.setStyleSheet(
-                f"QPushButton {{ padding: 5px 8px; background: rgba(255,59,48,0.07); "
-                f"color: #FF3B30; border: 1px solid rgba(255,59,48,0.25); "
-                f"border-radius: 10px; font-weight: bold; font-size: {base_pt}pt; "
-                f"font-family: 'D2Coding','Consolas',monospace; text-align: left; }} "
-                f"QPushButton:hover {{ background: rgba(255,59,48,0.15); }}"
-            )
-
-            if hasattr(self.ui_manager, 'get_theme_icon'):
-                self.b_new.setIcon(self.ui_manager.get_theme_icon("pluse.svg", is_dark))
-                self.b_new_code.setIcon(self.ui_manager.get_theme_icon("codememo.svg", is_dark))
-                self.b_ref.setIcon(self.ui_manager.get_theme_icon("restart-icon.svg", is_dark))
-                self.b_sync.setIcon(self.ui_manager.get_theme_icon("cloude.svg", is_dark))
-                self.b_del.setIcon(self.ui_manager.get_theme_icon("trashbucket.svg", is_dark, override_color="#FF3B30"))
-                self.b_res.setIcon(self.ui_manager.get_theme_icon("save.svg", is_dark))
-                self.b_empty_trash.setIcon(self.ui_manager.get_theme_icon("trashbucket.svg", is_dark, override_color="#FF3B30"))
-            self.t_btn.setStyleSheet(f"""
-                QPushButton {{ padding: 8px 16px; background-color: {pal['card']};
-                border: 1px solid {pal['border']}; border-radius: 10px;
-                color: {pal['text']}; font-weight: bold; }}
-                QPushButton:checked {{ background-color: rgba(0,122,255,0.85);
-                color: white; border-color: {pal['accent']}; }}
-            """)
-            self.btn_win_min.setStyleSheet(win_btn_style_light)
-            self.btn_win_max.setStyleSheet(win_btn_style_light)
-            self.btn_win_close.setStyleSheet(close_btn_style)
-
         self.update_icons()
+        modern_style.apply_explorer(self)
 
     def sync_selection_and_checkboxes(self) -> None:
         selected_rows = set(index.row() for index in self.table.selectedIndexes())
@@ -877,15 +530,7 @@ class MemoExplorerWindow(QWidget):
         self.refresh()
 
     def update_filter_buttons(self) -> None:
-        theme = self.ui_manager.sync_manager.settings.get('app_theme', 'white')
-        is_dark = (theme == "dark")
-        
-        btn_style_off = "padding: 6px 16px; background: #1C1C1E; border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 12px; color: #FFFFFF; font-weight: bold;" if is_dark else "padding: 6px 16px; background: white; border: 1px solid #C7C7CC; border-radius: 12px; color: #000000; font-weight: bold;"
-        btn_style_on = "padding: 6px 16px; background: #007AFF; border: 1px solid #007AFF; border-radius: 12px; color: white; font-weight: bold;"
-        
-        self.btn_filter_all.setStyleSheet(btn_style_on if self.filter_mode == "ALL" else btn_style_off)
-        self.btn_filter_gen.setStyleSheet(btn_style_on if self.filter_mode == "GENERAL" else btn_style_off)
-        self.btn_filter_code.setStyleSheet(btn_style_on if self.filter_mode == "CODE" else btn_style_off)
+        modern_style.apply_explorer_filters(self)
 
     def wheelEvent(self, event: Any) -> None:
         if not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
@@ -925,18 +570,18 @@ class MemoExplorerWindow(QWidget):
         self.ui_manager.sync_manager.save_settings(self.ui_manager.sync_manager.settings)
         super().closeEvent(event)
 
-    def show_toast(self, m: str) -> None: 
+    def show_toast(self, m: str) -> None:
         self.toast.setText(f"✓ {m}")
         self.toast.show()
         self._toast_timer.start(3500)
 
-    def mousePressEvent(self, e: Any) -> None: 
+    def mousePressEvent(self, e: Any) -> None:
         if e.button() == Qt.MouseButton.LeftButton:
             self._old_pos = e.globalPosition().toPoint()
             self._drag_size = self.size()
-            
+
     def mouseMoveEvent(self, e: Any) -> None:
-        if self._old_pos and not self.isMaximized(): 
+        if self._old_pos and not self.isMaximized():
             d = e.globalPosition().toPoint() - self._old_pos
             self.move(self.x() + d.x(), self.y() + d.y())
             self._old_pos = e.globalPosition().toPoint()
@@ -944,10 +589,10 @@ class MemoExplorerWindow(QWidget):
             drag_size = getattr(self, '_drag_size', None)
             if drag_size is not None and self.size() != drag_size:
                 self.resize(drag_size)
-            
+
     def mouseReleaseEvent(self, e: Any) -> None:
         self._old_pos = None
-    
+
     def setup_btns(self) -> None:
         self.b_new        = QPushButton("새 메모")
         self.b_new_code   = QPushButton("코드 메모")
@@ -1023,55 +668,49 @@ class MemoExplorerWindow(QWidget):
         theme = self.ui_manager.sync_manager.settings.get('app_theme', 'white')
         is_dark = (theme == "dark")
         menu = QMenu(self)
-        if is_dark:
-            mode = self.ui_manager.sync_manager.settings.get("dark_theme_mode", "dark")
-            pal = DARK_THEMES.get(mode, DARK_THEMES["dark"])
-            menu.setStyleSheet(f"QMenu {{ background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']}; border-radius: 8px; }} QMenu::item:selected {{ background-color: {pal['accent']}; color: white; }}")
-        else:
-            mode = self.ui_manager.sync_manager.settings.get("light_theme_mode", "white")
-            pal = LIGHT_THEMES.get(mode, LIGHT_THEMES["white"])
-            menu.setStyleSheet(f"QMenu {{ background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']}; border-radius: 8px; }} QMenu::item:selected {{ background-color: {pal['accent']}; color: white; }}")
-        
+        menu.setStyleSheet(modern_style.menu_qss(self.ui_manager.sync_manager.settings))
+
         act_open = menu.addAction("메모 열기")
         if hasattr(self.ui_manager, 'get_theme_icon'):
             act_open.setIcon(self.ui_manager.get_theme_icon("memo.svg", is_dark))
         act_open.triggered.connect(lambda: self.ui_manager.show_specific_memo(m.get('id')))
-        
+
         act_open_all = menu.addAction("모든 메모 켜기 (Ctrl+Shift+O)")
         if hasattr(self.ui_manager, 'get_theme_icon'):
             act_open_all.setIcon(self.ui_manager.get_theme_icon("memo.svg", is_dark))
         act_open_all.triggered.connect(self.ui_manager.open_all_memos)
-        
+
         fav_text = "즐겨찾기 해제" if m.get('is_favorite') else "즐겨찾기 등록"
         act_fav = menu.addAction(fav_text)
         if hasattr(self.ui_manager, 'get_theme_icon'):
-            act_fav.setIcon(self.ui_manager.get_theme_icon("favorite_true.svg" if m.get('is_favorite') else "favorite_false.svg", is_dark))
+            act_fav.setIcon(self.favorite_icon(bool(m.get('is_favorite'))))
         act_fav.triggered.connect(lambda: self.toggle_fav(m))
-        
+
         prot_text = "삭제 방지 해제" if m.get('is_protected') else "삭제 방지 설정"
         act_prot = menu.addAction(prot_text)
         if hasattr(self.ui_manager, 'get_theme_icon'):
             act_prot.setIcon(self.ui_manager.get_theme_icon("lock_open.svg" if m.get('is_protected') else "lock_close.svg", is_dark))
         act_prot.triggered.connect(lambda: self.toggle_protect(m))
+        self._add_lock_menu(menu, m)
 
         menu.addSeparator()
         cm = menu.addMenu("메모 색상 변경")
         if hasattr(self.ui_manager, 'get_theme_icon'):
             cm.setIcon(self.ui_manager.get_theme_icon("colorpalette_89189.svg", is_dark))
-        for n, c in {"다크그레이": "#2E3440", "하늘색": "#E0F2FE", "연두색": "#DCFCE7", "노란색": "#FEF9C3", "분홍색": "#FCE7F3", "흰색": "#FFFFFF"}.items(): 
+        for n, c in {"다크그레이": "#2E3440", "하늘색": "#E0F2FE", "연두색": "#DCFCE7", "노란색": "#FEF9C3", "분홍색": "#FCE7F3", "흰색": "#FFFFFF"}.items():
             cm.addAction(n).triggered.connect(lambda checked, memo=m, code=c: self.change_memo_color(memo, code))
-            
+
         act_copy = menu.addAction("본문 내용 복사")
         if hasattr(self.ui_manager, 'get_theme_icon'):
             act_copy.setIcon(self.ui_manager.get_theme_icon("font.svg", is_dark))
         act_copy.triggered.connect(lambda: self.copy_memo_text(m))
-        
+
         menu.addSeparator()
         act_del = menu.addAction("삭제 (휴지통)")
         if hasattr(self.ui_manager, 'get_theme_icon'):
             act_del.setIcon(self.ui_manager.get_theme_icon("trashbucket.svg", is_dark, override_color="#FF453A"))
         act_del.triggered.connect(lambda: self.delete_single_memo(m))
-        
+
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     def _save_memo_meta(self, memo: Dict[str, Any], **changes: Any) -> None:
@@ -1091,32 +730,6 @@ class MemoExplorerWindow(QWidget):
     def toggle_protect(self, memo: Dict[str, Any]) -> None:
         self._save_memo_meta(memo, is_protected=not memo.get('is_protected', False))
         self.show_toast(f"{'🔒 삭제 방지 설정됨' if memo['is_protected'] else '🔓 삭제 방지 해제됨'}")
-        self.refresh()
-
-    def toggle_memo_pin(self, memo: Dict[str, Any]) -> None:
-        target_memos = []
-        for r in range(self.table.rowCount()):
-            item_cb = self.table.item(r, 0)
-            if item_cb and item_cb.checkState() == Qt.CheckState.Checked:
-                m = self.table.item(r, 2).data(Qt.ItemDataRole.UserRole)
-                if m and m not in target_memos:
-                    target_memos.append(m)
-        if not target_memos:
-            for r in set(index.row() for index in self.table.selectedIndexes()):
-                m = self.table.item(r, 2).data(Qt.ItemDataRole.UserRole)
-                if m and m not in target_memos:
-                    target_memos.append(m)
-        if not target_memos:
-            target_memos = [memo]
-
-        new_pinned_state = not memo.get('is_pinned', False)
-        for m in target_memos:
-            self._save_memo_meta(m, is_pinned=new_pinned_state)
-            memo_id = m.get('id')
-            if memo_id and memo_id in self.ui_manager.memo_windows:
-                self.ui_manager.memo_windows[memo_id].apply_data()
-
-        self.show_toast(f"{len(target_memos)}개 메모 {'고정 설정됨' if new_pinned_state else '고정 해제됨'}")
         self.refresh()
 
     def change_memo_color(self, memo: Dict[str, Any], color_hex: str) -> None:
@@ -1146,7 +759,7 @@ class MemoExplorerWindow(QWidget):
             self.ui_manager.sync_manager.delete_memos_cloud([memo_id])
             self.pv.clear()
             self.refresh()
-    
+
     def on_cell_click(self, r: int, c: int) -> None:
         """셀 클릭 시 미리보기 업데이트 — 코드 메모는 D2Coding 폰트 적용."""
         m_item = self.table.item(r, 2)
@@ -1162,7 +775,6 @@ class MemoExplorerWindow(QWidget):
                     w.flush_auto_save()
                     m['content'] = w.memo_data.get('content', m.get('content', ''))
                 content = m.get('content', '')
-                is_code = m.get('is_code_memo', False)
                 if m.get('_locked'):
                     clean_text = "🔒 암호 메모입니다. 메모를 열어 암호를 입력하면 볼 수 있습니다."
                 elif m.get('_unreadable'):
@@ -1170,33 +782,9 @@ class MemoExplorerWindow(QWidget):
                 else:
                     clean_text = clean_plain_text(content)
                 self.pv.setReadOnly(self.is_trash_mode or sealed)
-
-                theme = self.ui_manager.sync_manager.settings.get('app_theme', 'white')
-                is_dark = (theme == "dark")
-
-                if is_dark:
-                    bg_c = "#1A1A1C"
-                    border_c = "rgba(255, 255, 255, 0.1)"
-                    text_c = "#FFFFFF" if not is_code else "#E8F4FF"
-                    font_part = "font-family: 'D2Coding', 'Consolas', monospace;" if is_code else "font-family: 'D2Coding', 'Consolas', monospace;"
-                else:
-                    bg_c = "#F8F9FA" if not is_code else "#F0F4FF"
-                    border_c = "#E5E5EA" if not is_code else "#C7D8FF"
-                    text_c = "#1C1C1E" if not is_code else "#1A237E"
-                    font_part = "font-family: 'D2Coding', 'Consolas', monospace;" if is_code else "font-family: 'D2Coding', 'Consolas', monospace;"
-
-                self.pv.setStyleSheet(
-                    f"background-color: {bg_c}; "
-                    f"border: 1px solid {border_c}; "
-                    f"border-radius: 12px; padding: 12px; "
-                    f"color: {text_c}; font-size: 10pt; {font_part}"
-                )
-                from PyQt6.QtGui import QFont
-                font_name = "D2Coding" if is_code else "D2Coding"
-                self.pv.setFont(QFont(font_name, 10))
                 self.pv.setPlainText(clean_text)
                 self._is_loading_preview = False
-                
+
     def on_preview_changed(self) -> None:
         if self._is_loading_preview or self.is_trash_mode:
             return
@@ -1210,7 +798,7 @@ class MemoExplorerWindow(QWidget):
             if m.get('_locked') or m.get('_unreadable') or self.pv.isReadOnly():
                 return
             memo_id = m.get('id', '')
-            new_content = self.pv.toHtml()
+            new_content = self.pv.toPlainText()
             m['content'] = new_content
             m['updated_at'] = datetime.datetime.now().isoformat()
 
@@ -1218,19 +806,21 @@ class MemoExplorerWindow(QWidget):
                 self._flush_preview_save()
             self._pending_preview_memo = m
             self._preview_save_timer.start()
-            
+
             if memo_id in self.ui_manager.memo_windows:
                 w = self.ui_manager.memo_windows[memo_id]
                 w._is_updating_from_explorer = True
-                w.text_edit.setHtml(new_content)
+                w.text_edit.setPlainText(new_content)
                 w._is_updating_from_explorer = False
                 # 창이 들고 있는 데이터도 맞춰 두어야, 창이 나중에 저장할 때 미리보기 편집을 되돌리지 않습니다.
                 w.memo_data['content'] = new_content
                 w.memo_data['updated_at'] = m['updated_at']
-                
+                # 미리보기에서의 입력도 '마지막 입력'으로 보고 자동 잠금 시간을 다시 셉니다.
+                w.restart_relock_timer()
+
             if self.table.item(r, 3):
                 self.table.item(r, 3).setText(datetime.datetime.now().strftime("%y%m%d.%H%M"))
-            
+
     def _flush_preview_save(self) -> None:
         self._preview_save_timer.stop()
         m = self._pending_preview_memo
@@ -1255,7 +845,7 @@ class MemoExplorerWindow(QWidget):
                     else:
                         self.ui_manager.show_specific_memo(m.get('title', ''))
 
-                
+
     def update_btns_visibility(self) -> None:
         while self.btn_l.count():
             wi = self.btn_l.takeAt(0).widget()
@@ -1275,14 +865,14 @@ class MemoExplorerWindow(QWidget):
             self.btn_l.addStretch()
         # 레이아웃 후 다시 텍스트/아이콘 상태 원상 복원
         self._refresh_btn_labels()
-            
-    def toggle_trash(self) -> None: 
+
+    def toggle_trash(self) -> None:
         self.is_trash_mode = self.t_btn.isChecked()
         self.t_btn.setText("목록으로 돌아가기" if self.is_trash_mode else "휴지통 보기")
         is_dark = self.ui_manager.sync_manager.settings.get('app_theme', 'white') == "dark"
         icon_name = "total.svg" if self.is_trash_mode else "trashbucket.svg"
         self.t_btn.setIcon(self.ui_manager.get_theme_icon(icon_name, is_dark))
-        self.pv.setReadOnly(self.is_trash_mode) 
+        self.pv.setReadOnly(self.is_trash_mode)
         self.pv.clear()
         self.current_page = 1
         self.refresh()
@@ -1301,35 +891,42 @@ class MemoExplorerWindow(QWidget):
         if self.current_page < total_pages:
             self.current_page += 1
             self.update_table()
-    
+
     def on_header_click(self, idx: int) -> None:
         if idx == 0:
             all_c = all(self.table.item(r, 0).checkState() == Qt.CheckState.Checked for r in range(self.table.rowCount()))
             ns = Qt.CheckState.Unchecked if all_c else Qt.CheckState.Checked
             for r in range(self.table.rowCount()):
                 self.table.item(r, 0).setCheckState(ns)
-            
+
     @pyqtSlot()
     def refresh(self) -> None:
         self._flush_preview_save()
         q = self.s_in.text().lower()
         sb = self.s_type.currentIndex() == 1
         all_m = self.ui_manager.sync_manager.load_trash_memos() if self.is_trash_mode else self.ui_manager.sync_manager.load_local_memos()
-        
+
+        # 메모마다 본문 정리와 태그 추출은 한 번만 합니다. (아래 필터에서 다시 씀)
+        # 코드 메모의 '#include', '#region' 같은 것은 태그가 아니므로 일반 메모에서만 태그를 찾습니다.
         hashtags = set()
         gen_cnt = 0
         code_cnt = 0
+        digest: Dict[int, tuple] = {}
         for m in all_m:
-            if m.get('is_code_memo'): code_cnt += 1
-            else: gen_cnt += 1
             plain = clean_plain_text(m.get('content', ''))
-            tags = re.findall(r'#([^\s#]+)', plain)
+            if m.get('is_code_memo'):
+                code_cnt += 1
+                tags: List[str] = []
+            else:
+                gen_cnt += 1
+                tags = extract_hashtags(plain)
+            digest[id(m)] = (plain, tags)
             hashtags.update(tags)
-            
+
         self.stat_label.setText(f"총 {len(all_m)}개 메모 (일반: {gen_cnt}개 | 코드: {code_cnt}개)")
         if hasattr(self.ui_manager, 'get_theme_icon'):
             self.stat_icon.setPixmap(self.ui_manager.get_theme_icon("total.svg", False, override_color="#8E8E93").pixmap(16, 16))
-            
+
         cur_tag = self.tag_combo.currentText()
         self.tag_combo.blockSignals(True)
         self.tag_combo.clear()
@@ -1341,42 +938,42 @@ class MemoExplorerWindow(QWidget):
             self.tag_combo.addItem(tag_str)
             if len(tag_str) > max_len:
                 max_len = len(tag_str)
-                
+
         self.tag_combo.setCurrentText(cur_tag if cur_tag in [self.tag_combo.itemText(i) for i in range(self.tag_combo.count())] else "#")
-        
+
         # 💡 동적 너비 계산 로직 추가: 폰트 사이즈(pt) 기준 대략적인 픽셀 계산 + 최소 너비 보장 (예: 기본 100px, 글자당 8px 추가)
         dynamic_width = max(100, max_len * 9 + 30)
-        
+
         view = self.tag_combo.view()
         if view:
             # 드롭다운 리스트 내부는 유동적으로 너비가 넓어지게 하되, 메인 버튼은 위에서 고정함
             view.setMinimumWidth(dynamic_width)
-            
+
         self.tag_combo.blockSignals(False)
-        
+
         selected_tag = self.tag_combo.currentText()
         tag_filter = "" if selected_tag == "#" else selected_tag
-        
+
         all_m.sort(key=lambda x: (x.get('is_favorite', False), x.get('updated_at', '')), reverse=True)
-        
+
         filtered = []
         for m in all_m:
             is_code = m.get('is_code_memo', False)
             if self.filter_mode == "GENERAL" and is_code: continue
             if self.filter_mode == "CODE" and not is_code: continue
-            
-            plain_cnt = clean_plain_text(m.get('content',''))
-            if tag_filter and tag_filter[1:] not in re.findall(r'#([^\s#]+)', plain_cnt):
+
+            plain_cnt, tags = digest[id(m)]
+            if tag_filter and tag_filter[1:] not in tags:
                 continue
             if q:
                 if sb and q not in plain_cnt.lower(): continue
                 if not sb and q not in m.get('title','').lower(): continue
             filtered.append(m)
-            
+
         self.filtered_memos = filtered
         self.update_table()
         self.update_btns_visibility()
-        
+
     def update_table(self) -> None:
         self.table.setRowCount(0)
         row_h = max(38, int(self.ui_font_pt * 3.2))
@@ -1385,22 +982,20 @@ class MemoExplorerWindow(QWidget):
             r = self.table.rowCount()
             self.table.insertRow(r)
             self.table.setRowHeight(r, row_h)
-            
+
             c = QTableWidgetItem("")
             c.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             c.setCheckState(Qt.CheckState.Unchecked)
             self.table.setItem(r, 0, c)
-            
+
             if not self.is_trash_mode:
                 is_fav = m.get('is_favorite', False)
                 fb = QPushButton()
-                fb.setFixedSize(24, 24)
+                fb.setFixedSize(30, 30)
                 fb.setCursor(Qt.CursorShape.PointingHandCursor)
-                theme = self.ui_manager.sync_manager.settings.get('app_theme', 'white')
-                is_dark = (theme == "dark")
-                if hasattr(self.ui_manager, 'get_theme_icon'):
-                    fb.setIcon(self.ui_manager.get_theme_icon("favorite_true.svg" if is_fav else "favorite_false.svg", is_dark))
-                    fb.setIconSize(QSize(16, 16))
+                fb.setToolTip("즐겨찾기 해제" if is_fav else "즐겨찾기 등록")
+                fb.setIcon(self.favorite_icon(is_fav))
+                fb.setIconSize(QSize(20, 20))
                 fb.setStyleSheet("border: none; background: transparent;")
                 fb.clicked.connect(lambda checked, memo=m: self.toggle_fav(memo))
                 cell_w = QWidget()
@@ -1409,16 +1004,16 @@ class MemoExplorerWindow(QWidget):
                 cell_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 cell_l.setContentsMargins(0, 0, 0, 0)
                 self.table.setCellWidget(r, 1, cell_w)
-            else: 
+            else:
                 self.table.setCellWidget(r, 1, QWidget())
-                
+
             is_code = m.get('is_code_memo', False)
             title_text = m.get('title', '').strip()
             theme = self.ui_manager.sync_manager.settings.get('app_theme', 'white')
             is_dark = (theme == "dark")
-            
+
             is_pinned = m.get('is_pinned', False)
-            
+
             if is_code:
                 lang = m.get('code_lang', 'JSON')
                 badge_text = f"[{lang}] {title_text}"
@@ -1435,12 +1030,12 @@ class MemoExplorerWindow(QWidget):
                     t.setIcon(self.ui_manager.get_theme_icon("codememo.svg" if is_code else "memo.svg", is_dark))
             t.setData(Qt.ItemDataRole.UserRole, m)
             t.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-            
+
             if is_code:
                 t.setFont(QFont("D2Coding", 10, QFont.Weight.Bold))
-                
+
             self.table.setItem(r, 2, t)
-            
+
             up = m.get('updated_at', '')
             try:
                 ds = datetime.datetime.fromisoformat(up).strftime("%y%m%d.%H%M") if up else ""
@@ -1450,31 +1045,26 @@ class MemoExplorerWindow(QWidget):
             dt = QTableWidgetItem(ds)
             dt.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             self.table.setItem(r, 3, dt)
-            
+
             is_prot = m.get('is_protected', False)
             prot_btn = QPushButton("잠김" if is_prot else "해제")
             if hasattr(self.ui_manager, 'get_theme_icon'):
                 prot_btn.setIcon(self.ui_manager.get_theme_icon("lock_close.svg" if is_prot else "lock_open.svg", is_dark))
             prot_btn.setFixedSize(50, 28)
             prot_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            
-            if is_prot:
-                prot_btn.setStyleSheet("QPushButton { background: rgba(255, 69, 58, 0.2); color: #FF453A; border: 1px solid rgba(255, 69, 58, 0.4); border-radius: 10px; font-weight: bold; font-size: 8.5pt; }")
-            else:
-                prot_btn.setStyleSheet("QPushButton { background: rgba(142, 142, 147, 0.15); color: #8E8E93; border: 1px solid rgba(142, 142, 147, 0.3); border-radius: 10px; font-weight: bold; font-size: 8.5pt; } QPushButton:hover { background: rgba(142, 142, 147, 0.3); }")
-                
             prot_btn.clicked.connect(lambda checked, memo=m: self.toggle_protect(memo))
-            
+
             cell_p_w = QWidget()
             cell_p_l = QHBoxLayout(cell_p_w)
             cell_p_l.addWidget(prot_btn)
             cell_p_l.setAlignment(Qt.AlignmentFlag.AlignCenter)
             cell_p_l.setContentsMargins(0, 0, 0, 0)
             self.table.setCellWidget(r, 4, cell_p_w)
-            
+
         self.p_l.setText(f"{self.current_page} / {max(1, (len(self.filtered_memos) + 9) // 10)}")
         self.shortcut_font_refresh()
-        
+        modern_style.apply_explorer_table(self)
+
     def toggle_fav(self, memo: Dict[str, Any]) -> None:
         self._save_memo_meta(memo, is_favorite=not memo.get('is_favorite', False))
         self.refresh()
@@ -1487,7 +1077,7 @@ class MemoExplorerWindow(QWidget):
                 m = self.table.item(r, 2).data(Qt.ItemDataRole.UserRole)
                 if m and m not in checked_memos:
                     checked_memos.append(m)
-                    
+
         if not checked_memos:
             for r in set(index.row() for index in self.table.selectedIndexes()):
                 m = self.table.item(r, 2).data(Qt.ItemDataRole.UserRole)
@@ -1508,7 +1098,7 @@ class MemoExplorerWindow(QWidget):
                     self.ui_manager.sync_manager.delete_memo_locally(memo_id, title=m.get('title'))
                     deleted_ids.append(memo_id)
             self.ui_manager.sync_manager.delete_memos_cloud(deleted_ids)
-            self.pv.clear() 
+            self.pv.clear()
             self.refresh()
 
     def res_checked(self) -> None:

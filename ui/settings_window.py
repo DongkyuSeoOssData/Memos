@@ -1,17 +1,17 @@
 from PyQt6.QtCore import QMetaObject, pyqtSlot
-from ui.ui_utils import apply_ios_shadow
 from core.defaults import DEFAULT_SHORTCUTS
 from core.sync_manager import is_auto_start_enabled
 from ui.themes import LIGHT_THEMES, DARK_THEMES
-import random
+from ui import modern_style
+from ui.wheel_guard import guard_wheel
 from typing import Any
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLineEdit, QMessageBox, QLabel,
     QComboBox, QCheckBox, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
-    QFontComboBox, QTabWidget, QKeySequenceEdit, QGroupBox, QScrollArea, QSlider, QSpinBox
+    QFontComboBox, QTabWidget, QKeySequenceEdit, QGroupBox, QScrollArea, QSlider, QSpinBox, QAbstractSpinBox
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QGuiApplication, QColor, QKeySequence, QFont
+from PyQt6.QtGui import QGuiApplication, QColor, QKeySequence, QFont, QFontMetrics
 import threading
 
 class SettingsWindow(QWidget):
@@ -22,10 +22,10 @@ class SettingsWindow(QWidget):
         self.colors = {
             "랜덤": "random",
             "다크그레이": "#2E3440",
-            "하늘색": "#E0F2FE", 
-            "연두색": "#DCFCE7", 
-            "노란색": "#FEF9C3", 
-            "분홍색": "#FCE7F3", 
+            "하늘색": "#E0F2FE",
+            "연두색": "#DCFCE7",
+            "노란색": "#FEF9C3",
+            "분홍색": "#FCE7F3",
             "흰색": "#FFFFFF"
         }
         self.init_ui()
@@ -63,6 +63,8 @@ class SettingsWindow(QWidget):
         self.shortcut_table.setFont(base_font)
         self.shortcut_table.verticalHeader().setDefaultSectionSize(max(34, int(self.ui_font_pt * 3.0)))
         self.shortcut_table.horizontalHeader().setMinimumHeight(max(30, int(self.ui_font_pt * 2.6)))
+        key_width = QFontMetrics(base_font).horizontalAdvance("Ctrl+Shift+Alt+W") + 44
+        self.shortcut_table.setColumnWidth(1, max(160, key_width))
         self.shortcut_table.horizontalHeader().setFont(QFont(base_font.family(), max(8, self.ui_font_pt - 1)))
         # 저장 버튼 폰트도 갱신
         if hasattr(self, 'sb'):
@@ -70,7 +72,7 @@ class SettingsWindow(QWidget):
 
     def _calc_font_pt_from_size(self) -> int:
         """현재 창 크기를 기반으로 ui_font_pt를 동적으로 계산합니다.
-        
+
         창 너비 400px 기준 9pt, 매 60px 증가마다 1pt 증가, 최대 16pt.
         """
         w = self.width()
@@ -81,7 +83,7 @@ class SettingsWindow(QWidget):
         self.setObjectName("SettingsWindow")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowTitle("Memos Settings")
-        
+
         self.setMinimumSize(580, 440)
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(18, 18, 18, 18)
@@ -91,19 +93,18 @@ class SettingsWindow(QWidget):
         self.sb = QPushButton("  설정 저장")
         self.sb.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sb.setFixedHeight(40)
-        self.sb.setStyleSheet("background: #007AFF; color: white; padding: 8px 16px; font-weight: bold; font-size: 11pt; border-radius: 8px; border: none;")
         self.sb.clicked.connect(self.save)
         main_layout.addWidget(self.sb)
 
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
-        
+
         # --- TAB 1: 일반 설정 ---
         tab_general = QWidget()
         l_gen = QVBoxLayout(tab_general)
         l_gen.setContentsMargins(15, 15, 15, 15)
         l_gen.setSpacing(15)
-        
+
         g2 = QGroupBox("암호 메모")
         g2_l = QVBoxLayout(g2)
         g2_l.setContentsMargins(18, 24, 18, 18)
@@ -119,7 +120,7 @@ class SettingsWindow(QWidget):
         relock_row.addStretch()
         g2_l.addLayout(relock_row)
         relock_hint = QLabel("메모 창 우클릭 → '이 메모에 암호 걸기'로 원하는 메모만 암호화합니다. 암호를 잊으면 복구할 수 없습니다.")
-        relock_hint.setStyleSheet("font-size: 8pt; color: #8E8E93;")
+        relock_hint.setProperty("role", "hint")
         relock_hint.setWordWrap(True)
         g2_l.addWidget(relock_hint)
         l_gen.addWidget(g2)
@@ -128,24 +129,24 @@ class SettingsWindow(QWidget):
         g4_l = QVBoxLayout(g4)
         g4_l.setContentsMargins(18, 24, 18, 18)
         g4_l.setSpacing(12)
-        
+
         self.cb_default_pin = QCheckBox("새 메모 실행 시 화면 고정 기본 적용")
         self.cb_auto_eng_kor = QCheckBox("한/영 영타 오타 자동 변환기 사용")
         self.auto_start_cb = QCheckBox("윈도우 시작 시 자동 실행")
-        
+
         self.cb_gen_line_num = QCheckBox("일반 메모: 최초 실행 시 행번호 표시")
         self.cb_gen_line_bg = QCheckBox("일반 메모: 최초 실행 시 줄노트 배경 표시")
         self.cb_code_line_num = QCheckBox("코드 메모: 최초 실행 시 행번호 표시")
         self.cb_code_line_bg = QCheckBox("코드 메모: 최초 실행 시 줄노트 배경 표시")
-        
+
         for cb_item in [
             self.cb_default_pin, self.cb_auto_eng_kor, self.auto_start_cb,
             self.cb_gen_line_num, self.cb_gen_line_bg,
             self.cb_code_line_num, self.cb_code_line_bg
         ]:
             g4_l.addWidget(cb_item)
-            
-        g4_l.addWidget(QLabel("자동 저장: 마지막 입력 후 대기 시간 (입력이 없으면 저장하지 않음, 닫을 때는 항상 저장):"))
+
+        g4_l.addWidget(QLabel("자동 저장 대기 시간 (마지막 입력 후):"))
         self.auto_save_interval_box = QComboBox()
         for label, sec in self.AUTO_SAVE_INTERVALS:
             self.auto_save_interval_box.addItem(label, sec)
@@ -175,31 +176,31 @@ class SettingsWindow(QWidget):
         l_sync = QVBoxLayout(tab_sync)
         l_sync.setContentsMargins(15, 15, 15, 15)
         l_sync.setSpacing(15)
-        
+
         g1 = QGroupBox("구글 드라이브 백업 및 동기화 설정")
         g1_l = QVBoxLayout(g1)
         g1_l.setContentsMargins(18, 24, 18, 18)
         g1_l.setSpacing(12)
-        
+
         self.sync_cb = QCheckBox("구글 드라이브 동기화 활성화")
-        self.sync_cb.setStyleSheet("font-weight: bold; color: #007AFF; font-size: 10pt;")
+        self.sync_cb.setProperty("role", "value")
         g1_l.addWidget(self.sync_cb)
-        
+
         g1_l.addWidget(QLabel("GAS Web App URL:"))
         url_box = QHBoxLayout()
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("https://script.google.com/macros/s/.../exec")
         self.url_input.setFixedHeight(40)
-        
+
         self.btn_test_url = QPushButton(" 연결 테스트")
         self.btn_test_url.setFixedHeight(40)
         self.btn_test_url.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_test_url.clicked.connect(self.test_gas_url)
-        
+
         url_box.addWidget(self.url_input)
         url_box.addWidget(self.btn_test_url)
         g1_l.addLayout(url_box)
-        
+
         g1_l.addWidget(QLabel("로컬 메모 저장 위치:"))
         ph = QHBoxLayout()
         self.path_input = QLineEdit()
@@ -212,7 +213,7 @@ class SettingsWindow(QWidget):
         ph.addWidget(self.path_input)
         ph.addWidget(self.btn_change_path)
         g1_l.addLayout(ph)
-        
+
         g1_l.addWidget(QLabel("자동 동기화 주기:"))
         self.sync_interval_combo = QComboBox()
         self.sync_interval_combo.addItems(["1분마다", "10분마다", "30분마다", "1시간마다"])
@@ -314,7 +315,7 @@ class SettingsWindow(QWidget):
 
         opa_row = QHBoxLayout()
         self.opacity_value_label = QLabel("100%  (완전 불투명 — 권장)")
-        self.opacity_value_label.setStyleSheet("font-weight: bold; color: #007AFF;")
+        self.opacity_value_label.setProperty("role", "value")
         opa_row.addWidget(self.opacity_value_label)
         opa_row.addStretch()
         g_opacity_l.addLayout(opa_row)
@@ -323,11 +324,6 @@ class SettingsWindow(QWidget):
         self.opacity_slider.setRange(20, 100)
         self.opacity_slider.setValue(100)
         self.opacity_slider.setFixedHeight(30)
-        self.opacity_slider.setStyleSheet("""
-            QSlider::groove:horizontal { height: 6px; background: #C7C7CC; border-radius: 3px; }
-            QSlider::handle:horizontal { width: 20px; height: 20px; margin: -7px 0; background: #007AFF; border-radius: 10px; }
-            QSlider::sub-page:horizontal { background: #007AFF; border-radius: 3px; }
-        """)
         def _settings_opacity_changed(val: int) -> None:
             if val == 100:
                 self.opacity_value_label.setText(f"{val}%  (완전 불투명 — 권장)")
@@ -341,7 +337,7 @@ class SettingsWindow(QWidget):
         g_opacity_l.addWidget(self.opacity_slider)
 
         opa_hint = QLabel("※ 개별 메모 우클릭 메뉴에서도 개별 조절 가능합니다.")
-        opa_hint.setStyleSheet("font-size: 8pt; color: #8E8E93;")
+        opa_hint.setProperty("role", "hint")
         opa_hint.setWordWrap(True)
         g_opacity_l.addWidget(opa_hint)
 
@@ -401,9 +397,37 @@ class SettingsWindow(QWidget):
         g_rolled_l.addLayout(rolled_row)
 
         rolled_hint = QLabel("✖ 제목줄·아이콘 크기가 높이에 비례하여 자동 조정됩니다. (\uc5ec백 최소: 36px 권장)")
-        rolled_hint.setStyleSheet("font-size: 8pt; color: #8E8E93;")
+        rolled_hint.setProperty("role", "hint")
         rolled_hint.setWordWrap(True)
         g_rolled_l.addWidget(rolled_hint)
+
+        # 디자인 스타일 (Modern ↔ Neo 전환)
+        g_style = QGroupBox("디자인 스타일")
+        g_style_l = QVBoxLayout(g_style)
+        g_style_l.setContentsMargins(14, 22, 14, 14)
+        g_style_l.setSpacing(8)
+        self.ui_style_box = QComboBox()
+        self.ui_style_box.addItem("Modern (기본)", "modern")
+        self.ui_style_box.addItem("Neo (미니멀 · 선 중심)", "neo")
+        self.ui_style_box.setFixedHeight(36)
+
+        def _on_ui_style_picked() -> None:
+            # Neo 디자인을 고르면 어울리는 Mono 색 테마를 함께 골라 줍니다. (저장 전에 다시 바꿀 수 있음)
+            if self.ui_style_box.currentData() != "neo" or getattr(self, "_loading_settings", False):
+                return
+            for box in (self.dark_theme_box, self.light_theme_box):
+                idx = box.findData("mono")
+                if idx >= 0:
+                    box.setCurrentIndex(idx)
+        self.ui_style_box.currentIndexChanged.connect(lambda _: _on_ui_style_picked())
+
+        g_style_l.addWidget(self.ui_style_box)
+        style_hint = QLabel("탐색기·환경설정·메모 창의 모양을 바꿉니다. 저장하면 바로 적용됩니다. "
+                            "Neo는 아래 색 테마의 'Mono Paper / Mono Graphite'와 가장 잘 어울립니다.")
+        style_hint.setProperty("role", "hint")
+        style_hint.setWordWrap(True)
+        g_style_l.addWidget(style_hint)
+        l_font.addWidget(g_style)
 
         l_font.addWidget(g3)
         l_font.addWidget(g_opacity)
@@ -445,7 +469,7 @@ class SettingsWindow(QWidget):
         scroll_font.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tabs.addTab(scroll_font, "테마 & 서식")
 
-        # --- TAB 4:  단축키 설정 (21종 전체 커스텀) ---
+        # --- TAB 4:  단축키 설정 (전체 커스텀) ---
         tab_shortcuts = QWidget()
         l_sc = QVBoxLayout(tab_shortcuts)
         l_sc.setContentsMargins(15, 15, 15, 15)
@@ -454,7 +478,7 @@ class SettingsWindow(QWidget):
         # 헤더 설명 + 초기화 버튼 한 줄 배치
         sc_header_row = QHBoxLayout()
         sc_header_label = QLabel(
-            "<b>[단축키 설정 - 21종]</b><br/>"
+            f"<b>[단축키 설정 - {len(DEFAULT_SHORTCUTS)}종]</b><br/>"
             "<span style='font-size:8.5pt; color:#8E8E93;'>"
             "원하는 기능을 클릭하여 단축키를 즉시 조합 변경하세요. "
             "충돌 방지를 위해 기본값은 Alt 조합입니다."
@@ -488,8 +512,11 @@ class SettingsWindow(QWidget):
         # 단축키 탭은 테이블 자체가 스크롤을 지원하므로 탭 위젯에 직접 추가
         self.tabs.addTab(tab_shortcuts, "단축키 설정")
 
-        
-        apply_ios_shadow(self)
+
+        # 화면을 스크롤하다 마우스 아래에 걸린 옵션이 바뀌지 않도록, 값은 클릭으로만 바꾸게 합니다.
+        for kind in (QComboBox, QAbstractSpinBox, QSlider):
+            guard_wheel(self, self.findChildren(kind))
+
         self._apply_initial_window_size()
 
     def closeEvent(self, event: Any) -> None:
@@ -507,7 +534,7 @@ class SettingsWindow(QWidget):
         self.sm.drive_api.set_web_app_url(url)
         if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager and self.sm.ui_manager.explorer_window:
             self.sm.ui_manager.explorer_window.show_toast("🔄 구글 드라이브 연결 테스트 중...")
-            
+
         def _async_ping():
             try:
                 res = self.sm.drive_api.ping_web_app()
@@ -536,46 +563,7 @@ class SettingsWindow(QWidget):
             QMessageBox.warning(self, "연결 테스트 실패", "구글 서버 응답이 없거나 URL이 올바르지 않습니다.")
 
     def apply_theme_style(self) -> None:
-        theme = self.sm.settings.get('app_theme', 'white')
-        is_dark = (theme == "dark")
-        base_pt = int(getattr(self, "ui_font_pt", 10))
-        
-        if is_dark:
-            mode = self.sm.settings.get("dark_theme_mode", "dark")
-            pal = DARK_THEMES.get(mode, DARK_THEMES["dark"])
-        else:
-            mode = self.sm.settings.get("light_theme_mode", "white")
-            pal = LIGHT_THEMES.get(mode, LIGHT_THEMES["white"])
-
-        self.setStyleSheet(f"""
-            SettingsWindow#SettingsWindow, QWidget#SettingsWindow {{
-                background-color: {pal['bg']};
-            }}
-            QWidget {{ font-family: 'D2Coding', 'Consolas', monospace; font-size: {base_pt}pt; color: {pal['text']}; background-color: {pal['bg']}; }}
-            QTabWidget::pane {{ border: 1px solid {pal['border']}; border-radius: 0px; background: {pal['card']}; }}
-            QTabBar::tab {{ padding: 10px 20px; font-weight: bold; background: {pal['bg']}; color: {pal['text']}; border-top-left-radius: 0px; border-top-right-radius: 0px; margin-right: 4px; font-size: {max(8, base_pt - 1)}pt; }}
-            QTabBar::tab:selected {{ background: {pal['accent']}; color: white; }}
-            QGroupBox {{ font-weight: bold; border: 1px solid {pal['border']}; border-radius: 0px; margin-top: 12px; padding-top: 15px; background: {pal['card']}; color: {pal['text']}; }}
-            QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {pal['accent']}; }}
-            QLineEdit, QComboBox, QFontComboBox {{ padding: 8px 12px; border: 1px solid {pal['border']}; border-radius: 0px; color: {pal['text']}; background-color: {pal['input']}; font-size: {base_pt}pt; }}
-            QLineEdit:focus, QComboBox:focus {{ border: 1.5px solid {pal['accent']}; }}
-            QComboBox QAbstractItemView {{ background-color: {pal['card']}; color: {pal['text']}; selection-background-color: {pal['accent']}; selection-color: white; }}
-            QPushButton {{ padding: 8px 16px; background: {pal['card']}; border: 1px solid {pal['border']}; border-radius: 0px; color: {pal['text']}; font-weight: bold; font-size: {base_pt}pt; }}
-            QPushButton:hover {{ background: {pal['accent']}; color: white; }}
-            QTableWidget {{ border: 1px solid {pal['border']}; border-radius: 0px; background: {pal['card']}; color: {pal['text']}; font-size: {base_pt}pt; }}
-            QHeaderView::section {{ background: {pal['bg']}; color: {pal['accent']}; font-weight: bold; border: none; font-size: {max(8, base_pt - 1)}pt; }}
-            QCheckBox {{ color: {pal['text']}; background: transparent; }}
-            QLabel {{ color: {pal['text']}; background: transparent; }}
-            QScrollArea {{ background: {pal['bg']}; border: none; }}
-            QScrollArea > QWidget > QWidget {{ background: {pal['bg']}; }}
-            QScrollBar:vertical {{ background: {pal['bg']}; width: 8px; border-radius: 4px; }}
-            QScrollBar::handle:vertical {{ background: {pal['border']}; border-radius: 4px; min-height: 20px; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
-            QScrollBar:horizontal {{ background: {pal['bg']}; height: 8px; border-radius: 4px; }}
-            QScrollBar::handle:horizontal {{ background: {pal['border']}; border-radius: 4px; min-width: 20px; }}
-            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0px; }}
-        """)
-
+        is_dark = self.sm.settings.get('app_theme', 'white') == "dark"
         if hasattr(self.sm, 'ui_manager') and hasattr(self.sm.ui_manager, 'get_theme_icon'):
             self.tabs.setTabIcon(0, self.sm.ui_manager.get_theme_icon("setting.svg", is_dark))
             self.tabs.setTabIcon(1, self.sm.ui_manager.get_theme_icon("cloude.svg", is_dark))
@@ -583,10 +571,9 @@ class SettingsWindow(QWidget):
             self.tabs.setTabIcon(3, self.sm.ui_manager.get_theme_icon("keyboard_119981.svg", is_dark))
             self.btn_test_url.setIcon(self.sm.ui_manager.get_theme_icon("search.svg", is_dark))
             self.btn_change_path.setIcon(self.sm.ui_manager.get_theme_icon("memo.svg", is_dark))
-            self.sb.setIcon(self.sm.ui_manager.get_theme_icon("save.svg", True))
-            
-        self.sb.setStyleSheet(f"background: {pal['accent']}; color: white; padding: 12px; font-weight: bold; font-size: {base_pt + 1}pt; border-radius: 0px; border: none;")
+
         self._apply_font_scale()
+        modern_style.apply_settings(self)
 
     def resizeEvent(self, event) -> None:
         """창 크기 변경 시 폰트 크기를 동적으로 재계산하여 적용합니다."""
@@ -618,7 +605,7 @@ class SettingsWindow(QWidget):
         auto_start_ok = self.sm.apply_auto_start(want_auto_start)
         auto_start_now = self.sm.settings.get("auto_start", False)
         self.auto_start_cb.setChecked(auto_start_now)
-                
+
         shortcuts_dict = {}
         for r in range(self.shortcut_table.rowCount()):
             # 화면에 보이는 이름이 아니라 행에 심어 둔 설정 키로 찾습니다. (이름을 바꿔도 저장이 누락되지 않음)
@@ -660,6 +647,7 @@ class SettingsWindow(QWidget):
             "default_code_memo_width": self.spin_code_memo_width.value(),
             "default_code_memo_height": self.spin_code_memo_height.value(),
             "default_rolled_height": self.spin_rolled_height.value(),
+            "ui_style": self.ui_style_box.currentData(),
             "auto_save_idle_sec": self.auto_save_interval_box.currentData(),
             "explorer_fixed_size": self.cb_explorer_fixed.isChecked(),
             "explorer_geom": self._explorer_geom_from_inputs(),
@@ -669,14 +657,24 @@ class SettingsWindow(QWidget):
         self.sm.save_settings(ns)
         if not auto_start_ok:
             QMessageBox.warning(self, "자동 실행", "윈도우 자동 실행 설정을 변경하지 못했습니다. (레지스트리 쓰기 실패)")
-            
+
         if hasattr(self.sm, 'ui_manager') and hasattr(self.sm.ui_manager, 'update_tray_menu'):
             self.sm.ui_manager.update_tray_menu()
 
         explorer = getattr(getattr(self.sm, 'ui_manager', None), 'explorer_window', None)
         if explorer:
             explorer.apply_size_settings()
-        
+
+        # 디자인 스타일 변경을 열려 있는 모든 창에 바로 반영
+        self.apply_theme_style()
+        if explorer:
+            explorer.apply_theme_style()
+            explorer.update_filter_buttons()
+            explorer.update_table()
+        if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager:
+            for w in self.sm.ui_manager.memo_windows.values():
+                w.apply_data()
+
         # ─── 단축키 변경 즉시 반영: 열려있는 모든 메모창 rebind ───────────────
         if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager:
             for w in self.sm.ui_manager.memo_windows.values():
@@ -695,7 +693,7 @@ class SettingsWindow(QWidget):
                     w.setMinimumHeight(new_h)
                     w.setMaximumHeight(new_h)
                     w._apply_rolled_ui(new_h)
-            
+
         QMessageBox.information(self, "알림", "설정이 성공적으로 저장되었습니다.")
 
 
@@ -718,12 +716,16 @@ class SettingsWindow(QWidget):
         # 투명도 슬라이더 로드
         saved_opacity = s.get("default_memo_opacity", 1.0)
         self.opacity_slider.setValue(int(round(saved_opacity * 100)))
-        
+
         self.spin_memo_width.setValue(s.get("default_memo_width", 350))
         self.spin_memo_height.setValue(s.get("default_memo_height", 380))
         self.spin_code_memo_width.setValue(s.get("default_code_memo_width", 500))
         self.spin_code_memo_height.setValue(s.get("default_code_memo_height", 380))
         self.spin_rolled_height.setValue(s.get("default_rolled_height", 53))
+        style_idx = self.ui_style_box.findData(s.get("ui_style", modern_style.DEFAULT_STYLE))
+        self._loading_settings = True
+        self.ui_style_box.setCurrentIndex(style_idx if style_idx >= 0 else self.ui_style_box.findData("modern"))
+        self._loading_settings = False
 
         idx = self.auto_save_interval_box.findData(s.get("auto_save_idle_sec", 60))
         self.auto_save_interval_box.setCurrentIndex(idx if idx >= 0 else self.auto_save_interval_box.findData(60))
@@ -732,22 +734,22 @@ class SettingsWindow(QWidget):
         self.spin_explorer_width.setValue(ex_w)
         self.spin_explorer_height.setValue(ex_h)
         self.cb_explorer_fixed.setChecked(s.get("explorer_fixed_size", False))
-        
+
         self.cb_gen_line_num.setChecked(s.get("default_gen_line_numbers", s.get("default_show_line_numbers", False)))
         self.cb_gen_line_bg.setChecked(s.get("default_gen_line_bg", s.get("default_show_line_bg", False)))
         self.cb_code_line_num.setChecked(s.get("default_code_line_numbers", True))
         self.cb_code_line_bg.setChecked(s.get("default_code_line_bg", False))
-        
+
         def_font = s.get("default_font_family", "D2Coding")
         def_code_font = s.get("default_code_font_family", "D2Coding")
-        
+
         self.default_font_box.setCurrentFont(QFont(def_font))
         self.default_code_font_box.setCurrentFont(QFont(def_code_font))
         self.default_font_size_spin.setValue(s.get("default_font_size", 11))
-        
+
         self.default_code_lang_box.setCurrentText(s.get("default_code_lang", "JSON"))
         self.default_code_theme_box.setCurrentIndex(0 if s.get("default_code_theme", "dark") == "dark" else 1)
-        
+
         dark_mode_val = s.get("dark_theme_mode", "dark")
         self.dark_theme_box.blockSignals(True)
         for i in range(self.dark_theme_box.count()):
@@ -769,13 +771,13 @@ class SettingsWindow(QWidget):
             if c == curr:
                 self.default_color_combo.setCurrentIndex(i)
                 break
-                
+
         trash_days = s.get("trash_auto_delete_days", 0)
         if trash_days < 0: self.trash_auto_delete_box.setCurrentIndex(1)
         elif trash_days == 15: self.trash_auto_delete_box.setCurrentIndex(2)
         elif trash_days == 30: self.trash_auto_delete_box.setCurrentIndex(3)
         else: self.trash_auto_delete_box.setCurrentIndex(0)
-        
+
         self._fill_shortcut_table(s.get("shortcuts", {}))
 
     # (표시 이름, 초) — 마지막 입력 후 자동 저장까지 기다리는 시간
@@ -813,7 +815,7 @@ class SettingsWindow(QWidget):
 
     def _reset_shortcuts_to_default(self) -> None:
         """단축키 테이블을 DEFAULT_SHORTCUTS 기본값으로 초기화합니다.
-        
+
         이 메서드는 UI만 변경하며, 실제 적용은 저장 버튼을 눌러야 합니다.
         """
         self._fill_shortcut_table(self.DEFAULT_SHORTCUTS)
@@ -848,6 +850,9 @@ class SettingsWindow(QWidget):
         ("코드 자동 정렬 (Prettify)",  "format_code",          "코드 메모 전용"),
         ("코드 테마 전환",             "toggle_code_theme",    "코드 메모 다크/라이트 전환"),
         ("전체 메모 열기",            "open_all_memos",       "저장된 모든 메모 표시"),
+        # ── 암호 메모 (메모 창 / 탐색기에서 선택한 메모) ─────────────────────
+        ("암호 메모 잠그기/잠금 해제",  "toggle_memo_lock",     "열려 있으면 잠그고, 잠겨 있으면 암호 입력"),
+        ("메모 암호 걸기/변경",        "set_memo_password",    "일반 메모에 암호 설정, 암호 메모는 암호 변경"),
     ]
 
     def _fill_shortcut_table(self, sc_map: dict) -> None:
@@ -863,7 +868,6 @@ class SettingsWindow(QWidget):
             self.shortcut_table.setItem(r, 0, name_item)
 
             k_edit = QKeySequenceEdit(QKeySequence(sc_map.get(key, self.DEFAULT_SHORTCUTS[key])))
-            k_edit.setStyleSheet("border: 1px solid #C7C7CC; border-radius: 6px; padding: 2px;")
             self.shortcut_table.setCellWidget(r, 1, k_edit)
 
             desc_item = QTableWidgetItem(desc_text)

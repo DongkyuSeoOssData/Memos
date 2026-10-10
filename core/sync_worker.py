@@ -5,7 +5,35 @@ from datetime import datetime
 from typing import Any, List, Dict, Optional
 from pathlib import Path
 from PyQt6.QtCore import pyqtSignal, QObject
-from utils.file_utils import MEMO_IO_LOCK, atomic_write_json
+from utils.file_utils import MEMO_IO_LOCK, atomic_write_json, is_safe_memo_id
+
+
+# 이 PC에서만 의미가 있는 값. 드라이브에 올리지 않고, 내려받을 때도 이 PC의 값을 그대로 둡니다.
+# (창을 옮기거나 접는 것만으로 업로드가 일어나거나, 다른 PC의 창 배치를 덮어쓰는 일을 막습니다)
+DEVICE_ONLY_KEYS = frozenset({"position_x", "position_y", "width", "height", "is_visible", "is_rolled_up"})
+DEVICE_ONLY_PREFIXES = ("rolled_", "unrolled_")
+# sync_state.json 형식 버전. 2: 해시를 '공유 부분'만으로 계산
+STATE_VERSION = 2
+
+
+def is_device_key(key: Any) -> bool:
+    key = str(key)
+    return key in DEVICE_ONLY_KEYS or key.startswith(DEVICE_ONLY_PREFIXES)
+
+
+def shared_part(memo: Dict[str, Any]) -> Dict[str, Any]:
+    """기기 간에 공유하는 부분 (본문·제목·색 등)."""
+    return {k: v for k, v in memo.items() if not is_device_key(k)}
+
+
+def device_part(memo: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in memo.items() if is_device_key(k)}
+
+
+def shared_hash(memo: Dict[str, Any]) -> str:
+    """공유하는 부분만의 해시. 창 위치처럼 이 PC에만 속한 값이 바뀌어도 달라지지 않습니다."""
+    canonical = json.dumps(shared_part(memo), ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
 
 
 def _parse_dt(value: str) -> datetime:
@@ -25,23 +53,14 @@ class SyncWorker(QObject):
     def __init__(self, sync_manager: Any) -> None:
         super().__init__()
         self.sm = sync_manager
-        self.target_method: str = ""
-        self.titles_to_delete: List[str] = []
-        # 메모별 마지막 동기화 지점. {memo_id: {"hash": 로컬 파일 해시, "remote": 원격 수정시각}}
+        # 메모별 마지막 동기화 지점. {memo_id: {"hash": 공유 부분의 해시, "remote": 원격 수정시각}}
         # "_url" 키에는 이 상태가 어느 GAS 주소 기준인지 기록합니다.
         self.state_path: Path = self.sm.base_path / "sync_state.json"
         self.state: Dict[str, Dict[str, Any]] = {}
 
     def execute(self) -> None:
         try:
-            if self.target_method == "run_sync":
-                self.run_sync()
-            elif self.target_method == "run_push":
-                self.run_push()
-            elif self.target_method == "run_pull":
-                self.run_pull()
-            elif self.target_method == "run_delete_batch":
-                self.run_delete_batch(self.titles_to_delete)
+            self.run_sync()
         except Exception as e:
             error_msg = f"동기화 치명적 오류: {str(e)}"
             self.sm.log_error(error_msg, e)
@@ -56,9 +75,10 @@ class SyncWorker(QObject):
         except Exception:
             self.state = {}
         # 동기화 대상 드라이브가 바뀌면 이전 기록은 의미가 없습니다. (새 드라이브에 없다고 삭제로 오인하면 안 됨)
+        # 기록 형식이 바뀐 경우(해시 계산 방식 변경)에도 처음부터 다시 맞춥니다. 그동안은 삭제 반영만 한 번 쉬어 갑니다.
         url = self.sm.drive_api.web_app_url or ""
-        if self.state.get("_url") != url:
-            self.state = {"_url": url}
+        if self.state.get("_url") != url or self.state.get("_v") != STATE_VERSION:
+            self.state = {"_url": url, "_v": STATE_VERSION}
 
     def _save_state(self) -> None:
         try:
@@ -67,13 +87,13 @@ class SyncWorker(QObject):
             self.sm.log_error(f"동기화 상태 저장 실패: {e}", e)
 
     def _read_local(self, path: Path) -> Optional[tuple]:
-        """(메모 dict, 파일 해시)를 반환합니다. 읽을 수 없으면 None."""
+        """(메모 dict, 공유 부분의 해시)를 반환합니다. 읽을 수 없으면 None."""
         try:
             with MEMO_IO_LOCK:
                 raw = path.read_bytes()
             memo = json.loads(raw.decode("utf-8"))
             if isinstance(memo, dict):
-                return memo, hashlib.sha1(raw).hexdigest()
+                return memo, shared_hash(memo)
         except Exception as e:
             self.sm.log_error(f"동기화 파일 읽기 실패 ({path.name}): {e}", e)
         return None
@@ -82,7 +102,7 @@ class SyncWorker(QObject):
         path = self.sm.local_path / f"{memo_id}.json"
         with MEMO_IO_LOCK:
             atomic_write_json(path, memo)
-            return hashlib.sha1(path.read_bytes()).hexdigest()
+        return shared_hash(memo)
 
     def _same_content(self, a: Dict[str, Any], b: Dict[str, Any]) -> bool:
         return a.get("content") == b.get("content")
@@ -108,25 +128,6 @@ class SyncWorker(QObject):
             self.finished.emit(True, f"동기화 완료 (가져오기 {pulled}개 / 업로드 {pushed}개)")
         else:
             self.finished.emit(True, "동기화 완료 (변경사항 없음)")
-
-    def run_push(self) -> None:
-        if not self._check_available():
-            return
-        self._load_state()
-        count = self._push()
-        self._save_state()
-        if count > 0:
-            self.finished.emit(True, f"{count}개의 암호화된 메모 업로드 완료")
-        else:
-            self.finished.emit(True, "업로드 완료 (변경사항 없음)")
-
-    def run_pull(self) -> None:
-        if not self._check_available():
-            return
-        self._load_state()
-        count = self._pull()
-        self._save_state()
-        self.finished.emit(True, f"클라우드에서 {count}개의 메모 가져오기 완료")
 
     def _check_available(self) -> bool:
         if not self.sm.drive_api.is_available():
@@ -186,12 +187,12 @@ class SyncWorker(QObject):
                 continue
             memo_data, file_hash = local
             memo_id = memo_data.get('id')
-            if not memo_id or str(memo_id).startswith("_"):
+            if not is_safe_memo_id(memo_id) or memo_id.startswith("_"):
                 continue
             entry = self.state.setdefault(memo_id, {})
             if entry.get("hash") == file_hash:
                 continue
-            if self.sm.drive_api.upload_file(f"{memo_id}.json", memo_data):
+            if self.sm.drive_api.upload_file(f"{memo_id}.json", shared_part(memo_data)):
                 entry["hash"] = file_hash
                 # 업로드로 원격 수정시각이 바뀌었으므로 다음 pull에서 한 번 다시 확인합니다.
                 entry.pop("remote", None)
@@ -226,7 +227,8 @@ class SyncWorker(QObject):
                 continue
 
             data_json = self.sm.drive_api.download_file(name)
-            if not isinstance(data_json, dict) or 'id' not in data_json:
+            # 받은 id는 파일 이름이 되므로, 경로를 벗어날 수 있는 값이면 버립니다.
+            if not isinstance(data_json, dict) or not is_safe_memo_id(data_json.get('id')):
                 continue
             try:
                 memo_id = data_json['id']
@@ -251,7 +253,9 @@ class SyncWorker(QObject):
                         if locally_changed and not self._same_content(local_memo, data_json):
                             self._keep_conflict_copy(local_memo)
 
-                    entry["hash"] = self._write_local(memo_id, data_json)
+                    # 창 위치·크기·표시 여부는 이 PC의 값을 유지합니다. 처음 받는 메모는 숨긴 채로 둡니다.
+                    merged = {**shared_part(data_json), **(device_part(local[0]) if local else {"is_visible": False})}
+                    entry["hash"] = self._write_local(memo_id, merged)
                 if remote_marker is not None:
                     entry["remote"] = remote_marker
                 pulled_ids.append(memo_id)
@@ -261,12 +265,3 @@ class SyncWorker(QObject):
         if pulled_ids:
             self.pulled.emit(pulled_ids)
         return len(pulled_ids)
-
-    def run_delete_batch(self, ids: List[str]) -> None:
-        if not self._check_available():
-            return
-        self._load_state()
-        self.sm.add_pending_deletes(ids)
-        self._flush_pending_deletes()
-        self._save_state()
-        self.finished.emit(True, "")

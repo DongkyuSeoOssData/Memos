@@ -1,5 +1,5 @@
 from utils.text_utils import clean_plain_text
-from utils.file_utils import MEMO_IO_LOCK, atomic_write_json
+from utils.file_utils import MEMO_IO_LOCK, atomic_write_json, is_safe_memo_id
 from core.sync_worker import SyncWorker
 from core.defaults import DEFAULT_SHORTCUTS
 import copy
@@ -379,8 +379,9 @@ class SyncManager(QObject):
         if not self.trash_path.exists(): return memos
         for f in list(self.trash_path.glob("*.json")):
             try:
-                with open(f, "r", encoding="utf-8") as file:
-                    m = json.load(file)
+                with MEMO_IO_LOCK:
+                    with open(f, "r", encoding="utf-8") as file:
+                        m = json.load(file)
 
                 if isinstance(m, dict):
                     if 'id' not in m:
@@ -416,6 +417,9 @@ class SyncManager(QObject):
         if not memo_id:
             memo_id = str(uuid.uuid4())
             data['id'] = memo_id
+        if not is_safe_memo_id(memo_id):
+            self.log_error(f"파일 이름으로 쓸 수 없는 메모 id라 저장을 건너뜀 ({memo_id!r})")
+            return False
 
         f = self.local_path / f"{memo_id}.json"
         # '_'로 시작하는 키는 실행 중에만 쓰는 상태값이라 파일에 남기지 않습니다.
@@ -530,6 +534,8 @@ class SyncManager(QObject):
                 shutil.move(str(src), str(dst))
             except Exception as e:
                 self.log_error(f"로컬 메모 휴지통 이동 실패 ({memo_id}): {e}", e)
+            # 파일 이름이 id와 같으면 그 파일 하나뿐입니다. (불러올 때 id 이름으로 정리해 두기 때문)
+            return
 
         # 2. ID 기반으로만 탐색 — title 기준 삭제는 동명 메모 오삭제 위험이 있어 제거
         #    (파일명이 memo_id가 아닌 레거시 파일 또는 JSON 내부 id가 memo_id인 경우만 이동)
@@ -552,12 +558,13 @@ class SyncManager(QObject):
     def empty_trash_locally(self) -> int:
         count = 0
         if self.trash_path.exists():
-            for f in list(self.trash_path.glob("*.json")):
-                try:
-                    f.unlink()
-                    count += 1
-                except Exception as e:
-                    self.log_error(f"휴지통 비우기 실패 ({f.name}): {e}", e)
+            with MEMO_IO_LOCK:
+                for f in list(self.trash_path.glob("*.json")):
+                    try:
+                        f.unlink()
+                        count += 1
+                    except Exception as e:
+                        self.log_error(f"휴지통 비우기 실패 ({f.name}): {e}", e)
         return count
 
     # ── 원격 삭제 대기열 ─────────────────────────────────────────────────────
@@ -595,19 +602,13 @@ class SyncManager(QObject):
         if self._sync_running:
             self._resync_requested = True
         else:
-            self._start_sync("run_sync")
+            self._start_sync()
 
     def sync_all(self) -> None:
         """원격 변경분을 먼저 가져온 뒤 로컬 변경분을 올립니다. (타이머·동기화 버튼 공용)"""
-        self._start_sync("run_sync")
+        self._start_sync()
 
-    def sync_push(self) -> None:
-        self._start_sync("run_push")
-
-    def sync_pull(self) -> None:
-        self._start_sync("run_pull")
-
-    def _start_sync(self, target_method: str) -> None:
+    def _start_sync(self) -> None:
         if not self.settings.get("use_sync", True):
             self.on_sync_finished(True, "로컬 모드로 작동 중입니다. (동기화 OFF)")
             return
@@ -616,7 +617,6 @@ class SyncManager(QObject):
             return
         self._sync_running = True
         worker = SyncWorker(self)
-        worker.target_method = target_method
         worker.finished.connect(self._on_sync_cycle_done)
         worker.pulled.connect(self.on_memos_pulled)
         worker.removed.connect(self.on_memos_removed)

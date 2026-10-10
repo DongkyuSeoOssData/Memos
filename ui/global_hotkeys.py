@@ -1,6 +1,6 @@
 import ctypes
 import ctypes.wintypes
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from PyQt6.QtCore import QAbstractNativeEventFilter, Qt
 from PyQt6.QtGui import QKeySequence

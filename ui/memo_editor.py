@@ -116,6 +116,35 @@ class MemoTextEdit(QTextEdit):
                 self.viewport().update()
         super().mousePressEvent(e)
 
+    def shift_code_indent(self, delta: int) -> None:
+        """코드 메모의 들여쓰기: 실제 공백 4칸을 넣거나 뺍니다. (복사해도 들여쓰기가 유지됨)"""
+        cursor = self.textCursor()
+        doc = self.document()
+        if delta > 0 and not cursor.hasSelection():
+            cursor.insertText("    ")
+            return
+        block = doc.findBlock(cursor.selectionStart())
+        end = doc.findBlock(cursor.selectionEnd())
+        if cursor.hasSelection() and end != block and end.position() == cursor.selectionEnd():
+            end = end.previous()
+        cursor.beginEditBlock()
+        while block.isValid():
+            line_cursor = QTextCursor(block)
+            if delta > 0:
+                line_cursor.insertText("    ")
+            else:
+                text = block.text()
+                count = min(4, len(text) - len(text.lstrip(' ')))
+                if count == 0 and text.startswith(chr(9)):
+                    count = 1
+                if count:
+                    line_cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, count)
+                    line_cursor.removeSelectedText()
+            if block == end:
+                break
+            block = block.next()
+        cursor.endEditBlock()
+
     def line_number_area_width(self) -> int:
         if not self.memo_window.memo_data.get('show_line_numbers', False):
             return 0
@@ -427,7 +456,8 @@ class MemoTextEdit(QTextEdit):
             cursor = self.textCursor()
             cursor.select(QTextCursor.SelectionType.Document)
             fmt = QTextCharFormat()
-            fmt.setFont(f)
+            # 크기만 바꿉니다. (글꼴 전체를 덮어쓰면 굵게·기울임·밑줄이 풀림)
+            fmt.setFontPointSize(s)
             cursor.mergeCharFormat(fmt)
             self.memo_window.memo_data['font_size'] = s
             self.memo_window.apply_line_bg_style()

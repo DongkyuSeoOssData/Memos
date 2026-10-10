@@ -1,25 +1,27 @@
 from ui.memo_editor import MemoTextEdit, CodeHighlighter
-from ui.ui_utils import apply_ios_shadow
-from ui.themes import LIGHT_THEMES, DARK_THEMES
+from ui.themes import memo_palette
+from ui import modern_style
+from ui.wheel_guard import guard_wheel
+from ui.memo_lock import MemoLockMixin
+from ui.memo_format import MemoFormatMixin
 import re
-import random
 import datetime
 import json
 from typing import Dict, Any, Optional
 from PyQt6.QtWidgets import (
-    QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMenu, QApplication,
-    QMessageBox, QLabel, QComboBox, QFileDialog, QSizeGrip, QFontComboBox, QColorDialog, QSlider,
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMenu, QApplication,
+    QMessageBox, QLabel, QComboBox, QSizeGrip, QFontComboBox, QSlider,
     QWidgetAction
 )
 from PyQt6.QtCore import Qt, QPoint, QTimer, QEvent
 from PyQt6.QtGui import (
-    QColor, QShortcut, QKeySequence, QFont, QTextListFormat, QTextCursor, QTextCharFormat,
+    QColor, QShortcut, QKeySequence, QFont, QTextCursor, QTextCharFormat,
     QPalette, QTextDocument, QCursor
 )
 from utils.text_utils import convert_eng_kor_smart
-from utils.text_utils import clean_plain_text
+from utils.text_utils import clean_plain_text, is_html_content
 
-class MemoWindow(QWidget):
+class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
     """
     개별 메모장 창 클래스:
     - 옵션 2: 애플 모던 사이버/네온 핀 뱃지 (📍 / 📌)
@@ -39,7 +41,7 @@ class MemoWindow(QWidget):
         self._is_updating_from_explorer: bool = False
         self._is_rolled_up: bool = m.get('is_rolled_up', False)
         self._normal_height: int = m.get('height', 400)
-        
+
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self.execute_auto_save)
@@ -49,23 +51,22 @@ class MemoWindow(QWidget):
         self._relock_timer = QTimer(self)
         self._relock_timer.setSingleShot(True)
         self._relock_timer.timeout.connect(self.lock_now)
-        
+
         self.highlighter: Optional[CodeHighlighter] = None
-        
-        self.setup_ui()
-        self.apply_data()
-        self.bind_shortcuts()
-        
-        self.setMouseTracking(True)
-        self.text_edit.setMouseTracking(True)
-        self.text_edit.cursorPositionChanged.connect(self.update_toolbar_button_states)
-        
+
         self.toast_label = QLabel(self)
-        self.toast_label.setStyleSheet("background-color: rgba(0, 122, 255, 0.8); color: white; font-weight: bold; border-radius: 10px; padding: 6px 14px; font-size: 9.5pt;")
         self.toast_label.hide()
         self.toast_timer = QTimer(self)
         self.toast_timer.setSingleShot(True)
         self.toast_timer.timeout.connect(self.toast_label.hide)
+
+        self.setup_ui()
+        self.apply_data()
+        self.bind_shortcuts()
+
+        self.setMouseTracking(True)
+        self.text_edit.setMouseTracking(True)
+        self.text_edit.cursorPositionChanged.connect(self.update_toolbar_button_states)
 
         self._is_deleting = False
         self._title_save_timer = QTimer(self)
@@ -84,7 +85,7 @@ class MemoWindow(QWidget):
             _sc.deleteLater()
 
         s_cfg = self.memo_window_get_settings().get("shortcuts", {})
-        
+
         QShortcut(QKeySequence(s_cfg.get("save", "Ctrl+S")), self).activated.connect(self.manual_save)
         QShortcut(QKeySequence(s_cfg.get("search", "Ctrl+F")), self).activated.connect(self.show_search_only)
         QShortcut(QKeySequence(s_cfg.get("replace", "Ctrl+H")), self).activated.connect(self.show_search_and_replace)
@@ -106,6 +107,9 @@ class MemoWindow(QWidget):
             # open_all_memos는 전역 단축키가 아니므로 로컬로 유지
             QShortcut(QKeySequence(s_cfg.get("open_all_memos", "Alt+O")), self).activated.connect(self.ui_manager.open_all_memos)
 
+        QShortcut(QKeySequence(s_cfg.get("toggle_memo_lock", "Ctrl+L")), self).activated.connect(self.toggle_memo_lock)
+        QShortcut(QKeySequence(s_cfg.get("set_memo_password", "Ctrl+Shift+L")), self).activated.connect(self.set_memo_password)
+
         QShortcut(QKeySequence("Esc"), self).activated.connect(self.close)
 
     def rebind_shortcuts(self) -> None:
@@ -115,37 +119,22 @@ class MemoWindow(QWidget):
     def memo_window_get_settings(self) -> Dict[str, Any]:
         return self.ui_manager.sync_manager.settings if getattr(self, 'ui_manager', None) else {}
 
-    def _current_theme_palette(self) -> Dict[str, Any]:
-        settings = self.memo_window_get_settings()
-        app_theme = settings.get('app_theme', 'white')
-        if app_theme == 'dark':
-            mode = settings.get('dark_theme_mode', 'dark')
-            return DARK_THEMES.get(mode, DARK_THEMES['dark'])
-        mode = settings.get('light_theme_mode', 'white')
-        return LIGHT_THEMES.get(mode, LIGHT_THEMES['white'])
+    def memo_bg_color(self) -> str:
+        """일반 메모의 바탕색."""
+        bg_color = self.memo_data.get('bg_color', '#FFFFFF')
+        return '#FFFFFF' if bg_color == 'random' else bg_color
+
+    def is_dark_bg(self) -> bool:
+        """메모 바탕이 어두운지 여부. (글자·아이콘을 밝게 그려야 하는지)"""
+        if self.memo_data.get('is_code_memo', False):
+            return self.memo_data.get('code_theme', 'dark') == 'dark'
+        color = QColor(self.memo_bg_color())
+        if not color.isValid():
+            return False
+        return (0.299 * color.red() + 0.587 * color.green() + 0.114 * color.blue()) / 255.0 < 0.5
 
     def _memo_theme_palette(self) -> Dict[str, Any]:
-        if self.memo_data.get('is_code_memo', False):
-            code_theme = self.memo_data.get('code_theme', 'dark')
-            if code_theme == 'dark':
-                return DARK_THEMES.get('dark', DARK_THEMES['dark'])
-            return LIGHT_THEMES.get('white', LIGHT_THEMES['white'])
-
-        bg_color = self.memo_data.get('bg_color', '#FFFFFF')
-        if bg_color == 'random':
-            bg_color = '#FFFFFF'
-
-        is_dark = True if bg_color in ['#2E3440', '#1C1C1E', '#000000'] else False
-        if not is_dark:
-            c_obj = QColor(bg_color)
-            if c_obj.isValid():
-                lum = (0.299 * c_obj.red() + 0.587 * c_obj.green() + 0.114 * c_obj.blue()) / 255.0
-                if lum < 0.5:
-                    is_dark = True
-
-        if is_dark:
-            return DARK_THEMES.get('dark', DARK_THEMES['dark'])
-        return LIGHT_THEMES.get('white', LIGHT_THEMES['white'])
+        return memo_palette(self.is_dark_bg())
 
     def show_toast(self, text: str) -> None:
         self.toast_label.setText(text)
@@ -168,58 +157,40 @@ class MemoWindow(QWidget):
         self.save_callback(self.memo_data)
 
     def apply_line_bg_style(self) -> None:
-        is_code_memo = self.memo_data.get('is_code_memo', False)
-        if is_code_memo:
-            code_theme = self.memo_data.get('code_theme', 'dark')
-            is_dark_bg = (code_theme == "dark")
-        else:
-            bg_color = self.memo_data.get('bg_color', '#FFFFFF')
-            is_dark_bg = True if bg_color in ['#2E3440', '#1C1C1E', '#000000'] else False
-            if not is_dark_bg:
-                c_obj = QColor(bg_color)
-                if c_obj.isValid():
-                    lum = (0.299 * c_obj.red() + 0.587 * c_obj.green() + 0.114 * c_obj.blue()) / 255.0
-                    if lum < 0.5:
-                        is_dark_bg = True
-
+        """본문 편집기의 글자색·글꼴·스크롤바."""
+        is_dark_bg = self.is_dark_bg()
         text_color = "#F2F2F7" if is_dark_bg else "#1C1C1E"
-        line_color = "rgba(255,255,255,0.15)" if is_dark_bg else "rgba(0,0,0,0.15)"
-        
-        font_fam = "'D2Coding'" if is_code_memo else "'D2Coding', 'Consolas', monospace"
-        font_size = f"{self.memo_data.get('font_size', 11)}pt"
-        style_str = f"QTextEdit {{ border:none; background: transparent; color:{text_color}; font-family: {font_fam}; font-size: {font_size}; }}"
-        
-        if self.memo_data.get('show_line_bg', False):
-            self.text_edit.setStyleSheet(style_str)
-        else:
-            self.text_edit.setStyleSheet(style_str)
-        
+        font_fam = "'D2Coding'" if self.memo_data.get('is_code_memo', False) else modern_style.MONO_FONT
+        self.text_edit.setStyleSheet(
+            f"QTextEdit {{ border:none; background: transparent; color:{text_color}; "
+            f"font-family: {font_fam}; font-size: {self.memo_data.get('font_size', 11)}pt; }}"
+            + modern_style.scrollbars(is_dark_bg)
+        )
+
     def setup_ui(self) -> None:
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.window_layout = QVBoxLayout(self)
         self.window_layout.setContentsMargins(6, 6, 6, 6)
-        
+
         self.bg = QWidget()
         self.bg.setObjectName("MemoBackground")
         self.bg_layout = QVBoxLayout(self.bg)
         bg_l = self.bg_layout
         self.bg_layout.setContentsMargins(14, 10, 14, 14)
         self.window_layout.addWidget(self.bg)
-        apply_ios_shadow(self.bg)
-        
+
         ctrl = QHBoxLayout()
         ctrl.setSpacing(6)
-        
+
         # 📌 제목 레이블 (압정 영역 직전까지 확장)
         self.title_edit = QLineEdit()
         self.title_edit.setReadOnly(True)
-        self.title_edit.setStyleSheet("border:none; background:transparent; font-weight:bold; font-size:11.5pt; font-family: 'D2Coding', 'Consolas', monospace;")
         self.title_edit.editingFinished.connect(self.handle_rename)
         self.title_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.title_edit.customContextMenuRequested.connect(self.show_menu)
         self.title_edit.installEventFilter(self)
         ctrl.addWidget(self.title_edit, 1)
-        
+
         self.btn_code_theme = QPushButton("")
         self.btn_code_theme.setFixedSize(90, 24)
 
@@ -229,10 +200,9 @@ class MemoWindow(QWidget):
         self.code_lang_box = QComboBox()
         self.code_lang_box.addItems(["JSON", "C#", "VB.NET", "Power Automate", "PowerShell", "Batch (CMD)", "SQL", "Markdown", "Python", "JavaScript", "HTML", "CSS", "C++", "Java", "Plain Text"])
         self.code_lang_box.setFixedHeight(24)
-        self.code_lang_box.setStyleSheet("font-size: 8.5pt; font-weight: bold; padding: 0 4px; border: 1px solid #0A84FF; border-radius: 10px; background: #1C1C1E; color: #0A84FF;")
         self.code_lang_box.currentTextChanged.connect(self.on_code_lang_changed)
         self.code_lang_box.hide()
-        
+
         # 언어 선택 아이콘 버튼 (language.svg) - 콤보박스와 함께 표시
         self.btn_lang_icon = QPushButton("")
         self.btn_lang_icon.setFixedSize(24, 24)
@@ -268,91 +238,85 @@ class MemoWindow(QWidget):
         self.btn_close.clicked.connect(self.close)
 
         bg_l.addLayout(ctrl)
-        
+
         self.content_container = QWidget()
         cc_layout = QVBoxLayout(self.content_container)
         cc_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.text_edit = MemoTextEdit(self)
         self.text_edit.setStyleSheet("border:none; background:transparent;")
         self.text_edit.textChanged.connect(self.update_content)
         self.text_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.text_edit.customContextMenuRequested.connect(self.show_menu)
         self.text_edit.installEventFilter(self)
-        
+
         self.toast = QLabel("")
         self.toast.setStyleSheet("color: #0A84FF; font-weight: bold; font-size: 10pt;")
         self.toast.hide()
-        
+
         cc_layout.addWidget(self.toast, alignment=Qt.AlignmentFlag.AlignCenter)
         cc_layout.addWidget(self.text_edit)
-        
+
         self.search_bar = QWidget()
         sl = QHBoxLayout(self.search_bar)
         sl.setContentsMargins(0, 4, 0, 4)
-        
+
         self.s_in = QLineEdit()
         self.s_in.setPlaceholderText("찾을 단어")
-        self.s_in.setStyleSheet("padding:6px; border:1px solid #C7C7CC; border-radius:8px; background:white; color:#000000;")
         self.s_in.returnPressed.connect(lambda: self.do_find(backward=False))
-        
+
         self.s_count = QLabel("0/0")
-        self.s_count.setStyleSheet("color: #007AFF; font-weight: bold; padding: 0 5px;")
-        
+
         self.s_prev_btn = QPushButton("▲")
         self.s_prev_btn.setFixedSize(24, 24)
-        self.s_prev_btn.setStyleSheet("background:#F2F2F7; color:#000000; border:1px solid #C7C7CC; border-radius:6px; font-weight:bold;")
         self.s_prev_btn.clicked.connect(lambda: self.do_find(backward=True))
-        
+
         self.s_next_btn = QPushButton("▼")
         self.s_next_btn.setFixedSize(24, 24)
-        self.s_next_btn.setStyleSheet("background:#F2F2F7; color:#000000; border:1px solid #C7C7CC; border-radius:6px; font-weight:bold;")
         self.s_next_btn.clicked.connect(lambda: self.do_find(backward=False))
-        
+
         self.r_in = QLineEdit()
         self.r_in.setPlaceholderText("바꿀 단어")
-        self.r_in.setStyleSheet("padding:6px; border:1px solid #C7C7CC; border-radius:8px; background:white; color:#000000;")
         self.r_in.returnPressed.connect(self.do_replace)
-        
+
         self.r_btn = QPushButton("바꾸기")
-        self.r_btn.setStyleSheet("background:#007AFF; color:white; border:none; border-radius:8px; padding:6px; font-weight:bold;")
         self.r_btn.clicked.connect(self.do_replace)
-        
+
         self.s_close = QPushButton("")
         self.s_close.setFixedSize(24, 24)
         self.s_close.setStyleSheet("border:none; background:transparent;")
         if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
             self.s_close.setIcon(self.ui_manager.get_theme_icon("close.svg", False, override_color="#FF453A"))
         self.s_close.clicked.connect(self.search_bar.hide)
-        
-        for w in [self.s_in, self.s_count, self.s_prev_btn, self.s_next_btn, self.r_in, self.r_btn, self.s_close]: 
+
+        for w in [self.s_in, self.s_count, self.s_prev_btn, self.s_next_btn, self.r_in, self.r_btn, self.s_close]:
             sl.addWidget(w)
-            
+
         self.search_bar.hide()
         cc_layout.addWidget(self.search_bar)
-        
+
         self.fmt_bar = QHBoxLayout()
         self.fmt_bar.setContentsMargins(0, 4, 0, 0)
         self.fmt_bar.setSpacing(4)
-        
+
         self.btn_bullet = QPushButton("")
         self.btn_num = QPushButton("")
         self.btn_indent = QPushButton("")
         self.btn_outdent = QPushButton("")
-        
+
         self.btn_bold = QPushButton("B")
-        self.btn_bold.setStyleSheet("font-weight: bold;")
         self.btn_italic = QPushButton("I")
-        self.btn_italic.setStyleSheet("font-style: italic; font-family: 'Times New Roman';")
         self.btn_underline = QPushButton("U")
-        self.btn_underline.setStyleSheet("text-decoration: underline;")
-        
+
         for b in [self.btn_bullet, self.btn_num, self.btn_indent, self.btn_outdent, self.btn_bold, self.btn_italic, self.btn_underline]:
             b.setFixedSize(24, 24)
-            b.setCheckable(True)
+            # 굵게·기울임·밑줄만 '켜짐/꺼짐'이 표시됩니다. 목록·들여쓰기는 누를 때 동작만 하는 버튼입니다.
+            b.setCheckable(b in (self.btn_bold, self.btn_italic, self.btn_underline))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            # 버튼을 눌러도 본문의 입력 포커스가 넘어가지 않게 합니다.
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self.fmt_bar.addWidget(b)
-            
+
         self.btn_bullet.clicked.connect(self.apply_bullet)
         self.btn_num.clicked.connect(self.apply_number)
         self.btn_indent.clicked.connect(self.apply_indent)
@@ -360,59 +324,63 @@ class MemoWindow(QWidget):
         self.btn_bold.clicked.connect(self.toggle_bold)
         self.btn_italic.clicked.connect(self.toggle_italic)
         self.btn_underline.clicked.connect(self.toggle_underline)
-        
+
         self.btn_format_code = QPushButton("{} 정렬")
         self.btn_format_code.setFixedHeight(24)
         self.btn_format_code.clicked.connect(self.prettify_code)
+        self.btn_format_code.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_format_code.hide()
         self.fmt_bar.addWidget(self.btn_format_code)
 
         self.btn_toggle_sub_fmt = QPushButton("Aa ▾")
         self.btn_toggle_sub_fmt.setFixedHeight(24)
         self.btn_toggle_sub_fmt.clicked.connect(self.toggle_sub_fmt_panel)
+        self.btn_toggle_sub_fmt.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.fmt_bar.addWidget(self.btn_toggle_sub_fmt)
-        
+
         self.fmt_bar.addStretch()
-        
+
         self.sub_fmt_widget = QWidget()
         sub_l = QHBoxLayout(self.sub_fmt_widget)
         sub_l.setContentsMargins(0, 2, 0, 0)
         sub_l.setSpacing(4)
-        
+
         self.font_box = QFontComboBox()
         self.font_box.setMaximumWidth(120)
         self.font_box.setFixedHeight(24)
-        self.font_box.setStyleSheet("font-size: 8.5pt; padding: 0px 4px; border: 1px solid #C7C7CC; border-radius: 6px; background: white; color: black;")
         self.font_box.currentFontChanged.connect(self.change_font_family)
         sub_l.addWidget(self.font_box)
-        
+
         self.size_box = QComboBox()
         self.size_box.setFixedSize(48, 24)
-        self.size_box.setStyleSheet("font-size: 8.5pt; padding: 0px 2px; border: 1px solid #C7C7CC; border-radius: 6px; background: white; color: black;")
         for sz in [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72]:
             self.size_box.addItem(str(sz))
         self.size_box.setCurrentText(str(self.memo_data.get('font_size', 11)))
         self.size_box.currentTextChanged.connect(self.change_font_size)
         sub_l.addWidget(self.size_box)
-        
+        # 지나가던 휠에 글꼴·크기·언어가 바뀌지 않게 합니다. (클릭해서 고름)
+        guard_wheel(self, (self.font_box, self.size_box, self.code_lang_box))
+
         self.btn_fg_color = QPushButton("A")
         self.btn_fg_color.setFixedSize(24, 24)
         self.btn_fg_color.setToolTip("글씨색 선택 (RGB)")
         self.btn_fg_color.clicked.connect(self.choose_fg_color)
+        self.btn_fg_color.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         sub_l.addWidget(self.btn_fg_color)
 
         self.btn_bg_color = QPushButton("▣")
         self.btn_bg_color.setFixedSize(24, 24)
         self.btn_bg_color.setToolTip("글씨 배경색 / 형광펜")
         self.btn_bg_color.clicked.connect(self.show_bg_color_menu)
+        self.btn_bg_color.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         sub_l.addWidget(self.btn_bg_color)
         sub_l.addStretch()
-        
+
         self.sub_fmt_widget.hide()
-        
+
         cc_layout.addLayout(self.fmt_bar)
         cc_layout.addWidget(self.sub_fmt_widget)
-        
+
         self.update_toolbar_button_states()
         bg_l.addWidget(self.content_container)
         self.grip = QSizeGrip(self)
@@ -430,7 +398,7 @@ class MemoWindow(QWidget):
 
     def toggle_code_theme(self) -> None:
         """코드 테마 사용자 수동 전환"""
-        self.memo_data['content'] = self.text_edit.toHtml()
+        self.memo_data['content'] = self.current_content()
         cur = self.memo_data.get('code_theme',
               'dark' if self.memo_window_get_settings().get('app_theme', 'white') == 'dark' else 'light')
         new_theme = "light" if cur == "dark" else "dark"
@@ -440,65 +408,7 @@ class MemoWindow(QWidget):
         self.update()
         self.repaint()
         self.text_edit.viewport().update()
-        self.manual_save()
-
-    def update_toolbar_button_states(self) -> None:
-        fmt = self.text_edit.currentCharFormat()
-        is_code = self.memo_data.get('is_code_memo', False)
-        if is_code:
-            code_theme = self.memo_data.get('code_theme', 'dark')
-            is_memo_dark_bg = (code_theme == "dark")
-        else:
-            bg_color = self.memo_data.get('bg_color', '#FFFFFF')
-            if bg_color == "random": bg_color = "#FFFFFF"
-            is_memo_dark_bg = True if bg_color in ['#2E3440', '#1C1C1E', '#000000'] else False
-            if not is_memo_dark_bg:
-                c_obj = QColor(bg_color)
-                if c_obj.isValid():
-                    lum = (0.299 * c_obj.red() + 0.587 * c_obj.green() + 0.114 * c_obj.blue()) / 255.0
-                    if lum < 0.5:
-                        is_memo_dark_bg = True
-        
-        btn_text_color = '#FFFFFF' if is_memo_dark_bg else '#000000'
-        btn_style_off = f"border:none; color:{btn_text_color}; font-size:10pt; background: transparent; font-weight:bold; border-radius: 4px;"
-        btn_style_on = "border:none; color:white; font-size:10pt; background: #007AFF; font-weight:bold; border-radius: 4px;"
-
-        if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
-            self.btn_bullet.setText("")
-            self.btn_bullet.setIcon(self.ui_manager.get_theme_icon("bullet_icon_177745.svg", is_memo_dark_bg))
-            self.btn_num.setText("")
-            self.btn_num.setIcon(self.ui_manager.get_theme_icon("list_numbers_icon_172368.svg", is_memo_dark_bg))
-            self.btn_indent.setText("")
-            self.btn_indent.setIcon(self.ui_manager.get_theme_icon("들여쓰기.svg", is_memo_dark_bg))
-            self.btn_outdent.setText("")
-            self.btn_outdent.setIcon(self.ui_manager.get_theme_icon("내어쓰기.svg", is_memo_dark_bg))
-
-        is_bold = fmt.fontWeight() == QFont.Weight.Bold
-        self.btn_bold.setChecked(is_bold)
-        self.btn_bold.setStyleSheet(btn_style_on if is_bold else btn_style_off)
-
-        is_italic = fmt.fontItalic()
-        self.btn_italic.setChecked(is_italic)
-        self.btn_italic.setStyleSheet(btn_style_on if is_italic else btn_style_off)
-
-        is_underline = fmt.fontUnderline()
-        self.btn_underline.setChecked(is_underline)
-        self.btn_underline.setStyleSheet(btn_style_on if is_underline else btn_style_off)
-
-        cursor = self.text_edit.textCursor()
-        cur_list = cursor.currentList()
-        is_bullet = False
-        is_num = False
-        if cur_list:
-            style = cur_list.format().style()
-            is_bullet = (style == QTextListFormat.Style.ListDisc)
-            is_num = (style == QTextListFormat.Style.ListDecimal)
-            
-        self.btn_bullet.setChecked(is_bullet)
-        self.btn_bullet.setStyleSheet(btn_style_on if is_bullet else btn_style_off)
-
-        self.btn_num.setChecked(is_num)
-        self.btn_num.setStyleSheet(btn_style_on if is_num else btn_style_off)
+        self._mark_edited()
 
     def toggle_sub_fmt_panel(self) -> None:
         is_vis = self.sub_fmt_widget.isVisible()
@@ -509,7 +419,7 @@ class MemoWindow(QWidget):
         self.memo_data['code_lang'] = lang
         theme = self.memo_data.get('code_theme', 'dark')
         self.highlighter = CodeHighlighter(self.text_edit.document(), lang, theme)
-        self.manual_save()
+        self._mark_edited()
 
     def prettify_code(self) -> None:
         """JSON / 기타 코드 자동 정렬 — 정렬 후 하이라이터 및 글씨색 강제 재적용."""
@@ -531,7 +441,7 @@ class MemoWindow(QWidget):
             base_fmt = QTextCharFormat()
             base_fmt.setForeground(QColor(code_text))
             cursor.mergeCharFormat(base_fmt)
-            self.manual_save()
+            self._mark_edited()
 
         if "JSON" in lang:
             try:
@@ -558,39 +468,6 @@ class MemoWindow(QWidget):
         _apply_after_format("\n".join(formatted_lines))
         self.show_toast("✨ 코드 인덴트 정렬 완료")
 
-    def show_bg_color_menu(self) -> None:
-        menu = QMenu(self)
-        pal = self._current_theme_palette()
-        menu.setStyleSheet(
-            f"QMenu {{ background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']}; border-radius: 8px; }} "
-            f"QMenu::item:selected {{ background-color: {pal['accent']}; color: {pal['text']}; }}"
-        )
-        
-        menu.addAction("❌ 배경색 없음 (투명)").triggered.connect(lambda: self.set_text_bg_color(QColor(0, 0, 0, 0)))
-        menu.addSeparator()
-        
-        highlights = {
-            "🟡 노란색 형광펜": "#FEF08A",
-            "🟢 연두색 형광펜": "#BBF7D0",
-            "🔵 하늘색 형광펜": "#BAE6FD",
-            "🩷 분홍색 형광펜": "#FBCFE8"
-        }
-        for name, hex_code in highlights.items():
-            menu.addAction(name).triggered.connect(lambda checked, c=hex_code: self.set_text_bg_color(QColor(c)))
-            
-        menu.addSeparator()
-        menu.addAction("사용자 지정 RGB 색상...").triggered.connect(self.choose_bg_color)
-        menu.exec(self.btn_bg_color.mapToGlobal(QPoint(0, self.btn_bg_color.height())))
-
-    def set_text_bg_color(self, color: QColor) -> None:
-        fmt = self.text_edit.currentCharFormat()
-        fmt.setBackground(color)
-        self.text_edit.mergeCurrentCharFormat(fmt)
-        pal = self._current_theme_palette()
-        bg_style = color.name() if color.alpha() > 0 else pal['card']
-        self.btn_bg_color.setStyleSheet(f"border: 1px solid {pal['border']}; border-radius: 6px; background: {bg_style};")
-        self.manual_save()
-
     def mouseDoubleClickEvent(self, e: Any) -> None:
         if e.button() == Qt.MouseButton.LeftButton:
             if self._is_rolled_up or e.position().y() <= 53:
@@ -603,8 +480,8 @@ class MemoWindow(QWidget):
         if hasattr(self, 'title_edit') and obj == self.title_edit:
             if event.type() == QEvent.Type.MouseButtonDblClick and event.button() == Qt.MouseButton.LeftButton:
                 self.toggle_rollup()
-                return True 
-                
+                return True
+
             if not self.title_edit.isReadOnly():
                 if event.type() == QEvent.Type.FocusOut:
                     self.handle_rename()
@@ -618,39 +495,39 @@ class MemoWindow(QWidget):
                 elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
                     self.mouseReleaseEvent(event)
                     return True
-                    
+
         return super().eventFilter(obj, event)
-    
+
     def find_snap_target_memo(self) -> Optional['MemoWindow']:
         if not getattr(self, 'ui_manager', None):
             return None
-            
+
         memos_below = []
         memos_above = []
-        
+
         for other_id, other_win in self.ui_manager.memo_windows.items():
             if other_win is self or not other_win.isVisible() or not other_win._is_rolled_up:
                 continue
-            
+
             # 📌 수직 15px 이내 직접 맞닿아 있고 가로 영역이 겹칠 때만(붙어있을 때만) 탐색
             touch_below = abs(other_win.y() - (self.y() + self.height())) <= 15
             touch_above = abs((other_win.y() + other_win.height()) - self.y()) <= 15
             horiz_overlap = (self.x() < other_win.x() + other_win.width()) and (self.x() + self.width() > other_win.x())
-            
+
             if (touch_below or touch_above) and horiz_overlap:
                 dy = other_win.y() - self.y()
                 if dy > 0:
                     memos_below.append((dy, other_win))
                 elif dy < 0:
                     memos_above.append((abs(dy), other_win))
-            
+
         if memos_below:
             memos_below.sort(key=lambda item: item[0])
             return memos_below[0][1]
         if memos_above:
             memos_above.sort(key=lambda item: item[0])
             return memos_above[0][1]
-            
+
         return None
 
     def resizeEvent(self, event: Any) -> None:
@@ -676,7 +553,7 @@ class MemoWindow(QWidget):
             if target_win:
                 target_w = target_win.width()
                 mouse_x = QCursor.pos().x()
-                
+
                 if getattr(self, '_sticky_snap_origin', None):
                     start_mouse_x, snap_w = self._sticky_snap_origin
                     if abs(mouse_x - start_mouse_x) > 15:
@@ -684,7 +561,7 @@ class MemoWindow(QWidget):
                     else:
                         self.resize(snap_w, rolled_h)
                         return
-                
+
                 if not getattr(self, '_sticky_snap_origin', None):
                     if abs(self.width() - target_w) <= 12:
                         self.resize(target_w, rolled_h)
@@ -696,15 +573,11 @@ class MemoWindow(QWidget):
             self.memo_data['unrolled_height'] = self.height()
             self.memo_data['width'] = self.width()
             self.memo_data['height'] = self.height()
-        
+
     def show_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
-        pal = self._current_theme_palette()
-        menu.setStyleSheet(
-            f"QMenu {{ background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']}; border-radius: 8px; }} "
-            f"QMenu::item:selected {{ background-color: {pal['accent']}; color: {pal['text']}; }}"
-        )
-        
+        menu.setStyleSheet(modern_style.menu_qss(self.memo_window_get_settings()))
+
         s = self.memo_window_get_settings()
         sc = s.get("shortcuts", {})
         def _fmt_sc(title: str, key: str, default: str) -> str:
@@ -726,17 +599,17 @@ class MemoWindow(QWidget):
             menu.addAction(_fmt_sc("코드 테마 전환", "toggle_code_theme", "Ctrl+Shift+L")).triggered.connect(self.toggle_code_theme)
         else:
             menu.addAction(_fmt_sc("전체 메모 내용 복사 (클립보드)", "copy_all", "Ctrl+Shift+C")).triggered.connect(self.copy_all_content)
-            
+
         menu.addAction(_fmt_sc("한/영 영타 오타 변환", "eng_kor_convert", "Ctrl+Alt+E")).triggered.connect(self.convert_selected_eng_kor)
-        
+
         menu.addSeparator()
-        
+
         is_auto_convert = s.get("auto_eng_kor_convert", True)
         auto_convert_action = menu.addAction(f"한/영 자동 변환기 [{ 'ON' if is_auto_convert else 'OFF' }]")
         auto_convert_action.setCheckable(True)
         auto_convert_action.setChecked(is_auto_convert)
         auto_convert_action.triggered.connect(self.toggle_auto_eng_kor_setting)
-        
+
         menu.addSeparator()
         menu.addAction(_fmt_sc("메모 탐색기 열기", "open_explorer", "Ctrl+E")).triggered.connect(self.ui_manager.open_memo_explorer)
         menu.addAction(_fmt_sc("저장", "save", "Ctrl+S")).triggered.connect(self.manual_save)
@@ -744,21 +617,21 @@ class MemoWindow(QWidget):
         menu.addAction(_fmt_sc("바꾸기", "replace", "Ctrl+H")).triggered.connect(self.show_search_and_replace)
         menu.addAction(_fmt_sc("화면 고정 토글", "toggle_pin", "Ctrl+P")).triggered.connect(self.toggle_pin)
         menu.addAction(_fmt_sc("메모 창 접기", "toggle_rollup", "Ctrl+M")).triggered.connect(self.toggle_rollup)
-        
+
         ln_action = menu.addAction("행번호 표시")
         ln_action.setCheckable(True)
         ln_action.setChecked(self.memo_data.get('show_line_numbers', False))
         ln_action.triggered.connect(self.toggle_line_numbers)
-        
+
         bg_action = menu.addAction("줄노트 배경")
         bg_action.setCheckable(True)
         bg_action.setChecked(self.memo_data.get('show_line_bg', False))
         bg_action.triggered.connect(self.toggle_line_bg)
-        
+
         if not is_code:
             menu.addSeparator()
             cm = menu.addMenu("창 배경색 변경")
-            for n, c in {"다크그레이": "#2E3440", "하늘색": "#E0F2FE", "연두색": "#DCFCE7", "노란색": "#FEF9C3", "분홍색": "#FCE7F3", "흰색": "#FFFFFF"}.items(): 
+            for n, c in {"다크그레이": "#2E3440", "하늘색": "#E0F2FE", "연두색": "#DCFCE7", "노란색": "#FEF9C3", "분홍색": "#FCE7F3", "흰색": "#FFFFFF"}.items():
                 cm.addAction(n).triggered.connect(lambda checked, code=c: self.change_color(code))
 
         menu.addSeparator()
@@ -789,9 +662,9 @@ class MemoWindow(QWidget):
         opa_slider.setValue(cur_opacity_pct)
         opa_slider.setFixedWidth(160)
         opa_slider.setStyleSheet("""
-            QSlider::groove:horizontal { height: 4px; background: #C7C7CC; border-radius: 2px; }
-            QSlider::handle:horizontal { width: 18px; height: 18px; margin: -7px 0; background: #007AFF; border-radius: 9px; }
-            QSlider::sub-page:horizontal { background: #007AFF; border-radius: 2px; }
+            QSlider::groove:horizontal { height: 4px; background: #C7C7CC; }
+            QSlider::handle:horizontal { width: 12px; height: 18px; margin: -7px 0; background: #007AFF; }
+            QSlider::sub-page:horizontal { background: #007AFF; }
         """)
         def _update_opacity(val: int) -> None:
             opa_label.setText(f"불투명도: {val}%")
@@ -831,7 +704,7 @@ class MemoWindow(QWidget):
             txt = self.text_edit.toPlainText()
             converted = convert_eng_kor_smart(txt)
             self.text_edit.setPlainText(converted)
-        self.manual_save()
+        self._mark_edited()
         self.show_toast("🔤 한/영 영타 변환 완료")
 
     def copy_all_content(self) -> None:
@@ -862,7 +735,7 @@ class MemoWindow(QWidget):
         if not search_text:
             self.s_count.setText("0/0")
             return
-            
+
         p = self.text_edit.palette()
         p.setColor(QPalette.ColorRole.Highlight, QColor("#007AFF"))
         p.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
@@ -892,329 +765,17 @@ class MemoWindow(QWidget):
 
     def do_replace(self) -> None:
         c = self.text_edit.textCursor()
-        if c.hasSelection() and c.selectedText().lower() == self.s_in.text().lower(): 
+        if c.hasSelection() and c.selectedText().lower() == self.s_in.text().lower():
             c.insertText(self.r_in.text())
-            self.manual_save()
+            self._mark_edited()
         self.do_find(backward=False)
 
-    def toggle_bold(self) -> None:
-        fmt = self.text_edit.currentCharFormat()
-        is_bold = fmt.fontWeight() == QFont.Weight.Bold
-        fmt.setFontWeight(QFont.Weight.Normal if is_bold else QFont.Weight.Bold)
-        self.text_edit.mergeCurrentCharFormat(fmt)
-        self.update_toolbar_button_states()
-        self.manual_save()
-
-    def toggle_italic(self) -> None:
-        fmt = self.text_edit.currentCharFormat()
-        fmt.setFontItalic(not fmt.fontItalic())
-        self.text_edit.mergeCurrentCharFormat(fmt)
-        self.update_toolbar_button_states()
-        self.manual_save()
-
-    def toggle_underline(self) -> None:
-        fmt = self.text_edit.currentCharFormat()
-        fmt.setFontUnderline(not fmt.fontUnderline())
-        self.text_edit.mergeCurrentCharFormat(fmt)
-        self.update_toolbar_button_states()
-        self.manual_save()
-
-    def change_font_family(self, font: QFont) -> None:
-        cursor = self.text_edit.textCursor()
-        if not cursor.hasSelection():
-            cursor.select(QTextCursor.SelectionType.Document)
-        fmt = QTextCharFormat()
-        fmt.setFontFamily(font.family())
-        cursor.mergeCharFormat(fmt)
-        self.text_edit.mergeCurrentCharFormat(fmt)
-        self.text_edit.setFont(font)
-        self.memo_data['font_family'] = font.family()
-        self.manual_save()
-
-    def change_font_size(self, size_str: str) -> None:
-        if not size_str.isdigit(): return
-        sz = int(size_str)
-        # 전체 문서에 폰트 크기 적용
-        font_family = self.memo_data.get('font_family', 'D2Coding')
-        f = QFont(font_family, sz)
-        self.text_edit.setFont(f)
-        cursor = self.text_edit.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        fmt = QTextCharFormat()
-        fmt.setFont(f)
-        cursor.mergeCharFormat(fmt)
-        self.memo_data['font_size'] = sz
-        # 스타일시트·행번호 동기화
-        self.apply_line_bg_style()
-        self.text_edit.update_line_number_area()
+    def _mark_edited(self) -> None:
+        """서식 변경 등으로 본문이 바뀌었음을 표시합니다. 저장은 자동 저장(마지막 입력 후 대기)에 맡깁니다."""
+        if self.is_sealed():
+            return
         self._schedule_auto_save()
-
-    def choose_fg_color(self) -> None:
-        color = QColorDialog.getColor(Qt.GlobalColor.black, self, "글씨색 선택")
-        if color.isValid():
-            cursor = self.text_edit.textCursor()
-            fmt = QTextCharFormat()
-            fmt.setForeground(color)
-            if cursor.hasSelection():
-                cursor.mergeCharFormat(fmt)
-            else:
-                self.text_edit.mergeCurrentCharFormat(fmt)
-            
-            self.btn_fg_color.setStyleSheet(
-                f"font-weight: bold; color: {color.name()}; "
-                f"border: 1px solid #C7C7CC; border-radius: 6px; background: white;"
-            )
-            self.manual_save()
-
-    def choose_bg_color(self) -> None:
-        colors = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "transparent"]
-        cur = getattr(self, '_current_bg_idx', -1)
-        cur = (cur + 1) % len(colors)
-        self._current_bg_idx = cur
-        if colors[cur] == "transparent":
-            color = QColor(0, 0, 0, 0)
-        else:
-            color = QColor(colors[cur])
-        self.set_text_bg_color(color)
-
-    def apply_bullet(self) -> None:
-        cursor = self.text_edit.textCursor()
-        current_list = cursor.currentList()
-        if current_list:
-            if current_list.format().style() == QTextListFormat.Style.ListDisc:
-                block = self.text_edit.document().findBlock(cursor.selectionStart())
-                end_block = self.text_edit.document().findBlock(cursor.selectionEnd())
-                while True:
-                    lst = block.textList()
-                    if lst:
-                        bf = block.blockFormat()
-                        bf.setObjectIndex(-1)
-                        lst.remove(block)
-                        c = QTextCursor(block)
-                        c.setBlockFormat(bf)
-                    if block == end_block or not block.isValid(): break
-                    block = block.next()
-            else:
-                fmt = current_list.format()
-                fmt.setStyle(QTextListFormat.Style.ListDisc)
-                current_list.setFormat(fmt)
-        else:
-            list_fmt = QTextListFormat()
-            list_fmt.setStyle(QTextListFormat.Style.ListDisc)
-            list_fmt.setIndent(max(1, cursor.blockFormat().indent()))
-            prev_block = cursor.block().previous()
-            next_block = cursor.block().next()
-            target_list = None
-            if prev_block.isValid() and prev_block.textList() and prev_block.textList().format().style() == QTextListFormat.Style.ListDisc:
-                target_list = prev_block.textList()
-            elif next_block.isValid() and next_block.textList() and next_block.textList().format().style() == QTextListFormat.Style.ListDisc:
-                target_list = next_block.textList()
-            
-            if target_list:
-                target_list.add(cursor.block())
-            else:
-                cursor.createList(list_fmt)
-        self.update_toolbar_button_states()
-        self.manual_save()
-
-    # ── 암호 메모 ────────────────────────────────────────────────────────────
-    def is_sealed(self) -> bool:
-        """본문을 읽을 수 없는 상태(잠김 또는 손상)인지 여부. 이 상태에서는 본문을 저장하지 않습니다."""
-        return bool(self.memo_data.get('_locked') or self.memo_data.get('_unreadable'))
-
-    def _sync_manager(self) -> Any:
-        return self.ui_manager.sync_manager if getattr(self, 'ui_manager', None) else None
-
-    def _refresh_explorer(self) -> None:
-        ex = getattr(self.ui_manager, 'explorer_window', None) if getattr(self, 'ui_manager', None) else None
-        if ex and ex.isVisible():
-            ex.refresh()
-
-    def _ask_password(self, label: str) -> str:
-        from PyQt6.QtWidgets import QInputDialog
-        text, ok = QInputDialog.getText(self, "암호 메모", label, QLineEdit.EchoMode.Password)
-        return text if ok else ""
-
-    def restart_relock_timer(self) -> None:
-        self._relock_timer.stop()
-        if not self.memo_data.get('is_locked') or self.is_sealed():
-            return
-        try:
-            minutes = float(self.memo_window_get_settings().get("locked_memo_relock_min", 5))
-        except (TypeError, ValueError):
-            minutes = 5
-        if minutes > 0:
-            self._relock_timer.start(int(minutes * 60 * 1000))
-
-    def prompt_unlock(self) -> None:
-        sm = self._sync_manager()
-        if not sm or not self.memo_data.get('_locked') or getattr(self, '_is_prompting', False):
-            return
-        self._is_prompting = True
-        try:
-            pwd = self._ask_password("이 메모의 암호를 입력하세요:")
-            if not pwd:
-                return
-            plain = sm.unlock_memo(self.memo_data.get('id', ''), pwd)
-            if plain is None:
-                QMessageBox.warning(self, "암호 메모", "암호가 일치하지 않습니다.")
-                return
-            self.memo_data['content'] = plain
-            self.memo_data.pop('_locked', None)
-            self.apply_data()
-            self.restart_relock_timer()
-            self._refresh_explorer()
-        finally:
-            self._is_prompting = False
-
-    def recover_with_master_key(self) -> None:
-        """암호를 잊은 메모를 관리자 개인키 파일로 복구하고 새 암호를 설정합니다."""
-        sm = self._sync_manager()
-        if not sm or not self.memo_data.get('_locked'):
-            return
-        path, _ = QFileDialog.getOpenFileName(self, "관리자 개인키 파일 선택", "", "PEM 키 파일 (*.pem);;모든 파일 (*)")
-        if not path:
-            return
-        try:
-            with open(path, "rb") as f:
-                pem = f.read()
-        except OSError:
-            QMessageBox.warning(self, "관리자 복구", "개인키 파일을 읽을 수 없습니다.")
-            return
-        passphrase = self._ask_password("개인키 파일의 암호를 입력하세요:")
-        new_pwd = self._ask_password("이 메모에 새로 설정할 암호:")
-        if not new_pwd:
-            return
-        if self._ask_password("새 암호를 한 번 더 입력하세요:") != new_pwd:
-            QMessageBox.warning(self, "관리자 복구", "두 암호가 일치하지 않습니다.")
-            return
-        try:
-            plain = sm.recover_memo_with_master(self.memo_data.get('id', ''), pem, passphrase, new_pwd)
-        except ValueError as e:
-            QMessageBox.warning(self, "관리자 복구", str(e))
-            return
-        self.memo_data['content'] = plain
-        self.memo_data.pop('_locked', None)
-        self.apply_data()
         self.restart_relock_timer()
-        self.show_toast("🔓 복구 완료 · 새 암호 설정됨")
-        self._refresh_explorer()
-
-    def lock_now(self) -> None:
-        """암호 메모를 저장한 뒤 다시 잠급니다. 본문은 메모리에서도 지웁니다."""
-        sm = self._sync_manager()
-        if not sm or not self.memo_data.get('is_locked') or self.is_sealed():
-            return
-        self._auto_save_timer.stop()
-        self.execute_auto_save()
-        self._relock_timer.stop()
-        sm.relock_memo(self.memo_data.get('id', ''))
-        self.memo_data['content'] = ""
-        self.memo_data['_locked'] = True
-        self.apply_data()
-        self.show_toast("🔒 잠김")
-        self._refresh_explorer()
-
-    def set_memo_password(self) -> None:
-        sm = self._sync_manager()
-        if not sm or self.is_sealed():
-            return
-        pwd = self._ask_password("새 암호를 입력하세요:")
-        if not pwd:
-            return
-        if self._ask_password("확인을 위해 한 번 더 입력하세요:") != pwd:
-            QMessageBox.warning(self, "암호 메모", "두 암호가 일치하지 않습니다.")
-            return
-        if QMessageBox.question(
-            self, "암호 메모",
-            "암호를 잊으면 이 메모의 내용은 복구할 수 없습니다.\n계속할까요?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        ) != QMessageBox.StandardButton.Yes:
-            return
-        self._auto_save_timer.stop()
-        self._dirty_since = None
-        self.memo_data['content'] = self.text_edit.toHtml()
-        self.memo_data['updated_at'] = datetime.datetime.now().isoformat()
-        if sm.set_memo_password(self.memo_data, pwd):
-            self.show_toast("🔒 암호 설정됨")
-            self.restart_relock_timer()
-            self._refresh_explorer()
-        else:
-            QMessageBox.warning(self, "암호 메모", "암호를 설정하지 못했습니다.")
-
-    def remove_memo_password(self) -> None:
-        sm = self._sync_manager()
-        if not sm or not self.memo_data.get('is_locked') or self.is_sealed():
-            return
-        if QMessageBox.question(
-            self, "암호 메모", "이 메모의 암호를 없애고 일반 메모로 되돌릴까요?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        ) != QMessageBox.StandardButton.Yes:
-            return
-        self._auto_save_timer.stop()
-        self._dirty_since = None
-        self._relock_timer.stop()
-        self.memo_data['content'] = self.text_edit.toHtml()
-        self.memo_data['updated_at'] = datetime.datetime.now().isoformat()
-        if sm.remove_memo_password(self.memo_data):
-            self.show_toast("🔓 암호 제거됨")
-            self._refresh_explorer()
-
-    def apply_number(self) -> None:
-        cursor = self.text_edit.textCursor()
-        current_list = cursor.currentList()
-        if current_list:
-            if current_list.format().style() == QTextListFormat.Style.ListDecimal:
-                block = self.text_edit.document().findBlock(cursor.selectionStart())
-                end_block = self.text_edit.document().findBlock(cursor.selectionEnd())
-                while True:
-                    lst = block.textList()
-                    if lst:
-                        bf = block.blockFormat()
-                        bf.setObjectIndex(-1)
-                        lst.remove(block)
-                        c = QTextCursor(block)
-                        c.setBlockFormat(bf)
-                    if block == end_block or not block.isValid(): break
-                    block = block.next()
-            else:
-                fmt = current_list.format()
-                fmt.setStyle(QTextListFormat.Style.ListDecimal)
-                current_list.setFormat(fmt)
-        else:
-            list_fmt = QTextListFormat()
-            list_fmt.setStyle(QTextListFormat.Style.ListDecimal)
-            list_fmt.setIndent(max(1, cursor.blockFormat().indent()))
-            prev_block = cursor.block().previous()
-            next_block = cursor.block().next()
-            target_list = None
-            if prev_block.isValid() and prev_block.textList() and prev_block.textList().format().style() == QTextListFormat.Style.ListDecimal:
-                target_list = prev_block.textList()
-            elif next_block.isValid() and next_block.textList() and next_block.textList().format().style() == QTextListFormat.Style.ListDecimal:
-                target_list = next_block.textList()
-            
-            if target_list:
-                target_list.add(cursor.block())
-            else:
-                cursor.createList(list_fmt)
-        self.update_toolbar_button_states()
-        self.manual_save()
-
-    def apply_indent(self) -> None:
-        cursor = self.text_edit.textCursor()
-        fmt = cursor.blockFormat()
-        if fmt.indent() < 3: 
-            fmt.setIndent(fmt.indent() + 1)
-            cursor.setBlockFormat(fmt)
-            self.manual_save()
-
-    def apply_outdent(self) -> None:
-        cursor = self.text_edit.textCursor()
-        fmt = cursor.blockFormat()
-        if fmt.indent() > 0:
-            fmt.setIndent(fmt.indent() - 1)
-            cursor.setBlockFormat(fmt)
-            self.manual_save()
 
     def _get_rolled_height(self) -> int:
         """settings의 default_rolled_height 값을 우선 읽고, 없으면 53을 반환합니다."""
@@ -1226,21 +787,19 @@ class MemoWindow(QWidget):
 
     def _title_color_stylesheet(self, font_size_pt: float = 12.0) -> str:
         """현재 메모 테마 팔레트 기준으로 title_edit에 적용할 stylesheet를 반환합니다.
-        
+
         코드 메모는 accent 색상, 일반 메모는 text 색상을 사용합니다.
         """
-        pal = self._memo_theme_palette() if hasattr(self, '_memo_theme_palette') else {}
-        is_code = self.memo_data.get('is_code_memo', False)
-        title_color = pal.get('accent', '#0A84FF') if is_code else pal.get('text', '#1C1C1E')
-        font_fam = "'D2Coding'" if is_code else "'D2Coding', 'Consolas', monospace"
+        pal = self._memo_theme_palette()
+        title_color = pal['accent'] if self.memo_data.get('is_code_memo', False) else pal['text']
         return (
             f"border:none; background:transparent; color:{title_color}; "
-            f"font-weight:bold; font-size:{font_size_pt}pt; font-family:{font_fam};"
+            f"font-weight:bold; font-size:{font_size_pt}pt; font-family:{modern_style.UI_FONT};"
         )
 
     def _apply_rolled_ui(self, rolled_h: int) -> None:
         """접힌 상태일 때 타이틀바 높이·버튼 크기·폰트를 rolled_h에 비례하여 동적 조절합니다.
-        
+
         제목 색상은 메모 테마 팔레트를 따르며 하드코딩 없이 통일됩니다.
         """
         # 버튼 크기: rolled_h 기준 비율 계산 (최소 18, 최대 32)
@@ -1269,114 +828,80 @@ class MemoWindow(QWidget):
         if hasattr(self, 'bg_layout'):
             self.bg_layout.setContentsMargins(14, 10, 14, 14)
 
+    @staticmethod
+    def _clamp_to_screen(scr_geom: Any, x: int, y: int, w: int, h: int) -> tuple:
+        """창이 화면 작업 영역 밖으로 나가지 않도록 좌표를 당깁니다."""
+        if x + w > scr_geom.right(): x = scr_geom.right() - w
+        if x < scr_geom.left(): x = scr_geom.left()
+        if y + h > scr_geom.bottom(): y = scr_geom.bottom() - h
+        if y < scr_geom.top(): y = scr_geom.top()
+        return x, y
+
+    def _apply_fold_state(self, rolled: bool, x: int, y: int, w: int, h: int) -> None:
+        """접힘/펼침 상태로 바꾸고 창 크기·내용 영역·제목 줄 버튼을 그 상태에 맞춥니다."""
+        self._is_rolled_up = rolled
+        self.memo_data['is_rolled_up'] = rolled
+        if rolled:
+            self.content_container.hide()          # 내용을 먼저 숨겨야 창을 제목 줄 높이까지 줄일 수 있습니다.
+        self.window_layout.setContentsMargins(0, 0, 0, 0)
+        self.setMinimumSize(0, 0) if rolled else self.setMinimumSize(200, 150)
+        self.setMaximumSize(16777215, 16777215)
+        self.setGeometry(x, y, w, h)
+        if rolled:
+            self.memo_data['rolled_position_y'] = y
+            self.setMinimumHeight(h)
+            self.setMaximumHeight(h)
+            self._apply_rolled_ui(h)
+        else:
+            self.memo_data['position_y'] = y
+            self.content_container.show()
+            self._restore_normal_ui()
+        self.btn_min.setToolTip("펼치기 (Ctrl+M)" if rolled else "접기 (Ctrl+M)")
+        self.btn_max.setVisible(not rolled)
+        show_code_controls = not rolled and bool(self.memo_data.get('is_code_memo', False))
+        for control in (self.btn_code_theme, self.code_lang_box, self.btn_format_code, self.btn_lang_icon):
+            control.setVisible(show_code_controls)
+
     def toggle_rollup(self) -> None:
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         scr_geom = screen.availableGeometry()
-        
+
         center_x = self.x() + self.width() / 2
         center_y = self.y() + self.height() / 2
         is_near_top = (center_y < scr_geom.top() + scr_geom.height() / 3)
         is_near_right = (center_x > scr_geom.left() + scr_geom.width() / 2)
-        
+
         anchor_x = self.x() + self.width() if is_near_right else self.x()
         anchor_y = self.y() if is_near_top else self.y() + self.height()
-        
+
         if not self._is_rolled_up:
             self.memo_data['unrolled_width'] = self.width()
             self.memo_data['unrolled_height'] = self.height()
             self._normal_height = self.height()
-            
+
             # settings의 default_rolled_height 값을 우선 적용
-            rolled_h = self._get_rolled_height()
-            self.memo_data['rolled_height'] = rolled_h
-            rolled_w = self.memo_data.get('rolled_width', self.width())
-            
-            new_left_x = anchor_x - rolled_w if is_near_right else anchor_x
-            new_top_y = anchor_y if is_near_top else anchor_y - rolled_h
-            
-            if new_left_x + rolled_w > scr_geom.right(): new_left_x = scr_geom.right() - rolled_w
-            if new_left_x < scr_geom.left(): new_left_x = scr_geom.left()
-            if new_top_y + rolled_h > scr_geom.bottom(): new_top_y = scr_geom.bottom() - rolled_h
-            if new_top_y < scr_geom.top(): new_top_y = scr_geom.top()
-            
-            self._is_rolled_up = True
-            self.memo_data['is_rolled_up'] = True
-            self.memo_data['rolled_position_y'] = new_top_y
-            
-            self.content_container.hide()
-            if hasattr(self, 'window_layout'):
-                self.window_layout.setContentsMargins(0, 0, 0, 0)
-            self.setMinimumSize(0, 0)
-            self.setMaximumSize(16777215, 16777215)
-            
-            self.setGeometry(new_left_x, new_top_y, rolled_w, rolled_h)
-            self.setMinimumHeight(rolled_h)
-            self.setMaximumHeight(rolled_h)
-            # 타이틀바/버튼을 rolled_h에 맞게 동적 조절
-            self._apply_rolled_ui(rolled_h)
-            self.btn_min.setToolTip("펼치기 (Ctrl+M)")
-            self.btn_max.hide()
-            if hasattr(self, 'btn_code_theme'): self.btn_code_theme.hide()
-            if hasattr(self, 'code_lang_box'): self.code_lang_box.hide()
-            if hasattr(self, 'btn_format_code'): self.btn_format_code.hide()
-            if hasattr(self, 'btn_lang_icon'): self.btn_lang_icon.hide()
-            if hasattr(self, 'bg'):
-                self.bg.setGraphicsEffect(None)
+            target_h = self._get_rolled_height()
+            self.memo_data['rolled_height'] = target_h
+            target_w = self.memo_data.get('rolled_width', self.width())
         else:
-            target_height = self.memo_data.get('unrolled_height', self.memo_data.get('height', getattr(self, '_normal_height', 300)))
-            target_width = self.memo_data.get('unrolled_width', self.memo_data.get('width', 500))
-            if target_height < 150: target_height = 300
-            if target_width < 200: target_width = 300
+            target_h = self.memo_data.get('unrolled_height', self.memo_data.get('height', getattr(self, '_normal_height', 300)))
+            target_w = self.memo_data.get('unrolled_width', self.memo_data.get('width', 500))
+            if target_h < 150: target_h = 300
+            if target_w < 200: target_w = 300
+            self.memo_data['width'] = target_w
+            self.memo_data['height'] = target_h
 
-            new_left_x = anchor_x - target_width if is_near_right else anchor_x
-            new_top_y = anchor_y if is_near_top else anchor_y - target_height
-            
-            if new_left_x + target_width > scr_geom.right(): new_left_x = scr_geom.right() - target_width
-            if new_left_x < scr_geom.left(): new_left_x = scr_geom.left()
-            if new_top_y + target_height > scr_geom.bottom(): new_top_y = scr_geom.bottom() - target_height
-            if new_top_y < scr_geom.top(): new_top_y = scr_geom.top()
+        # 접거나 펼 때 화면 가장자리에 가까운 쪽 모서리를 고정점으로 삼습니다.
+        new_left_x = anchor_x - target_w if is_near_right else anchor_x
+        new_top_y = anchor_y if is_near_top else anchor_y - target_h
+        new_left_x, new_top_y = self._clamp_to_screen(scr_geom, new_left_x, new_top_y, target_w, target_h)
+        self._apply_fold_state(not self._is_rolled_up, new_left_x, new_top_y, target_w, target_h)
 
-            self._is_rolled_up = False
-            self.memo_data['is_rolled_up'] = False
-            self.memo_data['position_y'] = new_top_y
-            self.memo_data['width'] = target_width
-            self.memo_data['height'] = target_height
-
-            self.setMinimumSize(200, 150)
-            self.setMaximumSize(16777215, 16777215)
-            self.setGeometry(new_left_x, new_top_y, target_width, target_height)
-            self.content_container.show()
-            if hasattr(self, 'window_layout'):
-                self.window_layout.setContentsMargins(0, 0, 0, 0)
-            # 펼칠 때 타이틀바/버튼 크기 기본값으로 복원
-            self._restore_normal_ui()
-                
-            if self.memo_data.get('is_code_memo', False):
-                if hasattr(self, 'btn_code_theme'): self.btn_code_theme.show()
-                if hasattr(self, 'code_lang_box'): self.code_lang_box.show()
-                if hasattr(self, 'btn_format_code'): self.btn_format_code.show()
-                if hasattr(self, 'btn_lang_icon'): self.btn_lang_icon.show()
-            self.btn_min.setToolTip("접기 (Ctrl+M)")
-            self.btn_max.show()
-            
         if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
-            is_code = self.memo_data.get('is_code_memo', False)
-            bg_c = self.memo_data.get('bg_color', '#FFFFFF')
-            if bg_c == "random": bg_c = "#FFFFFF"
-            
-            if is_code:
-                is_dark_bg = (self.memo_data.get('code_theme', 'dark') == 'dark')
-            else:
-                is_dark_bg = True if bg_c in ['#2E3440', '#1C1C1E', '#000000'] else False
-                if not is_dark_bg:
-                    c_obj = QColor(bg_c)
-                    if c_obj.isValid():
-                        lum = (0.299 * c_obj.red() + 0.587 * c_obj.green() + 0.114 * c_obj.blue()) / 255.0
-                        if lum < 0.5: is_dark_bg = True
-                        
+            is_dark_bg = self.is_dark_bg()
             icon_name = "maximize.svg" if self._is_rolled_up else "rollup.svg"
-            override_color = "#FFFFFF" if is_dark_bg else "#1C1C1E"
-            self.btn_min.setIcon(self.ui_manager.get_theme_icon(icon_name, is_dark_bg, override_color=override_color))
+            self.btn_min.setIcon(self.ui_manager.get_theme_icon(
+                icon_name, is_dark_bg, override_color="#FFFFFF" if is_dark_bg else "#1C1C1E"))
 
         self.btn_min.style().unpolish(self.btn_min)
         self.btn_min.style().polish(self.btn_min)
@@ -1386,7 +911,7 @@ class MemoWindow(QWidget):
             self.bg.update()
             self.bg.repaint()
         QApplication.processEvents()
-            
+
         self.save_callback(self.memo_data)
 
     def update_content(self) -> None:
@@ -1431,11 +956,11 @@ class MemoWindow(QWidget):
         if self.is_sealed():
             # 잠긴 상태의 빈 편집기를 본문으로 저장하면 안 됩니다.
             return
-        self.memo_data['content'] = self.text_edit.toHtml()
+        self.memo_data['content'] = self.current_content()
         self.memo_data['updated_at'] = datetime.datetime.now().isoformat()
-        
+
         plain = clean_plain_text(self.memo_data['content'])
-        
+
         if self.memo_data.get('is_draft'):
             if plain:
                 self.memo_data['is_draft'] = False
@@ -1464,8 +989,9 @@ class MemoWindow(QWidget):
         try:
             # 아래에서 memo_data['content']로 편집기를 다시 채우므로, 자동 저장 대기 중인 입력을 먼저 반영해 둡니다.
             if self._auto_save_timer.isActive() and hasattr(self, 'text_edit'):
-                self.memo_data['content'] = self.text_edit.toHtml()
+                self.memo_data['content'] = self.current_content()
             self._apply_data_internal()
+            modern_style.apply_memo(self)
         finally:
             self._is_applying_data = False
 
@@ -1474,193 +1000,58 @@ class MemoWindow(QWidget):
         is_pinned = self.memo_data.get('is_pinned', False)
         if is_pinned:
             target_flags |= Qt.WindowType.WindowStaysOnTopHint
-            
+
         current_flags = self.windowFlags()
         if (current_flags & (Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)) != target_flags:
             was_visible = self.isVisible()
             self.setWindowFlags(target_flags)
             if was_visible:
                 self.show()
-        
+
         is_code_memo = self.memo_data.get('is_code_memo', False)
+        is_dark = self.is_dark_bg()
+        rolled = self._is_rolled_up
 
-        if is_code_memo:
-            code_theme = self.memo_data.get('code_theme', 'dark')
-            is_memo_dark_bg = (code_theme == "dark")
-        else:
-            bg_color = self.memo_data.get('bg_color', '#FFFFFF')
-            if bg_color == "random":
-                bg_color = "#FFFFFF"
-            is_memo_dark_bg = True if bg_color in ['#2E3440', '#1C1C1E', '#000000'] else False
-            if not is_memo_dark_bg:
-                c_obj = QColor(bg_color)
-                if c_obj.isValid():
-                    lum = (0.299 * c_obj.red() + 0.587 * c_obj.green() + 0.114 * c_obj.blue()) / 255.0
-                    if lum < 0.5:
-                        is_memo_dark_bg = True
-
-        is_dark = is_memo_dark_bg
-        override_w = "#FFFFFF" if is_dark else "#1C1C1E"
-        p_pal = self._memo_theme_palette() if hasattr(self, '_memo_theme_palette') else {
-            "accent": "#0A84FF",
-            "text": "#1C1C1E",
-            "border": "#C7C7CC",
-            "input": "#FFFFFF",
-            "card": "#FFFFFF",
-        }
-
-        is_pinned = self.memo_data.get('is_pinned', False)
+        # 아이콘 (바탕 밝기에 맞춘 색). 버튼·바탕의 모양은 apply_data() 끝에서 디자인 스타일이 입힙니다.
         if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
-            self.btn_pin.setIcon(self.ui_manager.get_theme_icon("pin_icon_True.svg" if is_pinned else "pin_icon_False.svg", is_dark, override_color=override_w))
-            self.btn_min.setIcon(self.ui_manager.get_theme_icon("maximize.svg" if self._is_rolled_up else "rollup.svg", is_dark, override_color=override_w))
-            self.btn_max.setIcon(self.ui_manager.get_theme_icon("maximize.svg", is_dark, override_color=override_w))
-            self.btn_close.setIcon(self.ui_manager.get_theme_icon("close.svg", is_dark, override_color="#FF453A"))
-            self.s_prev_btn.setIcon(self.ui_manager.get_theme_icon("arrow left.svg", is_dark, override_color=override_w))
-            self.s_next_btn.setIcon(self.ui_manager.get_theme_icon("arrow right.svg", is_dark, override_color=override_w))
-            if hasattr(self, 'btn_format_code'):
-                self.btn_format_code.setIcon(self.ui_manager.get_theme_icon("restart-icon.svg", is_memo_dark_bg))
+            icon = self.ui_manager.get_theme_icon
+            ink = "#FFFFFF" if is_dark else "#1C1C1E"
+            self.btn_pin.setIcon(icon("pin_icon_True.svg" if is_pinned else "pin_icon_False.svg", is_dark, override_color=ink))
+            self.btn_min.setIcon(icon("maximize.svg" if rolled else "rollup.svg", is_dark, override_color=ink))
+            self.btn_max.setIcon(icon("maximize.svg", is_dark, override_color=ink))
+            self.btn_close.setIcon(icon("close.svg", is_dark, override_color="#FF453A"))
+            self.s_prev_btn.setIcon(icon("arrow left.svg", is_dark, override_color=ink))
+            self.s_next_btn.setIcon(icon("arrow right.svg", is_dark, override_color=ink))
+            self.btn_format_code.setIcon(icon("restart-icon.svg", is_dark))
+            self.btn_bullet.setIcon(icon("bullet_icon_177745.svg", is_dark))
+            self.btn_num.setIcon(icon("list_numbers_icon_172368.svg", is_dark))
+            self.btn_indent.setIcon(icon("들여쓰기.svg", is_dark))
+            self.btn_outdent.setIcon(icon("내어쓰기.svg", is_dark))
+            if is_code_memo:
+                code_is_dark = self.memo_data.get('code_theme', 'dark') == "dark"
+                self.btn_code_theme.setIcon(icon("litemode.svg" if code_is_dark else "darkmod.svg", is_dark))
+                self.btn_lang_icon.setIcon(icon("language.svg", is_dark, override_color="#FFFFFF" if is_dark else "#000000"))
 
-        if self._is_rolled_up:
-            self.btn_min.setToolTip("펼치기 (Ctrl+M)")
-            self.btn_max.hide()
-        else:
-            self.btn_min.setToolTip("접기 (Ctrl+M)")
-            self.btn_max.show()
-
-        if is_pinned:
-            self.btn_pin.setText("")
-            self.btn_pin.setStyleSheet(
-                f"QPushButton {{ background: {p_pal['accent']}; color: {p_pal['text']}; "
-                "border: none; border-radius: 4px; } "
-                f"QPushButton:hover {{ background: {p_pal['accent']}; }}"
-            )
-        else:
-            self.btn_pin.setText("")
-            text_rgb = QColor(p_pal['text'])
-            hover_rgba = f"rgba({text_rgb.red()}, {text_rgb.green()}, {text_rgb.blue()}, {0.15 if is_memo_dark_bg else 0.08})"
-            if is_memo_dark_bg:
-                self.btn_pin.setStyleSheet(
-                    "QPushButton { background: transparent; border: none; border-radius: 6px; } "
-                    f"QPushButton:hover {{ background: {hover_rgba}; }}"
-                )
-            else:
-                self.btn_pin.setStyleSheet(
-                    "QPushButton { background: transparent; border: none; border-radius: 6px; } "
-                    f"QPushButton:hover {{ background: {hover_rgba}; }}"
-                )
-
-        text_rgb = QColor(p_pal['text'])
-        hover_rgba = f"rgba({text_rgb.red()}, {text_rgb.green()}, {text_rgb.blue()}, {0.15 if is_memo_dark_bg else 0.08})"
-        win_btn_style = (f"QPushButton {{ background: transparent; color: {p_pal['text']}; font-weight: bold; "
-                         "border: none; border-radius: 6px; } "
-                         f"QPushButton:hover {{ background: {hover_rgba}; }}")
-        close_btn_style = (f"QPushButton {{ background: transparent; color: {p_pal['accent']}; font-weight: bold; "
-                           "border: none; border-radius: 6px; } "
-                           f"QPushButton:hover {{ background: {p_pal['accent']}; color: {p_pal['text']}; }}")
-
-        if is_memo_dark_bg:
-            self.btn_min.setStyleSheet(win_btn_style)
-            self.btn_max.setStyleSheet(win_btn_style)
-            self.btn_close.setStyleSheet(close_btn_style)
-        else:
-            self.btn_min.setStyleSheet(win_btn_style)
-            self.btn_max.setStyleSheet(win_btn_style)
-            self.btn_close.setStyleSheet(close_btn_style)
+        self.btn_min.setToolTip("펼치기 (Ctrl+M)" if rolled else "접기 (Ctrl+M)")
+        self.btn_max.setVisible(not rolled)
+        for code_only in (self.btn_format_code, self.btn_code_theme, self.code_lang_box, self.btn_lang_icon):
+            code_only.setVisible(is_code_memo and not rolled)
+        self.title_edit.setStyleSheet(self._title_color_stylesheet(12.0))
 
         if is_code_memo:
-            if self._is_rolled_up:
-                self.btn_format_code.hide()
-                self.btn_code_theme.hide()
-                self.code_lang_box.hide()
-                if hasattr(self, 'btn_lang_icon'): self.btn_lang_icon.hide()
-            else:
-                self.btn_format_code.show()
-                self.btn_code_theme.show()
-                self.code_lang_box.show()
-                if hasattr(self, 'btn_lang_icon'): self.btn_lang_icon.show()
-
             code_theme = self.memo_data.get('code_theme', 'dark')
             lang = self.memo_data.get('code_lang', 'JSON')
-
             self.btn_code_theme.setText(" 라이트" if code_theme == "dark" else " 다크")
-            if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
-                self.btn_code_theme.setIcon(self.ui_manager.get_theme_icon("litemode.svg" if code_theme == "dark" else "darkmod.svg", is_memo_dark_bg))
-                if hasattr(self, 'btn_lang_icon'):
-                    icon_color = "#FFFFFF" if is_memo_dark_bg else "#000000"
-                    self.btn_lang_icon.setIcon(self.ui_manager.get_theme_icon("language.svg", is_memo_dark_bg, override_color=icon_color))
-            
             self.code_lang_box.blockSignals(True)
             self.code_lang_box.setCurrentText(lang)
             self.code_lang_box.blockSignals(False)
-
             self.highlighter = CodeHighlighter(self.text_edit.document(), lang, code_theme)
             self.highlighter.rehighlight()
-
-            if code_theme == "dark":
-                pal = DARK_THEMES.get("dark", DARK_THEMES["dark"])
-                code_bg = pal['card']
-                code_text = pal['text']
-            else:
-                pal = LIGHT_THEMES.get("white", LIGHT_THEMES["white"])
-                code_bg = pal['card']
-                code_text = pal['text']
-
-            title_c = pal['accent']
-            # _title_color_stylesheet()로 통일 (하드코딩 font-size 제거)
-            self.title_edit.setStyleSheet(self._title_color_stylesheet(12.0))
-
-            radius_px = "0px"
-            self.bg.setStyleSheet(
-                f"QWidget#MemoBackground {{ background-color: {code_bg}; "
-                f"border: 1px solid {pal['border']}; "
-                f"border-radius: {radius_px}; }}"
-            )
-            self.text_edit.setStyleSheet(
-                f"QTextEdit {{ border:none; background:transparent; "
-                f"color:{code_text}; font-family: 'D2Coding'; font-size:11pt; }}"
-            )
-
-            code_font_name = self.memo_data.get(
-                'font_family',
-                'D2Coding'
-            )
-            mono_font = QFont(code_font_name, self.memo_data.get('font_size', 11))
-            self.text_edit.setFont(mono_font)
-
-            btn_text_color = p_pal['text']
-            btn_bg_color = "rgba(255, 255, 255, 0.12)" if is_memo_dark_bg else "rgba(0, 0, 0, 0.06)"
-            btn_border_color = "rgba(255, 255, 255, 0.2)" if is_memo_dark_bg else "rgba(0, 0, 0, 0.15)"
-
-            box_style = (
-                f"QPushButton, QComboBox {{ font-size: 8.5pt; font-weight: bold; padding: 2px 6px; border: 1px solid {btn_border_color}; border-radius: 0px; background: {btn_bg_color}; color: {btn_text_color}; }} "
-                f"QPushButton:hover, QComboBox:hover {{ background: rgba(128, 128, 128, 0.2); }} "
-                f"QPushButton:pressed, QComboBox:pressed {{ background: rgba(128, 128, 128, 0.4); }} "
-                f"QComboBox::drop-down {{ border: none; }}"
-            )
-            self.btn_code_theme.setStyleSheet(box_style)
-            self.code_lang_box.setStyleSheet(box_style)
-            if hasattr(self, 'btn_format_code'):
-                self.btn_format_code.setStyleSheet(box_style)
         else:
-            bg_color = self.memo_data.get('bg_color', '#FFFFFF')
-            if bg_color == "random":
-                bg_color = "#FFFFFF"
-
-            text_c  = p_pal['text']
-            # _title_color_stylesheet()로 통일 (하드코딩 font-size 제거)
-            self.title_edit.setStyleSheet(self._title_color_stylesheet(12.0))
-            self.text_edit.setStyleSheet(
-                f"QTextEdit {{ border:none; background:transparent; color:{text_c}; }}"
-            )
-            
-            # Change default text colors only, preserve custom colors
+            # 바탕 밝기가 바뀌면 기본 글자색으로 쓴 글자만 새 기본색으로 바꿉니다. (직접 고른 색은 유지)
+            text_c = self._memo_theme_palette()['text']
+            old_colors = ["#000000", "#1C1C1E", "#333333"] if is_dark else ["#FFFFFF", "#F2F2F7", "#CCCCCC"]
             doc = self.text_edit.document()
-            target_color_name = text_c.upper()
-            if is_memo_dark_bg:
-                old_colors = ["#000000", "#1C1C1E", "#333333"]
-            else:
-                old_colors = ["#FFFFFF", "#F2F2F7", "#CCCCCC"]
-                
             for i in range(doc.blockCount()):
                 block = doc.findBlockByNumber(i)
                 it = block.begin()
@@ -1675,36 +1066,6 @@ class MemoWindow(QWidget):
                         cursor.mergeCharFormat(fmt)
                     it += 1
 
-            radius_px = "0px"
-            self.bg.setStyleSheet(
-                f"QWidget#MemoBackground {{ background-color: {bg_color}; "
-                f"border: 1px solid {'rgba(255,255,255,0.18)' if is_memo_dark_bg else '#E5E5EA'}; border-radius: {radius_px}; }}"
-            )
-            if hasattr(self, 'window_layout'):
-                if self._is_rolled_up:
-                    self.window_layout.setContentsMargins(0, 0, 0, 0)
-                else:
-                    self.window_layout.setContentsMargins(6, 6, 6, 6)
-
-            if self._is_rolled_up:
-                self.bg.setGraphicsEffect(None)
-            else:
-                apply_ios_shadow(self.bg)
-
-            if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
-                self.btn_bullet.setText("")
-                self.btn_bullet.setIcon(self.ui_manager.get_theme_icon("bullet_icon_177745.svg", is_memo_dark_bg))
-                self.btn_num.setText("")
-                self.btn_num.setIcon(self.ui_manager.get_theme_icon("list_numbers_icon_172368.svg", is_memo_dark_bg))
-                self.btn_indent.setText("")
-                self.btn_indent.setIcon(self.ui_manager.get_theme_icon("들여쓰기.svg", is_memo_dark_bg))
-                self.btn_outdent.setText("")
-                self.btn_outdent.setIcon(self.ui_manager.get_theme_icon("내어쓰기.svg", is_memo_dark_bg))
-
-            self.btn_format_code.hide()
-            self.btn_code_theme.hide()
-            self.code_lang_box.hide()
-
         font_family = self.memo_data.get(
             'font_family',
             self.memo_window_get_settings().get('default_font_family', 'D2Coding')
@@ -1712,36 +1073,18 @@ class MemoWindow(QWidget):
         font = QFont(font_family, self.memo_data.get('font_size', 11))
         self.text_edit.setFont(font)
 
-        # 하단 서식 툴바 컨트롤 테마 보정
-        if is_memo_dark_bg:
-            p_pal = DARK_THEMES["dark"]
-        else:
-            p_pal = LIGHT_THEMES["white"]
-
-        tb_box_style = f"font-size: 8.5pt; font-weight: bold; padding: 0 4px; border: 1px solid {p_pal['border']}; border-radius: 6px; background: {p_pal['input']}; color: {p_pal['text']};"
-        if hasattr(self, 'font_box'):
-            self.font_box.setStyleSheet(tb_box_style)
-        if hasattr(self, 'size_box'):
-            self.size_box.setStyleSheet(tb_box_style)
-        if hasattr(self, 'btn_fg_color'):
-            self.btn_fg_color.setStyleSheet(f"font-weight: bold; color: {p_pal['accent']}; border: 1px solid {p_pal['border']}; border-radius: 6px; background: {p_pal['input']};")
-        if hasattr(self, 'btn_bg_color'):
-            self.btn_bg_color.setStyleSheet(f"font-weight: bold; color: {p_pal['accent']}; border: 1px solid {p_pal['border']}; border-radius: 6px; background: {p_pal['input']};")
-        if hasattr(self, 'btn_toggle_sub_fmt'):
-            self.btn_toggle_sub_fmt.setStyleSheet(f"font-size: 8pt; font-weight: bold; border: 1px solid {p_pal['border']}; border-radius: 6px; background: {p_pal['input']}; color: {p_pal['accent']}; padding: 0 4px;")
-            
         self.title_edit.setText(self.memo_data.get('title',''))
         self.title_edit.setCursorPosition(0)
         self.title_edit.deselect()
-            
+
         self._is_updating_from_explorer = True
         cnt = str(self.memo_data.get('content',''))
-        self.text_edit.setHtml(cnt) if "<html" in cnt else self.text_edit.setPlainText(cnt)
-        
+        self.text_edit.setHtml(cnt) if is_html_content(cnt) else self.text_edit.setPlainText(cnt)
+
         # 📌 불투명도 100% 기본값 적용 (사용자가 변경한 opacity 설정 유지)
         target_opacity = float(self.memo_data.get('opacity', 1.0))
         self.setWindowOpacity(target_opacity)
-        
+
         self.apply_line_bg_style()
         self.text_edit.update_line_number_area()
 
@@ -1758,66 +1101,23 @@ class MemoWindow(QWidget):
         is_rolled = getattr(self, '_is_rolled_up', False) or self.memo_data.get('is_rolled_up', False)
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         scr_geom = screen.availableGeometry()
-        
+
+        was_rolled = getattr(self, '_is_rolled_up', False)
         if is_rolled:
             target_w = self.memo_data.get('rolled_width', self.width())
             # settings의 default_rolled_height를 우선 적용
             target_h = self._get_rolled_height()
             self.memo_data['rolled_height'] = target_h
-            r_x = self.x() if self.isVisible() else self.memo_data.get('position_x', 100)
-            r_y = self.y() if self.isVisible() else self.memo_data.get('rolled_position_y', 100)
-            
-            if r_x + target_w > scr_geom.right(): r_x = scr_geom.right() - target_w
-            if r_x < scr_geom.left(): r_x = scr_geom.left()
-            if r_y + target_h > scr_geom.bottom(): r_y = scr_geom.bottom() - target_h
-            if r_y < scr_geom.top(): r_y = scr_geom.top()
-            
-            self._is_rolled_up = True
-            self.memo_data['is_rolled_up'] = True
-            self.memo_data['rolled_position_y'] = r_y
-            self.setMinimumSize(0, 0)
-            self.setMaximumSize(16777215, 16777215)
-            self.setGeometry(r_x, r_y, target_w, target_h)
-            self.setMinimumHeight(target_h)
-            self.setMaximumHeight(target_h)
-            
-            self.content_container.hide()
-            self.btn_min.setToolTip("펼치기 (Ctrl+M)")
-            self.btn_max.hide()
-            if hasattr(self, 'btn_code_theme'): self.btn_code_theme.hide()
-            if hasattr(self, 'code_lang_box'): self.code_lang_box.hide()
-            if hasattr(self, 'btn_format_code'): self.btn_format_code.hide()
-            if hasattr(self, 'window_layout'):
-                self.window_layout.setContentsMargins(0, 0, 0, 0)
-            # 타이틀바/버튼을 target_h에 맞게 동적 조절
-            self._apply_rolled_ui(target_h)
-
+            x = self.x() if self.isVisible() else self.memo_data.get('position_x', 100)
+            y = self.y() if self.isVisible() else self.memo_data.get('rolled_position_y', 100)
         else:
             target_w = self.memo_data.get('unrolled_width', self.memo_data.get('width', 500))
             target_h = self.memo_data.get('unrolled_height', self.memo_data.get('height', 400))
-            u_x = self.x() if self.isVisible() else self.memo_data.get('position_x', 100)
-            u_y = self.y() if (self.isVisible() and not getattr(self, '_is_rolled_up', False)) else self.memo_data.get('position_y', 100)
-            
-            if u_x + target_w > scr_geom.right(): u_x = scr_geom.right() - target_w
-            if u_x < scr_geom.left(): u_x = scr_geom.left()
-            if u_y + target_h > scr_geom.bottom(): u_y = scr_geom.bottom() - target_h
-            if u_y < scr_geom.top(): u_y = scr_geom.top()
-            
-            self._is_rolled_up = False
-            self.memo_data['is_rolled_up'] = False
-            self.memo_data['position_y'] = u_y
-            self.setGeometry(u_x, u_y, target_w, target_h)
-            
-            self.content_container.show()
-            self.btn_min.setToolTip("접기 (Ctrl+M)")
-            self.btn_max.show()
-            if self.memo_data.get('is_code_memo', False):
-                if hasattr(self, 'btn_code_theme'): self.btn_code_theme.show()
-                if hasattr(self, 'code_lang_box'): self.code_lang_box.show()
-                if hasattr(self, 'btn_format_code'): self.btn_format_code.show()
-            if hasattr(self, 'window_layout'):
-                self.window_layout.setContentsMargins(0, 0, 0, 0)
-            
+            x = self.x() if self.isVisible() else self.memo_data.get('position_x', 100)
+            y = self.y() if (self.isVisible() and not was_rolled) else self.memo_data.get('position_y', 100)
+        x, y = self._clamp_to_screen(scr_geom, x, y, target_w, target_h)
+        self._apply_fold_state(is_rolled, x, y, target_w, target_h)
+
     def closeEvent(self, e: Any) -> None:
         if getattr(self, '_is_deleting', False):
             self._auto_save_timer.stop()
@@ -1835,21 +1135,21 @@ class MemoWindow(QWidget):
             plain_text = self.text_edit.toPlainText().strip()
         else:
             plain_text = clean_plain_text(self.text_edit.toHtml()).strip()
-            
+
         is_empty_draft = (
             (not plain_text)
             and (not self.memo_data.get('is_manually_saved', False))
             and not self.memo_data.get('is_locked')
             and not self.is_sealed()
         )
-        
+
         if is_empty_draft:
             self.delete_callback(self)
         else:
             if plain_text and self.memo_data.get('is_draft'):
                 self.memo_data['is_draft'] = False
                 self.save_callback(self.memo_data)
-                
+
             if self._is_rolled_up:
                 old_rolled_y = self.memo_data.get('rolled_position_y', self.y())
                 delta_y = self.y() - old_rolled_y
@@ -1860,13 +1160,13 @@ class MemoWindow(QWidget):
             else:
                 self.memo_data['position_x'], self.memo_data['position_y'] = self.x(), self.y()
                 self.memo_data['width'] = self.width()
-                
+
             self.memo_data['is_rolled_up'] = self._is_rolled_up
             if not self._is_rolled_up:
                 self.memo_data['height'] = self.height()
             else:
                 self.memo_data['height'] = self._normal_height
-                
+
             self.memo_data['is_visible'] = False
             self.save_callback(self.memo_data)
             self.close_callback(self)
@@ -1876,16 +1176,14 @@ class MemoWindow(QWidget):
             if sm and self.memo_data.get('is_locked'):
                 sm.relock_memo(self.memo_data.get('id', ''))
         super().closeEvent(e)
-        
+
     def enable_rename(self) -> None:
         self.title_edit.setReadOnly(False)
-        is_code = self.memo_data.get('is_code_memo', False)
-        font_fam = "'D2Coding'" if is_code else "'D2Coding', 'Consolas', monospace"
         pal = self._memo_theme_palette()
         is_rolled = getattr(self, '_is_rolled_up', False)
         rolled_h = self._get_rolled_height()
         title_pt = max(8.0, min(13.0, rolled_h * 0.22)) if is_rolled else 12.0
-        self.title_edit.setStyleSheet(f"border:1px solid {pal['accent']}; background:transparent; color:{pal['text']}; font-weight:bold; font-size:{title_pt}pt; border-radius:0px; font-family: {font_fam};")
+        self.title_edit.setStyleSheet(f"border:1px solid {pal['accent']}; background:transparent; color:{pal['text']}; font-weight:bold; font-size:{title_pt}pt; border-radius:0px; font-family: {modern_style.UI_FONT};")
         self.title_edit.setFocus()
         self.title_edit.setCursorPosition(len(self.title_edit.text()))
 
@@ -1914,12 +1212,12 @@ class MemoWindow(QWidget):
         self.title_edit.deselect()
         if getattr(self, 'ui_manager', None) and self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
             self.ui_manager.explorer_window.update_table()
-        
+
     def toggle_pin(self) -> None:
         self.memo_data['is_pinned'] = not self.memo_data.get('is_pinned', False)
         self.apply_data()
         self.save_callback(self.memo_data)
-        
+
     def change_color(self, c: str) -> None:
         self.memo_data['bg_color'] = c
         self.apply_data()
@@ -1936,7 +1234,7 @@ class MemoWindow(QWidget):
         self.save_callback(self.memo_data)
         if getattr(self, 'ui_manager', None) and self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
             self.ui_manager.explorer_window.update_table()
-    def mousePressEvent(self, e: Any) -> None: 
+    def mousePressEvent(self, e: Any) -> None:
         if e.button() == Qt.MouseButton.LeftButton:
             if hasattr(self, 'title_edit') and not self.title_edit.isReadOnly():
                 pos_in_title = self.title_edit.mapFromGlobal(e.globalPosition().toPoint())
@@ -1951,10 +1249,10 @@ class MemoWindow(QWidget):
             pos_in_title = self.title_edit.mapFromGlobal(e.globalPosition().toPoint())
             self._drag_from_title = self.title_edit.rect().contains(pos_in_title)
 
-    def mouseMoveEvent(self, e: Any) -> None: 
+    def mouseMoveEvent(self, e: Any) -> None:
         if getattr(self, '_old_pos', None) and not self.isMaximized():
             curr_global = e.globalPosition().toPoint()
-            
+
             # 📌 1) 마우스 시작점 기준 1:1 직결 절대 목표 좌표 계산 (딜레이/느림 100% 방지)
             mouse_delta = curr_global - self._drag_start_pos
             target_x = self._drag_start_win_pos.x() + mouse_delta.x()
@@ -1962,10 +1260,10 @@ class MemoWindow(QWidget):
 
             screen = QApplication.screenAt(curr_global) or QApplication.primaryScreen()
             scr_geom = screen.availableGeometry()
-            
+
             is_title_drag = getattr(self, '_drag_from_title', False)
             ctrl_held = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
-            
+
             # 📌 2) 제목 드래그 시 위아래 15px 이내 Y축 고정 (좌우 슬라이딩)
             if self._is_rolled_up and is_title_drag and not ctrl_held:
                 dy = abs(curr_global.y() - self._drag_start_pos.y())
@@ -1981,7 +1279,7 @@ class MemoWindow(QWidget):
                 for other_id, other_win in self.ui_manager.memo_windows.items():
                     if other_win is self or not other_win.isVisible() or not other_win._is_rolled_up:
                         continue
-                    
+
                     # 수직 스냅 (상하단 0px 및 상단 맞춤)
                     if abs(target_y - (other_win.y() + other_win.height())) < snap_in:
                         new_y = other_win.y() + other_win.height()
@@ -1989,7 +1287,7 @@ class MemoWindow(QWidget):
                         new_y = other_win.y() - self.height()
                     elif abs(target_y - other_win.y()) < snap_in:
                         new_y = other_win.y()
-                        
+
                     # 수평 스냅 (좌우 경계 0px 맞춤)
                     if abs(target_x - other_win.x()) < snap_in:
                         new_x = other_win.x()
@@ -2010,7 +1308,7 @@ class MemoWindow(QWidget):
             self.move(new_x, new_y)
             self._old_pos = curr_global
 
-    def mouseReleaseEvent(self, e: Any) -> None: 
+    def mouseReleaseEvent(self, e: Any) -> None:
         self._old_pos = None
         self._drag_from_title = False
         self._snap_lock_origin = None
@@ -2026,7 +1324,7 @@ class MemoWindow(QWidget):
             self.memo_data['position_x'] = self.x()
             self.memo_data['rolled_width'] = self.width()
             self.memo_data['rolled_height'] = self.height()
-            
+
             unrolled_h = self.memo_data.get('unrolled_height', self.memo_data.get('height', 300))
             self.memo_data['position_y'] = (self.y() + self.height()) - unrolled_h
         else:
@@ -2036,7 +1334,7 @@ class MemoWindow(QWidget):
             self.memo_data['unrolled_height'] = self.height()
             self.memo_data['width'] = self.width()
             self.memo_data['height'] = self.height()
-            
+
             rolled_h = self.memo_data.get('rolled_height', 53)
             self.memo_data['rolled_position_y'] = (self.y() + self.height()) - rolled_h
 

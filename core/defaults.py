@@ -23,4 +23,6 @@ DEFAULT_SHORTCUTS: Dict[str, str] = {
     "format_code":         "Alt+F",       # 코드 자동 정렬
     "toggle_code_theme":   "Alt+L",       # 코드 테마 전환
     "open_all_memos":      "Alt+O",       # 전체 메모 열기
+    "toggle_memo_lock":    "Ctrl+L",      # 암호 메모 잠그기 / 잠금 해제
+    "set_memo_password":   "Ctrl+Shift+L",# 암호 걸기 / 암호 변경
 }

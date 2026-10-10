@@ -2,7 +2,7 @@ import ast
 import re
 import json
 import html
-from typing import Any
+from typing import Any, List
 
 # ── 한/영 키보드 매핑 ─────────────────────────────────────────────────────────
 KOR_CHO  = ['ㄱ','ㄲ','ㄴ','ㄷ','ㄸ','ㄹ','ㅁ','ㅂ','ㅃ','ㅅ','ㅆ','ㅇ','ㅈ','ㅉ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ']
@@ -83,6 +83,25 @@ def convert_eng_kor_smart(text: str) -> str:
     return eng_to_kor(text) if eng_count >= kor_count else kor_to_eng(text)
 
 
+_HASHTAG = re.compile(r'(?<!\S)#([^\s#]+)')
+_HEX_COLOR = re.compile(r'[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?')
+
+
+def extract_hashtags(plain_text: str) -> List[str]:
+    """본문에서 #태그 를 뽑습니다. 낱말 첫머리의 # 만 태그로 보고, 색상 코드(#FFFFFF)는 제외합니다."""
+    return [t for t in _HASHTAG.findall(plain_text or "") if not _HEX_COLOR.fullmatch(t)]
+
+
+def is_html_content(content: Any) -> bool:
+    """메모 본문이 (서식이 들어간) HTML 문서인지 여부. 서식 없는 메모와 코드 메모는 순수 텍스트로 저장됩니다."""
+    if not isinstance(content, str):
+        return False
+    # 편집기(Qt)가 만들어 내는 문서의 머리말만 HTML로 인정합니다.
+    # 사용자가 메모에 직접 적은 HTML 코드(<html>…, <!DOCTYPE html>)는 글자 그대로 보존해야 하기 때문입니다.
+    head = content.lstrip()[:400].lower()
+    return head.startswith("<!doctype html public") and "qrichtext" in head
+
+
 def clean_plain_text(content: Any) -> str:
     """HTML 및 Qt 내부 <style>...</style> 태그, 딕셔너리 래퍼를 완전히 제거하고 순수 본문 텍스트만 추출합니다."""
     if not content:
@@ -104,6 +123,10 @@ def clean_plain_text(content: Any) -> str:
                 content_str = str(d['content'])
         except Exception:
             pass
+
+    if not is_html_content(content_str):
+        # 순수 텍스트 본문은 그대로 둡니다. ('<', '>' 가 들어간 코드나 수식을 태그로 오인해 지우면 안 됨)
+        return content_str.strip()
 
     no_style  = re.sub(r'<style[^>]*>.*?</style>', '', content_str, flags=re.DOTALL | re.IGNORECASE)
     no_script = re.sub(r'<script[^>]*>.*?</script>', '', no_style, flags=re.DOTALL | re.IGNORECASE)
