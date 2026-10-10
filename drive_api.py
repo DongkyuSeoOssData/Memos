@@ -12,6 +12,8 @@ class DriveAPI:
         self.web_app_url: Optional[str] = None
         # 요청마다 새로 연결하지 않도록 세션 하나를 재사용합니다. (메모가 많을 때 동기화 시간 단축)
         self._session = requests.Session()
+        # 스크립트에 ACCESS_TOKEN 을 설정해 두었을 때 함께 보내는 접근 암호. (비어 있으면 보내지 않음)
+        self.access_token: str = ""
 
     def set_web_app_url(self, url: str) -> None:
         """
@@ -21,6 +23,15 @@ class DriveAPI:
             url (str): 환경설정에 저장된 구글 앱스 스크립트 웹 앱 URL.
         """
         self.web_app_url = url.strip() if url else None
+
+    def set_access_token(self, token: str) -> None:
+        """스크립트 속성 ACCESS_TOKEN 과 같은 값을 설정합니다. 모든 요청에 함께 보냅니다."""
+        self.access_token = (token or "").strip()
+
+    def _with_token(self, fields: Dict[str, Any]) -> Dict[str, Any]:
+        if self.access_token:
+            fields["token"] = self.access_token
+        return fields
 
     def is_available(self) -> bool:
         """
@@ -38,17 +49,10 @@ class DriveAPI:
         Returns:
             bool: 200 OK 응답 수신 시 True, 통신 실패 시 False.
         """
-        if not self.is_available() or not self.web_app_url:
-            return False
-        try:
-            params = {"action": "list"}
-            response = self._session.get(self.web_app_url, params=params, timeout=5)
-            return response.status_code == 200
-        except Exception as e:
-            print(f"GAS Ping Error: {e}")
-            return False
+        # 응답 코드만으로는 접근 암호가 틀린 경우를 가려낼 수 없으므로, 파일 목록을 실제로 받아 봅니다.
+        return self.list_files(timeout=5) is not None
 
-    def list_files(self) -> Optional[List[Dict[str, Any]]]:
+    def list_files(self, timeout: int = 10) -> Optional[List[Dict[str, Any]]]:
         """
         GAS를 통해 구글 드라이브의 Memos 폴더 내 파일 목록을 가져옵니다.
 
@@ -59,8 +63,8 @@ class DriveAPI:
         if not self.is_available() or not self.web_app_url:
             return None
         try:
-            params = {"action": "list"}
-            response = self._session.get(self.web_app_url, params=params, timeout=10)
+            params = self._with_token({"action": "list"})
+            response = self._session.get(self.web_app_url, params=params, timeout=timeout)
             if response.status_code == 200:
                 files = response.json().get("files")
                 if isinstance(files, list):
@@ -83,11 +87,11 @@ class DriveAPI:
         if not self.is_available() or not self.web_app_url:
             return False
         try:
-            data = {
+            data = self._with_token({
                 "action": "upload",
                 "filename": filename,
                 "content": json.dumps(content, ensure_ascii=False)
-            }
+            })
             response = self._session.post(self.web_app_url, data=json.dumps(data), timeout=10)
             # GAS는 스크립트 오류·권한 문제도 200 + HTML로 돌려주므로, 스크립트가 보낸 "Success" 본문까지 확인합니다.
             return response.status_code == 200 and response.text.strip().startswith("Success")
@@ -108,7 +112,7 @@ class DriveAPI:
         if not self.is_available() or not self.web_app_url:
             return None
         try:
-            params = {"action": "download", "filename": filename}
+            params = self._with_token({"action": "download", "filename": filename})
             response = self._session.get(self.web_app_url, params=params, timeout=10)
             if response.status_code == 200:
                 res_data = response.json()
@@ -134,7 +138,7 @@ class DriveAPI:
         if not self.is_available() or not self.web_app_url:
             return False
         try:
-            data = {"action": "delete", "filename": filename}
+            data = self._with_token({"action": "delete", "filename": filename})
             response = self._session.post(self.web_app_url, data=json.dumps(data), timeout=10)
             return response.status_code == 200 and response.text.strip().startswith("Moved to Trash")
         except Exception as e:

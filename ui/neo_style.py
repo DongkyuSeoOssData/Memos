@@ -130,6 +130,7 @@ def apply_explorer(ex: Any) -> None:
     )
     apply_explorer_preview(ex)
     apply_explorer_filters(ex)
+    apply_explorer_folders(ex)
     apply_explorer_table(ex)
 
 
@@ -158,14 +159,55 @@ def apply_explorer_preview(ex: Any) -> None:
     """)
 
 
-def apply_explorer_filters(ex: Any) -> None:
-    """전체/일반/코드: 선택된 항목에만 잉크색 밑줄이 그어지는 탭."""
+def _underline_qss(ex: Any, pad: str = "6px 12px") -> tuple:
+    """밑줄형 탭의 (선택됨, 선택 안 됨) 모양. 필터와 폴더 탭이 함께 씁니다."""
     pal, is_dark = app_palette(_settings_of(ex))
     pt = _pt(ex)
-    base = f"padding: 6px 12px; background: transparent; border: none; border-radius: 0px; font-size: {pt}pt; font-family: {UI_FONT};"
+    base = f"padding: {pad}; background: transparent; border: none; border-radius: 0px; font-size: {pt}pt; font-family: {UI_FONT};"
     on = f"QPushButton {{ {base} border-bottom: 2px solid {pal['text']}; color: {pal['text']}; font-weight: 700; }}"
     off = (f"QPushButton {{ {base} border-bottom: 2px solid transparent; color: {_muted(is_dark)}; font-weight: 500; }} "
            f"QPushButton:hover {{ color: {pal['text']}; }}")
+    return on, off
+
+
+def apply_explorer_folders(ex: Any) -> None:
+    """폴더 고르는 화면: 밑줄형 탭, 선으로 구분한 목록, 외곽선 폴더 버튼."""
+    pal, is_dark = app_palette(_settings_of(ex))
+    pt = _pt(ex)
+    ink, paper, hair = pal['text'], pal['bg'], pal['border']
+    on, off = _underline_qss(ex, pad="4px 10px")
+    sub_on = (f"QPushButton {{ padding: 2px 10px; background: {ink}; border: 1px solid {ink}; border-radius: 0px; "
+              f"color: {paper}; font-weight: 600; font-size: {pt}pt; font-family: {UI_FONT}; }}")
+    sub_off = (f"QPushButton {{ padding: 2px 10px; background: transparent; border: 1px solid {hair}; border-radius: 0px; "
+               f"color: {_muted(is_dark)}; font-weight: 500; font-size: {pt}pt; font-family: {UI_FONT}; }} "
+               f"QPushButton:hover {{ color: {ink}; border-color: {ink}; }}")
+    for btn in ex.folder_tab_buttons:
+        if btn.property("sub_tab"):
+            btn.setStyleSheet(sub_on if btn.isChecked() else sub_off)
+        else:
+            btn.setStyleSheet(on if btn.isChecked() else off)
+    # 줄이 넘칠 때 나타나는 < > 버튼
+    nav = sub_off + f"QPushButton {{ padding: 0; font-weight: 700; }} QPushButton:disabled {{ color: {_tint(is_dark, 0.2)}; }}"
+    for strip in (ex.folder_tab_strip, ex.folder_subtab_strip):
+        strip.btn_prev.setStyleSheet(nav)
+        strip.btn_next.setStyleSheet(nav)
+    ex.btn_folder.setIcon(ex.ui_manager.get_theme_icon("folder.svg", is_dark, override_color=ink))
+    ex.btn_folder.setStyleSheet(_outline_btn(ink, hair, is_dark, pt, pad="0 12px 0 8px") + "QPushButton { font-weight: 700; text-align: left; }")
+    ex.folder_list.setStyleSheet(f"""
+        QListWidget {{
+            background: transparent; border: none; border-right: 1px solid {hair}; border-radius: 0px; outline: none;
+            color: {ink}; font-size: {pt}pt; font-family: {UI_FONT}; padding: 4px 0;
+        }}
+        QListWidget::item {{ padding: 7px 10px; border: none; border-left: 2px solid transparent; }}
+        QListWidget::item:hover {{ background: {_tint(is_dark, 0.04)}; }}
+        QListWidget::item:selected {{ background: {_tint(is_dark, 0.08)}; color: {ink}; font-weight: 700; border-left: 2px solid {ink}; }}
+        {scrollbars(is_dark)}
+    """)
+
+
+def apply_explorer_filters(ex: Any) -> None:
+    """전체/일반/코드: 선택된 항목에만 잉크색 밑줄이 그어지는 탭."""
+    on, off = _underline_qss(ex)
     for btn, mode in ((ex.btn_filter_all, "ALL"), (ex.btn_filter_gen, "GENERAL"), (ex.btn_filter_code, "CODE")):
         btn.setStyleSheet(on if ex.filter_mode == mode else off)
 
@@ -191,7 +233,7 @@ def apply_settings(win: Any) -> None:
     muted = _muted(is_dark)
 
     win.setStyleSheet(f"""
-        SettingsWindow#SettingsWindow, QWidget#SettingsWindow {{ background-color: {paper}; }}
+        SettingsWindow#SettingsWindow, QWidget#SettingsWindow {{ background-color: {paper}; border: 1px solid {hair}; }}
         QWidget {{ font-family: {UI_FONT}; font-size: {pt}pt; color: {ink}; background-color: {paper}; }}
         QTabWidget::pane {{ border: none; border-top: 1px solid {hair}; background: {paper}; top: -1px; }}
         QTabBar {{ background: transparent; }}
@@ -262,18 +304,20 @@ def apply_settings(win: Any) -> None:
     win.sb.setStyleSheet(_ink_btn(ink, paper, pt + 1, pad="10px"))
     # 잉크색으로 채운 버튼 위에서는 아이콘을 바탕색으로 그려야 보입니다.
     set_save_icon(win, paper)
+    # 자체 제목 줄
+    win.title_label.setStyleSheet(
+        f"font-size: {pt + 1}pt; font-weight: 700; color: {ink}; background: transparent; font-family: {UI_FONT};")
+    style_window_buttons(ink, win.btn_win_close, win.btn_win_min)
 
 
 # ═══ 메모 창 ═════════════════════════════════════════════════════════════════
 def apply_memo(w: Any) -> None:
     pal, is_dark, bg_color = memo_tone(w)
     ink = pal['text']
-    # 밝은 메모는 위쪽에만 굵은 잉크색 선을 둔 '카드' 형태.
-    # 어두운 메모에서는 잉크색이 흰색에 가까워 흰 줄처럼 튀므로(특히 접었을 때) 네 변 모두 옅은 선으로 둡니다.
-    top_line = "" if is_dark else f" border-top: 2px solid {ink};"
+    # 네 변 모두 같은 옅은 테두리. (위쪽에만 굵은 선을 두면 메모 색에 따라 검은 줄·흰 줄처럼 튀어 보임)
     w.bg.setStyleSheet(
         f"QWidget#MemoBackground {{ background-color: {bg_color}; "
-        f"border: 1px solid {_rgba(ink, 0.22)};{top_line} border-radius: 0px; }}"
+        f"border: 1px solid {_rgba(ink, 0.22)}; border-radius: 0px; }}"
     )
     w.toast_label.setStyleSheet(
         f"background-color: {ink}; color: {bg_color}; font-weight: 500; "

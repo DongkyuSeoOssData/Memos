@@ -42,6 +42,7 @@ class FakeDrive:
         self.files = {}
         self.clock = 0
         self.uploads = []
+        self.aux_uploads = []
         self.downloads = []
         self.online = True
         self.web_app_url = "https://example.invalid/exec"
@@ -64,7 +65,8 @@ class FakeDrive:
     def upload_file(self, filename: str, content: dict) -> bool:
         if not self.online:
             return False
-        self.uploads.append(filename)
+        # '_'로 시작하는 부속 파일(공유 설정)은 메모 업로드 기록과 따로 셉니다.
+        (self.aux_uploads if filename.startswith("_") else self.uploads).append(filename)
         self.put(filename, content)
         return True
 
@@ -440,6 +442,23 @@ class DeviceStateSyncTest(SyncManagerTestCase):
         self.assertEqual(disk["content"], "from other pc")
         self.assertEqual((disk["position_x"], disk["position_y"], disk["is_visible"]), (900, 40, True))
 
+    def test_meta_only_change_from_another_device_is_pulled(self) -> None:
+        self.sm.save_memo_locally(self._memo("memo-aaaa", "one"))
+        self._sync()
+        remote = dict(self.drive.files["memo-aaaa.json"][0])
+        remote.update({"folder": "업무", "is_favorite": True, "meta_updated_at": "2026-03-01T00:00:00"})   # 본문·수정일시는 그대로
+        self.drive.put("memo-aaaa.json", remote)
+        self._sync()
+        disk = self._disk("memo-aaaa")
+        self.assertEqual((disk["folder"], disk["is_favorite"]), ("업무", True))
+        self.assertEqual(disk["updated_at"], "2026-01-01T00:00:00")               # 화면의 수정일시는 바뀌지 않음
+
+        older = dict(remote)
+        older.update({"folder": "개인", "meta_updated_at": "2026-02-01T00:00:00"})  # 더 예전의 속성 변경
+        self.drive.put("memo-aaaa.json", older)
+        self._sync()
+        self.assertEqual(self._disk("memo-aaaa")["folder"], "업무")
+
     def test_memo_first_seen_from_remote_starts_hidden(self) -> None:
         self.drive.put("memo-cccc.json", self._memo("memo-cccc", "new from other pc"))
         self._sync()
@@ -454,6 +473,307 @@ class DeviceStateSyncTest(SyncManagerTestCase):
         self.assertEqual(self._contents(), [])
         self.assertFalse(self.sm.save_memo_locally(self._memo("../evil", "x")))
         self.assertFalse((self.memo_dir.parent / "evil.json").exists())
+
+
+class DriveApiTokenTest(unittest.TestCase):
+    """접근 암호를 설정하면 모든 요청에 함께 보내고, 설정하지 않으면 보내지 않습니다."""
+
+    class _Resp:
+        def __init__(self, text: str, payload=None) -> None:
+            self.status_code, self.text, self._payload = 200, text, payload
+
+        def json(self):
+            if self._payload is None:
+                raise ValueError("not json")
+            return self._payload
+
+    def _api(self, token: str):
+        from drive_api import DriveAPI
+        api = DriveAPI()
+        api.set_web_app_url("https://example.invalid/exec")
+        api.set_access_token(token)
+        calls = []
+
+        def get(url, params=None, timeout=None):
+            calls.append(dict(params))
+            if params.get("token", "") != "s3cret":
+                return self._Resp("Unauthorized")
+            return self._Resp("", {"files": []} if params["action"] == "list" else {"content": "{}"})
+
+        def post(url, data=None, timeout=None):
+            body = json.loads(data)
+            calls.append(body)
+            if body.get("token", "") != "s3cret":
+                return self._Resp("Unauthorized")
+            return self._Resp("Success" if body["action"] == "upload" else "Moved to Trash")
+
+        api._session = mock.Mock(get=get, post=post)
+        return api, calls
+
+    def test_token_is_sent_with_every_request(self) -> None:
+        api, calls = self._api("s3cret")
+        self.assertEqual(api.list_files(), [])
+        self.assertTrue(api.upload_file("a.json", {"id": "a"}))
+        self.assertEqual(api.download_file("a.json"), {})
+        self.assertTrue(api.delete_file("a.json"))
+        self.assertTrue(api.ping_web_app())
+        self.assertTrue(all(c.get("token") == "s3cret" for c in calls), calls)
+
+    def test_wrong_or_missing_token_fails_cleanly(self) -> None:
+        for token in ("", "wrong"):
+            api, calls = self._api(token)
+            self.assertIsNone(api.list_files())              # '파일 없음'이 아니라 '조회 실패'
+            self.assertFalse(api.upload_file("a.json", {"id": "a"}))
+            self.assertIsNone(api.download_file("a.json"))
+            self.assertFalse(api.delete_file("a.json"))
+            self.assertFalse(api.ping_web_app())             # 연결 테스트도 실패로 표시
+            if not token:
+                self.assertTrue(all("token" not in c for c in calls))
+
+    def test_settings_token_reaches_the_drive_api(self) -> None:
+        from drive_api import DriveAPI
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".memoit_custom").mkdir()
+            (home / ".memoit_custom" / "settings.json").write_text(json.dumps(
+                {"local_memo_path": str(home / "memos"), "use_sync": False, "drive_access_token": "abc"}), encoding="utf-8")
+            with mock.patch.object(Path, "home", return_value=home):
+                api = DriveAPI()
+                sm = SyncManager(api)
+                self.assertEqual(api.access_token, "abc")
+                sm.save_settings({"drive_access_token": "xyz"})
+                self.assertEqual(api.access_token, "xyz")
+                sm.sync_timer.stop()
+                sm._purge_timer.stop()
+
+
+class MobileApiTest(unittest.TestCase):
+    """tools/mobile_dev_server.py: mobile/Code.gs 의 api() 와 같은 규칙을 따르는 시험용 구현."""
+
+    def setUp(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "mobile_dev_server", Path(__file__).resolve().parent.parent / "tools" / "mobile_dev_server.py")
+        self.srv = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.srv)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.folder = Path(self._tmp.name)
+
+    def call(self, token: str = "", **req):
+        return self.srv.handle_api(self.folder, token, req)
+
+    def test_crud_and_conflict(self) -> None:
+        self.assertEqual(self.call(action="list"), {"files": []})
+        saved = self.call(action="save", name="a.json", content='{"id": "a"}')
+        self.assertTrue(saved["ok"])
+        self.assertEqual(self.call(action="getMany", names=["a.json", "zz.json"])["items"][0]["content"], '{"id": "a"}')
+        self.assertTrue(self.call(action="save", name="a.json", content="{}", ifUpdated=saved["updated"])["ok"])
+        self.assertTrue(self.call(action="save", name="a.json", content="{}", ifUpdated=1)["conflict"])
+        self.assertTrue(self.call(action="remove", name="a.json")["ok"])
+        self.assertEqual(self.call(action="list"), {"files": []})
+        self.assertTrue((self.folder / "trash_bin" / "a.json").exists())
+
+    def test_rejects_bad_names_and_tokens(self) -> None:
+        for bad in ("../x.json", "a/b.json", "x.txt", ""):
+            self.assertEqual(self.call(action="save", name=bad, content="{}"), {"error": "name"})
+        self.assertFalse((self.folder.parent / "x.json").exists())
+        self.assertEqual(self.srv.handle_api(self.folder, "pw", {"action": "list"}), {"error": "auth"})
+        self.assertEqual(self.srv.handle_api(self.folder, "pw", {"action": "list", "token": "pw"}), {"files": []})
+
+    def test_demo_memos_are_readable_by_the_desktop_crypto(self) -> None:
+        self.srv.seed_demo(self.folder)
+        crypto = CryptoManager()
+        for memo_id in ("demo-lock4", "demo-lock3"):
+            payload = json.loads((self.folder / f"{memo_id}.json").read_text(encoding="utf-8"))["content"]
+            self.assertTrue(crypto.decrypt_locked(payload, crypto.key_for_payload(payload, "1234")))
+
+
+class SharedSettingsSyncTest(SyncManagerTestCase):
+    """공유 설정(_settings.json): 어느 기기에서나 같아야 할 설정만 드라이브로 주고받습니다."""
+
+    FILE = "_settings.json"
+
+    def sync(self) -> SyncWorker:
+        worker = SyncWorker(self.sm)
+        worker.settings_pulled.connect(self.sm.apply_remote_settings)
+        worker.run_sync()
+        return worker
+
+    def remote(self) -> dict:
+        return self.drive.files[self.FILE][0]
+
+    def test_first_sync_uploads_only_shared_settings(self) -> None:
+        self.sm.save_settings({"drive_folder_id": "https://secret.example/exec", "drive_access_token": "tok",
+                               "explorer_geom": [1, 2, 3, 4], "auto_start": True,
+                               "ui_style": "neo", "folders": ["업무", "개인"]})
+        self.sync()
+        uploaded = self.remote()
+        self.assertEqual(uploaded["updated_at"], self.sm.settings["settings_updated_at"])
+        shared = uploaded["settings"]
+        self.assertEqual((shared["ui_style"], shared["folders"]), ("neo", ["업무", "개인"]))
+        self.assertIn("shortcuts", shared)
+        for device_only in ("drive_folder_id", "drive_access_token", "local_memo_path", "explorer_geom",
+                            "auto_start", "use_sync", "settings_updated_at", "explorer_folder"):
+            self.assertNotIn(device_only, shared)
+        self.assertNotIn("tok", json.dumps(uploaded))
+
+        self.drive.aux_uploads.clear()
+        self.sync()
+        self.sync()
+        self.assertEqual(self.drive.aux_uploads, [])                      # 바뀐 것이 없으면 다시 올리지 않음
+        self.assertEqual(self._contents(), [])                           # 메모로 오인해 내려받지 않음
+
+    def test_local_change_is_uploaded(self) -> None:
+        self.sync()
+        self.drive.aux_uploads.clear()
+        self.sm.save_settings({"explorer_geom": [9, 9, 9, 9]})            # 이 PC에만 속한 설정
+        self.sync()
+        self.assertEqual(self.drive.aux_uploads, [])
+        self.sm.save_settings({"folders": ["개인", "업무", "여행"]})
+        self.sync()
+        self.assertEqual(self.drive.aux_uploads, [self.FILE])
+        self.assertEqual(self.remote()["settings"]["folders"], ["개인", "업무", "여행"])
+
+    def test_newer_remote_settings_are_applied_here(self) -> None:
+        self.sync()
+        self.sm.save_settings({"local_memo_path": str(self.memo_dir), "explorer_geom": [5, 6, 7, 8]})
+        before_shortcuts = dict(self.sm.settings["shortcuts"])
+        other_pc = {"updated_at": "2099-01-01T00:00:00", "settings": {
+            "ui_style": "neo", "app_theme": "dark", "folders": ["업무", "업무/A", "개인"],
+            "shortcuts": {"save": "Ctrl+Alt+S"},
+            # 공유 대상이 아닌 값이 섞여 와도 받아들이지 않음
+            "local_memo_path": "Z:/somewhere", "drive_access_token": "evil", "explorer_geom": [0, 0, 1, 1]}}
+        self.drive.put(self.FILE, other_pc)
+        self.drive.aux_uploads.clear()
+        self.sync()
+
+        s = self.sm.settings
+        self.assertEqual((s["ui_style"], s["app_theme"], s["folders"]), ("neo", "dark", ["업무", "업무/A", "개인"]))
+        self.assertEqual(s["shortcuts"]["save"], "Ctrl+Alt+S")
+        self.assertEqual(s["shortcuts"]["new_memo"], before_shortcuts["new_memo"])   # 받은 쪽에 없는 단축키는 기본값 유지
+        self.assertEqual(s["local_memo_path"], str(self.memo_dir))
+        self.assertEqual(s["explorer_geom"], [5, 6, 7, 8])
+        self.assertNotEqual(s.get("drive_access_token"), "evil")
+        self.assertEqual(s["settings_updated_at"], "2099-01-01T00:00:00")
+        on_disk = json.loads(self.sm.settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["ui_style"], "neo")
+
+        self.sync()
+        self.assertEqual(self.drive.aux_uploads, [])                      # 받은 것을 되올리지 않음
+
+    def test_older_remote_settings_are_replaced_by_ours(self) -> None:
+        self.sm.save_settings({"ui_style": "neo"})
+        self.drive.put(self.FILE, {"updated_at": "2000-01-01T00:00:00", "settings": {"ui_style": "modern"}})
+        self.sync()
+        self.assertEqual(self.sm.settings["ui_style"], "neo")
+        self.assertEqual(self.remote()["settings"]["ui_style"], "neo")
+
+    def test_broken_remote_settings_are_ignored(self) -> None:
+        for broken in ({"updated_at": "2099-01-01T00:00:00"}, {"settings": {"ui_style": "neo"}},
+                       {"updated_at": "2099-01-01T00:00:00", "settings": "nope"}):
+            self.drive.put(self.FILE, broken)
+            self.sync()
+            self.assertEqual(self.sm.settings.get("ui_style", "modern"), "modern")
+            self.assertIn("shortcuts", self.remote()["settings"])            # 깨진 파일은 이 PC의 설정으로 다시 채움
+
+
+class ChangeDrivenSyncTest(SyncManagerTestCase):
+    """동기화는 정해진 간격마다 무조건 돌지 않고, 바뀐 것이 있을 때 바뀐 것만 다룹니다."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.sm.save_settings({"use_sync": True, "sync_interval_index": 1})
+        self.sm._push_timer.stop()          # 위 설정 저장으로 걸린 대기는 시험과 무관하므로 풀어 둠
+        self.addCleanup(self.sm._push_timer.stop)
+        self.addCleanup(self.sm.sync_timer.stop)
+
+    def test_content_change_schedules_a_sync_after_the_delay(self) -> None:
+        self.assertFalse(self.sm._push_timer.isActive())
+        self.sm.save_memo_locally(self._memo("memo-aaaa", "one"))
+        self.assertEqual(self.sm._dirty_ids, {"memo-aaaa"})
+        self.assertTrue(self.sm._push_timer.isActive())
+        self.assertEqual(self.sm._push_timer.interval(), 600 * 1000)       # 설정한 '변경 후 대기 시간'
+        remaining = self.sm._push_timer.remainingTime()
+        self.sm.save_memo_locally(self._memo("memo-bbbb", "two"))           # 기다리는 중의 추가 변경은 같은 회차에
+        self.assertLessEqual(self.sm._push_timer.remainingTime(), remaining)
+        self.assertEqual(self.sm._dirty_ids, {"memo-aaaa", "memo-bbbb"})
+
+    def test_window_moves_do_not_schedule_a_sync(self) -> None:
+        memo = self._memo("memo-aaaa", "one")
+        self.sm.save_memo_locally(memo)
+        self.sm._dirty_ids.clear()
+        self.sm._push_timer.stop()
+        memo.update({"position_x": 900, "position_y": 10, "width": 500, "is_visible": False, "is_rolled_up": True})
+        self.sm.save_memo_locally(memo)                                     # 창을 옮기고 접기만 함
+        self.assertEqual(self.sm._dirty_ids, set())
+        self.assertFalse(self.sm._push_timer.isActive())
+
+        memo["folder"] = "업무"                                             # 폴더 변경은 다른 기기와 공유하는 내용
+        self.sm.save_memo_locally(memo)
+        self.assertEqual(self.sm._dirty_ids, {"memo-aaaa"})
+
+    def test_shared_setting_change_schedules_a_sync(self) -> None:
+        self.sm.save_settings({"explorer_geom": [1, 2, 3, 4]})              # 이 PC에만 속한 설정
+        self.assertFalse(self.sm._push_timer.isActive())
+        self.sm.save_settings({"folders": ["개인", "업무", "여행"]})
+        self.assertTrue(self.sm._push_timer.isActive())
+
+    def test_nothing_is_scheduled_when_sync_is_off(self) -> None:
+        self.sm.settings["use_sync"] = False
+        self.sm.save_memo_locally(self._memo("memo-aaaa", "one"))
+        self.assertFalse(self.sm._push_timer.isActive())
+        self.sm.setup_timer()
+        self.assertFalse(self.sm.sync_timer.isActive())
+
+    def test_remote_check_timer_is_separate_from_the_push_delay(self) -> None:
+        self.sm.setup_timer()
+        self.assertTrue(self.sm.sync_timer.isActive())
+        self.assertEqual(self.sm.sync_timer.interval(), self.sm.REMOTE_CHECK_SEC * 1000)
+        self.assertEqual(self.sm.push_delay_sec(), 600)
+
+    def test_worker_reads_only_the_changed_memos(self) -> None:
+        for memo_id in ("memo-aaaa", "memo-bbbb", "memo-cccc"):
+            self.sm.save_memo_locally(self._memo(memo_id, memo_id))
+        self._sync()                                                        # 처음에는 전부 올림
+        self.drive.uploads.clear()
+        self.sm.save_memo_locally(self._memo("memo-bbbb", "changed", "2026-02-01T00:00:00"))
+
+        worker = SyncWorker(self.sm)
+        worker.push_ids = {"memo-bbbb", "memo-zzzz"}                        # 없는 메모가 섞여 있어도 무시
+        read = []
+        real_read = worker._read_local
+        worker._read_local = lambda path: (read.append(path.name), real_read(path))[1]
+        worker._load_state()
+        self.assertEqual(worker._push(), 1)
+        self.assertEqual(self.drive.uploads, ["memo-bbbb.json"])
+        self.assertEqual(read, ["memo-bbbb.json"])                          # 다른 메모 파일은 읽지도 않음
+
+    def test_failed_uploads_are_reported_for_retry(self) -> None:
+        self.sm.save_memo_locally(self._memo("memo-aaaa", "one"))
+        self.drive.online = False
+        worker = SyncWorker(self.sm)
+        worker.push_ids = {"memo-aaaa"}
+        worker._load_state()
+        self.assertEqual(worker._push(), 0)
+        self.assertEqual(worker.unsent_ids, {"memo-aaaa"})
+
+    def test_cycle_bookkeeping(self) -> None:
+        sm = self.sm
+        sm._full_scan_pending = True
+        sm._sending_ids = {"memo-aaaa", "memo-bbbb"}
+        sm._current_worker = mock.Mock(unsent_ids={"memo-bbbb"}, quiet=True)
+        sm._sync_running = True
+        sm._on_sync_cycle_done(True, "동기화 완료 (변경사항 없음)")
+        self.assertFalse(sm._full_scan_pending)                              # 그다음부터는 바뀐 것만
+        self.assertEqual(sm._dirty_ids, {"memo-bbbb"})                       # 못 올린 것은 다시 대기
+        self.assertTrue(sm._push_timer.isActive())
+
+        sm._dirty_ids.clear()
+        sm._sending_ids = {"memo-cccc"}
+        sm._current_worker = mock.Mock(unsent_ids=set(), quiet=True)
+        sm._on_sync_cycle_done(False, "연결 실패")
+        self.assertEqual(sm._dirty_ids, {"memo-cccc"})                       # 실패한 회차의 것은 전부 다시
 
 
 class TrashRetentionTest(SyncManagerTestCase):
@@ -583,6 +903,40 @@ class CryptoTest(unittest.TestCase):
         self.assertEqual(crypto.decrypt_locked(payload, crypto.key_for_payload(payload, "pw")), "secret")
         with self.assertRaises(ValueError):
             crypto.decrypt_locked(payload, crypto.key_for_payload(payload, "nope"))
+
+
+class FolderRulesTest(unittest.TestCase):
+    def test_folder_rules(self) -> None:
+        from core import folders as f
+        self.assertEqual(f.normalize("  업무 / /A\\B "), "업무/A/B")
+        self.assertEqual(f.normalize(None), "")
+        self.assertTrue(f.contains(f.ALL, "") and f.contains(f.ALL, "업무/A"))
+        self.assertTrue(f.contains(f.UNFILED, "") and not f.contains(f.UNFILED, "업무"))
+        self.assertTrue(f.contains("업무", "업무") and f.contains("업무", "업무/A"))
+        self.assertFalse(f.contains("업무", "업무2") or f.contains("업무/A", "업무"))
+        memos = [{"folder": "업무/A/깊이"}, {"folder": ""}, {}, {"folder": "개인"}]
+        self.assertEqual(f.all_folders(["zz"], memos), ["zz", "개인", "업무", "업무/A", "업무/A/깊이"])
+        self.assertEqual(f.moved("업무/A", "업무", "회사"), "회사/A")
+        self.assertEqual(f.moved("업무2", "업무", "회사"), "업무2")
+        self.assertNotEqual(f.UNFILED, f.normalize(f.UNFILED))        # 사용자가 같은 이름의 폴더를 만들 수 없음
+
+    def test_folder_order_follows_the_saved_list(self) -> None:
+        from core import folders as f
+        self.assertEqual(f.arrange(["b", "a/y", "a/x", "b/z"]), ["b", "b/z", "a", "a/y", "a/x"])
+        memos = [{"folder": "m2"}, {"folder": "a/new"}, {"folder": "m1"}]
+        self.assertEqual(f.all_folders(["b", "a"], memos), ["b", "a", "a/new", "m1", "m2"])   # 저장된 순서 먼저
+        names = ["a", "a/x", "a/y", "b", "c"]
+        self.assertEqual(f.reorder(names, "c", "a"), ["c", "a", "a/x", "a/y", "b"])
+        self.assertEqual(f.reorder(names, "a", None), ["b", "c", "a", "a/x", "a/y"])
+        self.assertEqual(f.reorder(names, "a/y", "a/x"), ["a", "a/y", "a/x", "b", "c"])
+        self.assertEqual(f.reorder(names, "a/x", None), ["a", "a/y", "a/x", "b", "c"])
+        self.assertEqual(f.reorder(names, "a/x", "c"), names)                     # 다른 단계로는 옮겨지지 않음
+        self.assertEqual(f.counts([{"folder": "a/x"}, {"folder": "a"}, {}]), {f.ALL: 3, f.UNFILED: 1, "a": 2, "a/x": 1})
+
+    def test_folder_is_synced_but_window_placement_is_not(self) -> None:
+        from core.sync_worker import shared_part
+        shared = shared_part({"id": "a", "folder": "업무", "position_x": 5, "is_visible": True})
+        self.assertEqual(shared, {"id": "a", "folder": "업무"})
 
 
 class TextUtilsTest(unittest.TestCase):

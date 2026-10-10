@@ -2,6 +2,7 @@ from ui.memo_editor import MemoTextEdit, CodeHighlighter
 from ui.themes import memo_palette
 from ui import modern_style
 from ui.wheel_guard import guard_wheel
+from ui import screen_bounds
 from ui.memo_lock import MemoLockMixin
 from ui.memo_format import MemoFormatMixin
 import re
@@ -433,6 +434,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         def _apply_after_format(formatted: str) -> None:
             """setPlainText 적용 후 하이라이터 및 글씨색 복원."""
             self.text_edit.setPlainText(formatted)
+            self.text_edit.document().setModified(True)      # 본문을 바꾼 것이므로 '고침'으로 표시
             # 하이라이터 재적용
             self.highlighter = CodeHighlighter(self.text_edit.document(), lang, code_theme)
             # 전체 글씨새 재적용
@@ -704,6 +706,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             txt = self.text_edit.toPlainText()
             converted = convert_eng_kor_smart(txt)
             self.text_edit.setPlainText(converted)
+            self.text_edit.document().setModified(True)      # 본문을 바꾼 것이므로 '고침'으로 표시
         self._mark_edited()
         self.show_toast("🔤 한/영 영타 변환 완료")
 
@@ -774,6 +777,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         """서식 변경 등으로 본문이 바뀌었음을 표시합니다. 저장은 자동 저장(마지막 입력 후 대기)에 맡깁니다."""
         if self.is_sealed():
             return
+        # 본문 글자가 아니라 메모 속성(코드 테마, 기본 글꼴 등)만 바뀐 경우를 위해 표시해 둡니다.
+        self._meta_dirty = True
         self._schedule_auto_save()
         self.restart_relock_timer()
 
@@ -862,6 +867,20 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         for control in (self.btn_code_theme, self.code_lang_box, self.btn_format_code, self.btn_lang_icon):
             control.setVisible(show_code_controls)
 
+    def _rolled_stack_span(self) -> Optional[tuple]:
+        """이 접은 메모가 다른 접은 메모들과 한 줄로 쌓여 있으면 그 줄의 (왼쪽 끝, 오른쪽 끝)을, 아니면 None 을 돌려줍니다."""
+        manager = getattr(self, 'ui_manager', None)
+        if not manager:
+            return None
+        left, right, found = self.x(), self.x() + self.width(), False
+        for other in manager.memo_windows.values():
+            if other is self or not other.isVisible() or not other._is_rolled_up:
+                continue
+            overlap = min(right, other.x() + other.width()) - max(left, other.x())
+            if overlap >= min(self.width(), other.width()) / 2:      # 가로로 절반 넘게 겹치면 같은 줄
+                left, right, found = min(left, other.x()), max(right, other.x() + other.width()), True
+        return (left, right) if found else None
+
     def toggle_rollup(self) -> None:
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         scr_geom = screen.availableGeometry()
@@ -894,8 +913,25 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         # 접거나 펼 때 화면 가장자리에 가까운 쪽 모서리를 고정점으로 삼습니다.
         new_left_x = anchor_x - target_w if is_near_right else anchor_x
         new_top_y = anchor_y if is_near_top else anchor_y - target_h
+        if self._is_rolled_up:
+            # 접은 메모 여러 개가 한 줄로 쌓여 있을 때 그 자리에서 펼치면 나머지 접은 메모를 가립니다.
+            # 그럴 때는 쌓인 줄의 바깥쪽(왼쪽에 쌓였으면 오른쪽, 오른쪽에 쌓였으면 왼쪽)에 펼칩니다.
+            stack = self._rolled_stack_span()
+            if stack is not None:
+                beside = stack[0] - target_w if is_near_right else stack[1]
+                if scr_geom.left() <= beside and beside + target_w <= scr_geom.left() + scr_geom.width():
+                    new_left_x = beside
+            # 다시 접을 때 원래 쌓여 있던 자리로 돌아가도록 기억해 둡니다.
+            self._rolled_slot = (self.x(), self.y())
+        elif getattr(self, '_rolled_slot', None) and getattr(self, '_opened_at', None) == (self.x(), self.y()):
+            # 펼친 뒤 옮기지 않았다면 접을 때 원래 자리(쌓인 줄 안)로 돌아갑니다.
+            new_left_x, new_top_y = self._rolled_slot
         new_left_x, new_top_y = self._clamp_to_screen(scr_geom, new_left_x, new_top_y, target_w, target_h)
         self._apply_fold_state(not self._is_rolled_up, new_left_x, new_top_y, target_w, target_h)
+        # 펼친 직후의 위치. 사용자가 옮겼는지 판단하는 데 씁니다.
+        self._opened_at = None if self._is_rolled_up else (self.x(), self.y())
+        if self._is_rolled_up:
+            self._rolled_slot = None
 
         if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
             is_dark_bg = self.is_dark_bg()
@@ -957,7 +993,16 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             # 잠긴 상태의 빈 편집기를 본문으로 저장하면 안 됩니다.
             return
         self.memo_data['content'] = self.current_content()
-        self.memo_data['updated_at'] = datetime.datetime.now().isoformat()
+        # 수정일시는 본문을 실제로 고쳤을 때만 바꿉니다. (고친 것 없이 저장만 한 경우에는 그대로)
+        # 본문은 그대로이고 속성만 바뀐 경우에는 다른 기기에 전해지도록 '속성 수정 시각'만 갱신합니다.
+        document = self.text_edit.document()
+        now = datetime.datetime.now().isoformat()
+        if document.isModified():
+            self.memo_data['updated_at'] = now
+        elif getattr(self, '_meta_dirty', False):
+            self.memo_data['meta_updated_at'] = now
+        document.setModified(False)
+        self._meta_dirty = False
 
         plain = clean_plain_text(self.memo_data['content'])
 
@@ -988,10 +1033,14 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self._is_applying_data = True
         try:
             # 아래에서 memo_data['content']로 편집기를 다시 채우므로, 자동 저장 대기 중인 입력을 먼저 반영해 둡니다.
+            was_modified = hasattr(self, 'text_edit') and self._auto_save_timer.isActive() \
+                and self.text_edit.document().isModified()
             if self._auto_save_timer.isActive() and hasattr(self, 'text_edit'):
                 self.memo_data['content'] = self.current_content()
             self._apply_data_internal()
             modern_style.apply_memo(self)
+            # 화면을 다시 채우는 것은 수정이 아닙니다. 저장을 기다리던 입력이 있었을 때만 '고침' 표시를 유지합니다.
+            self.text_edit.document().setModified(bool(was_modified))
         finally:
             self._is_applying_data = False
 
@@ -1199,6 +1248,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         else:
             if self.rename_callback(ot, nt, self.memo_data):
                 self.memo_data['title'] = nt
+                self.memo_data['updated_at'] = datetime.datetime.now().isoformat()     # 제목을 고친 것도 수정
                 self.save_callback(self.memo_data)
             else:
                 QMessageBox.warning(self, "중복", f"'{nt}' 존재.")
@@ -1302,8 +1352,10 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
                 if abs(target_x - scr_geom.left()) < snap_in:
                     new_x = scr_geom.left()
 
-            new_x = max(scr_geom.left(), min(new_x, scr_geom.right() - self.width()))
-            new_y = max(scr_geom.top(), min(new_y, scr_geom.bottom() - self.height()))
+            # 화면 가장자리에 가까이 가면 딱 붙입니다. 접은 메모뿐 아니라 모든 메모에 적용합니다. (Ctrl 을 누르고 끌면 붙지 않음)
+            if not ctrl_held:
+                new_x, new_y = screen_bounds.snap_to_edges(scr_geom, new_x, new_y, self.width(), self.height())
+            new_x, new_y = screen_bounds.clamp_position(scr_geom, new_x, new_y, self.width(), self.height())
 
             self.move(new_x, new_y)
             self._old_pos = curr_global

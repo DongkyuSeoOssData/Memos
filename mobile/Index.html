@@ -1,0 +1,1081 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Memos">
+<title>Memos</title>
+<style>
+  :root {
+    --bg: #F2F2F7; --card: #FFFFFF; --text: #1C1C1E; --muted: rgba(60, 60, 67, .62);
+    --line: rgba(0, 0, 0, .12); --soft: rgba(0, 0, 0, .06); --accent: #007AFF; --danger: #FF453A; --star: #F5A623;
+    --mono: "D2Coding", "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0D0D0D; --card: #141416; --text: #F2F2F7; --muted: rgba(235, 235, 245, .58);
+      --line: rgba(255, 255, 255, .14); --soft: rgba(255, 255, 255, .08); --accent: #0A84FF;
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.45 -apple-system, "Pretendard", "Segoe UI", "Malgun Gothic", sans-serif;
+  }
+  button, input, select, textarea { font: inherit; color: inherit; border-radius: 0; }
+  button { cursor: pointer; }
+  [hidden] { display: none !important; }
+
+  .view { display: flex; flex-direction: column; height: 100%; max-width: 760px; margin: 0 auto; }
+  .bar {
+    display: flex; align-items: center; gap: 4px; padding: 8px 12px;
+    padding-top: calc(8px + env(safe-area-inset-top)); border-bottom: 1px solid var(--line); background: var(--bg);
+  }
+  .bar h1 { font-size: 20px; margin: 0; letter-spacing: -.4px; flex: 1; }
+  .status { font-size: 12px; color: var(--muted); margin-right: 4px; white-space: nowrap; }
+  .icon-btn {
+    width: 40px; height: 40px; border: none; background: transparent; display: grid; place-items: center; flex: none;
+  }
+  .icon-btn:active { background: var(--soft); }
+  .icon-btn svg { width: 22px; height: 22px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+  .icon-btn.on svg { fill: var(--star); stroke: var(--star); }
+  .icon-btn.danger { color: var(--danger); }
+
+  .tools { padding: 10px 12px 0; display: grid; gap: 8px; }
+  .field {
+    width: 100%; height: 40px; padding: 0 12px; border: 1px solid var(--line); background: var(--card); outline: none;
+    -webkit-appearance: none; appearance: none;
+  }
+  .field:focus { border-color: var(--accent); }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .chip {
+    height: 34px; padding: 0 12px; border: 1px solid transparent; background: var(--soft); font-size: 14px; font-weight: 600;
+    white-space: nowrap;
+  }
+  .chip.on { background: var(--accent); color: #fff; }
+  .chip { flex: 1; }
+  .row select.field { flex: 1.4; }
+  select.field { height: 34px; width: auto; min-width: 0; flex: 1; font-size: 14px; padding: 0 8px; }
+
+  .folder-btn {
+    display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px 0 8px; border: none; flex: 1; min-width: 0;
+    background: transparent; font-size: 19px; font-weight: 700; letter-spacing: -.3px; text-align: left;
+  }
+  .folder-btn:active { background: var(--soft); }
+  .folder-btn svg { width: 22px; height: 22px; flex: none; stroke: var(--accent); fill: none; stroke-width: 1.8; stroke-linejoin: round; }
+  .folder-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* 폴더 서랍: 폰에서는 눌러서 열고, 넓은 화면(아이패드 등)에서는 항상 펼쳐 둡니다. */
+  #drawer {
+    position: fixed; top: 0; bottom: 0; left: 0; width: min(80%, 300px); background: var(--card); z-index: 6;
+    border-right: 1px solid var(--line); transform: translateX(-102%); transition: transform .18s ease;
+    display: flex; flex-direction: column; padding-top: env(safe-area-inset-top);
+  }
+  #drawer.open { transform: none; }
+  #drawer-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .4); z-index: 5; }
+  .drawer-head { font-size: 13px; font-weight: 700; color: var(--muted); padding: 16px 16px 8px; }
+  #drawer-list { list-style: none; margin: 0; padding: 0 0 calc(16px + env(safe-area-inset-bottom)); overflow-y: auto; flex: 1; }
+  .drawer-item {
+    display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 0 16px; border-left: 3px solid transparent;
+  }
+  .drawer-item:active { background: var(--soft); }
+  .drawer-item.on { border-left-color: var(--accent); background: var(--soft); color: var(--accent); font-weight: 700; }
+  .drawer-item .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drawer-item .count { font-size: 12.5px; color: var(--muted); font-weight: 500; }
+  .drawer-item.add { color: var(--accent); font-weight: 600; border-top: 1px solid var(--line); margin-top: 6px; }
+  @media (min-width: 900px) {
+    body.list-mode #drawer { transform: none; }
+    body.list-mode #drawer-scrim { display: none; }
+    body.list-mode #v-list { margin-left: 316px; max-width: none; }
+    body.list-mode #btn-drawer { pointer-events: none; }
+    body.list-mode #fab { right: 24px; }
+  }
+
+  #items { list-style: none; margin: 10px 0 0; padding: 0 12px calc(96px + env(safe-area-inset-bottom)); overflow-y: auto; flex: 1; }
+  .item {
+    display: flex; background: var(--card); border: 1px solid var(--line); margin-bottom: 8px; min-height: 64px;
+  }
+  .item:active { background: var(--soft); }
+  .stripe { width: 6px; flex: none; }
+  .item-main { flex: 1; min-width: 0; padding: 9px 10px; }
+  .item-top { display: flex; align-items: center; gap: 6px; }
+  .item-title { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font-size: 11px; font-weight: 700; padding: 1px 5px; border: 1px solid var(--line); color: var(--muted); flex: none; }
+  .badge.star { color: var(--star); border-color: transparent; font-size: 15px; padding: 0; }
+  .item-snippet { font-size: 13.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .item-date { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .empty { text-align: center; color: var(--muted); padding: 48px 20px; font-size: 14px; }
+
+  #fab {
+    position: fixed; right: max(16px, calc(50% - 364px)); bottom: calc(20px + env(safe-area-inset-bottom));
+    width: 56px; height: 56px; border: none; background: var(--accent); color: #fff; display: grid; place-items: center;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .25);
+  }
+  #fab svg { width: 26px; height: 26px; stroke: #fff; fill: none; stroke-width: 2.2; stroke-linecap: round; }
+
+  #title {
+    border: none; border-bottom: 1px solid var(--line); background: transparent; outline: none;
+    font-size: 19px; font-weight: 700; padding: 12px 14px; width: 100%;
+  }
+  .notice { font-size: 13px; padding: 8px 14px; background: var(--soft); color: var(--muted); border-bottom: 1px solid var(--line); }
+  #body {
+    flex: 1; width: 100%; border: none; outline: none; resize: none; background: transparent;
+    padding: 14px 14px calc(24px + env(safe-area-inset-bottom)); font-size: 16px; line-height: 1.55;
+  }
+  #body.code { font-family: var(--mono); font-size: 14.5px; white-space: pre; overflow-x: auto; }
+  .meta { font-size: 12px; color: var(--muted); padding: 6px 14px calc(6px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); }
+
+  #scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
+  .sheet {
+    width: 100%; max-width: 520px; background: var(--card); border-top: 2px solid var(--text);
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); display: grid; gap: 10px;
+    max-height: 85%; overflow-y: auto;
+  }
+  .sheet h2 { margin: 0; font-size: 17px; }
+  .sheet p { margin: 0; font-size: 14px; color: var(--muted); white-space: pre-line; }
+  .sheet .btn { height: 46px; border: 1px solid var(--line); background: transparent; font-weight: 600; }
+  .sheet .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .sheet .btn.danger { color: var(--danger); border-color: var(--danger); }
+  .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
+  .swatch { width: 44px; height: 44px; border: 1px solid var(--line); }
+
+  #toast {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(92px + env(safe-area-inset-bottom));
+    background: var(--text); color: var(--bg); padding: 8px 14px; font-size: 14px; z-index: 20; max-width: 90%;
+  }
+  .auth { padding: 60px 20px; display: grid; gap: 12px; max-width: 420px; margin: 0 auto; }
+  .auth h1 { margin: 0; }
+  .auth p { margin: 0; color: var(--muted); font-size: 14px; }
+  .auth .btn { height: 46px; border: none; background: var(--accent); color: #fff; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<section id="v-auth" class="auth" hidden>
+  <h1>Memos</h1>
+  <p>접근 암호를 입력하세요. PC 앱의 환경설정에 넣은 '동기화 접근 암호'와 같은 값입니다.</p>
+  <input id="auth-token" class="field" type="password" autocomplete="current-password" placeholder="접근 암호">
+  <button id="auth-ok" class="btn">확인</button>
+</section>
+
+<section id="v-list" class="view" hidden>
+  <div class="bar">
+    <button id="btn-drawer" class="folder-btn" aria-label="폴더 목록">
+      <svg viewBox="0 0 24 24"><path d="M3 6h7l2 2.5h9V19H3z"/></svg>
+      <span id="folder-name">전체 메모</span>
+    </button>
+    <span id="status" class="status"></span>
+    <button id="btn-sync" class="icon-btn" aria-label="새로 고침">
+      <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/></svg>
+    </button>
+  </div>
+  <div class="tools">
+    <input id="q" class="field" type="search" placeholder="제목·내용 검색" autocomplete="off">
+    <div class="row">
+      <button class="chip on" data-filter="all">전체</button>
+      <button class="chip" data-filter="general">일반</button>
+      <button class="chip" data-filter="code">코드</button>
+      <button class="chip" data-filter="fav">★</button>
+      <select id="tag" class="field" aria-label="해시태그"></select>
+    </div>
+  </div>
+  <ul id="items"></ul>
+  <button id="fab" aria-label="새 메모"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button>
+</section>
+
+<section id="v-edit" class="view" hidden>
+  <div class="bar">
+    <button id="btn-back" class="icon-btn" aria-label="목록으로">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <span id="save-state" class="status" style="flex:1"></span>
+    <button id="btn-fav" class="icon-btn" aria-label="즐겨찾기">
+      <svg viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+    </button>
+    <button id="btn-folder" class="icon-btn" aria-label="폴더">
+      <svg viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v11H3z"/></svg>
+    </button>
+    <button id="btn-color" class="icon-btn" aria-label="메모 색">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16"/><path d="M4 15h16"/></svg>
+    </button>
+    <button id="btn-lock" class="icon-btn" aria-label="암호">
+      <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+    </button>
+    <button id="btn-del" class="icon-btn danger" aria-label="삭제">
+      <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>
+    </button>
+  </div>
+  <input id="title" type="text" placeholder="제목" autocomplete="off">
+  <div id="notice" class="notice" hidden></div>
+  <textarea id="body" placeholder="내용을 입력하세요" autocapitalize="sentences"></textarea>
+  <div id="meta" class="meta"></div>
+</section>
+
+<div id="drawer-scrim" hidden></div>
+<nav id="drawer" aria-label="폴더">
+  <div class="drawer-head">폴더</div>
+  <ul id="drawer-list"></ul>
+</nav>
+
+<div id="scrim" hidden></div>
+<div id="toast" hidden></div>
+
+<script>
+"use strict";
+/*
+ * Memos 모바일 화면.
+ * - 구글 앱스 스크립트에서 열리면 google.script.run 으로, 로컬 시험 서버에서는 fetch("api") 로 같은 요청을 보냅니다.
+ * - 메모 파일(JSON)은 PC 앱과 같은 것을 그대로 읽고 씁니다. 모르는 항목은 건드리지 않고 그대로 되돌려 저장합니다.
+ * - 화면에 넣는 글자는 모두 textContent 로 넣습니다. (저장된 내용을 HTML로 해석하지 않음)
+ */
+const $ = (id) => document.getElementById(id);
+const LS_TOKEN = "memos.token";
+const LS_CACHE = "memos.cache.v1";
+const LOCK_ITERATIONS = 600000;
+const COLORS = ["#FEF9C3", "#E0F2FE", "#DCFCE7", "#FCE7F3", "#FFFFFF", "#2E3440"];
+
+let token = lsGet(LS_TOKEN) || "";
+let cache = {};            // 파일 이름 → {updated: 원격 수정시각, memo: 메모 객체}
+let filter = "all";
+let editing = null;        // 편집 중인 메모의 상태
+let lastSync = 0;
+let syncing = false;
+const textMemo = new Map();   // 목록·검색용으로 뽑아 둔 본문 글자 (이름+수정시각 → 글자)
+
+// ── 저장소 도우미 ────────────────────────────────────────────────────────────
+function lsGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+function lsSet(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* 용량 초과·차단: 캐시 없이 동작 */ } }
+function persistCache() { lsSet(LS_CACHE, JSON.stringify(cache)); }
+function loadCache() {
+  try {
+    const loaded = JSON.parse(lsGet(LS_CACHE) || "{}");
+    cache = loaded && typeof loaded === "object" ? loaded : {};
+  } catch (e) { cache = {}; }
+}
+
+// ── 서버 호출 ────────────────────────────────────────────────────────────────
+class AuthError extends Error {}
+
+function callServer(req) {
+  req.token = token;
+  if (window.google && google.script && google.script.run) {
+    return new Promise((resolve, reject) => {
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).api(req);
+    });
+  }
+  return fetch("api", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(req)})
+    .then((r) => r.json());
+}
+
+async function api(action, payload) {
+  const res = await callServer(Object.assign({action}, payload || {}));
+  if (res && res.error === "auth") throw new AuthError();
+  if (!res || res.error) throw new Error((res && res.error) || "empty");
+  return res;
+}
+
+// ── 화면 공용 ────────────────────────────────────────────────────────────────
+let toastTimer = 0;
+function toast(message) {
+  $("toast").textContent = message;
+  $("toast").hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 2200);
+}
+
+function show(view) {
+  for (const id of ["v-auth", "v-list", "v-edit"]) $(id).hidden = id !== view;
+  // 폴더 서랍은 목록 화면에서만 씁니다. (넓은 화면에서 항상 펼쳐 두는 것도 목록 화면일 때만)
+  document.body.classList.toggle("list-mode", view === "v-list");
+  if (view !== "v-list") { $("drawer").classList.remove("open"); $("drawer-scrim").hidden = true; }
+}
+
+function el(tag, props, children) {
+  const node = document.createElement(tag);
+  Object.assign(node, props || {});
+  for (const child of children || []) node.appendChild(child);
+  return node;
+}
+
+/**
+ * 아래에서 올라오는 선택 창.
+ * options: {title, message, fields: [{name, type, placeholder}], swatches: [색…], actions: [{label, value, kind}]}
+ * 고른 action 의 value 와 입력값을 돌려줍니다. 바깥을 누르면 value 는 null.
+ */
+function sheet(options) {
+  return new Promise((resolve) => {
+    const scrim = $("scrim");
+    scrim.textContent = "";
+    const inputs = {};
+    const box = el("div", {className: "sheet"});
+    const done = (value) => {
+      const values = {};
+      for (const name in inputs) values[name] = inputs[name].value;
+      scrim.hidden = true;
+      scrim.onclick = null;
+      resolve({value, values});
+    };
+    if (options.title) box.appendChild(el("h2", {textContent: options.title}));
+    if (options.message) box.appendChild(el("p", {textContent: options.message}));
+    for (const f of options.fields || []) {
+      inputs[f.name] = el("input", {className: "field", type: f.type || "text", placeholder: f.placeholder || "", autocomplete: "off"});
+      box.appendChild(inputs[f.name]);
+    }
+    if (options.swatches) {
+      const wrap = el("div", {className: "swatches"});
+      for (const color of options.swatches) {
+        const sw = el("button", {className: "swatch"});
+        sw.style.background = color;
+        sw.setAttribute("aria-label", color);
+        sw.onclick = () => done(color);
+        wrap.appendChild(sw);
+      }
+      box.appendChild(wrap);
+    }
+    for (const a of options.actions || []) {
+      const btn = el("button", {className: "btn " + (a.kind || ""), textContent: a.label});
+      btn.onclick = () => done(a.value);
+      box.appendChild(btn);
+    }
+    scrim.appendChild(box);
+    scrim.onclick = (ev) => { if (ev.target === scrim) done(null); };
+    scrim.hidden = false;
+    const first = Object.values(inputs)[0];
+    if (first) setTimeout(() => first.focus(), 50);
+  });
+}
+
+// ── 메모 내용 해석 ───────────────────────────────────────────────────────────
+function isLockedPayload(content) {
+  return !!content && typeof content === "object" && !!content.is_encrypted && (content.version === 3 || content.version === 4);
+}
+function isLegacyPayload(content) {
+  return !!content && typeof content === "object" && !!content.is_encrypted && !isLockedPayload(content);
+}
+/** PC 앱의 편집기(Qt)가 만든 서식 문서인지. 사용자가 직접 쓴 HTML 코드는 해당하지 않습니다. */
+function isRichHtml(content) {
+  if (typeof content !== "string") return false;
+  const head = content.trimStart().slice(0, 400).toLowerCase();
+  return head.startsWith("<!doctype html public") && head.includes("qrichtext");
+}
+/** 서식 문서에서 글자만 뽑습니다. 문단은 줄로, 목록은 '• ' / '1. ' 로 바꿉니다. */
+function richToText(html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const lines = [];
+  doc.body.querySelectorAll("p, li").forEach((node) => {
+    if (node.tagName === "P" && node.closest("li")) return;
+    let prefix = "";
+    if (node.tagName === "LI") {
+      const list = node.parentElement;
+      const depth = "  ".repeat(Math.max(0, countAncestors(node, "UL, OL") - 1));
+      prefix = depth + (list && list.tagName === "OL" ? (Array.prototype.indexOf.call(list.children, node) + 1) + ". " : "• ");
+    }
+    lines.push(prefix + node.textContent);
+  });
+  return lines.join("\n");
+}
+function countAncestors(node, selector) {
+  let count = 0;
+  for (let p = node.parentElement; p; p = p.parentElement) if (p.matches(selector)) count++;
+  return count;
+}
+/** 저장된 본문(글자 또는 서식 문서)을 화면에 보일 글자로. */
+function displayText(content) {
+  if (typeof content !== "string") return "";
+  return isRichHtml(content) ? richToText(content) : content;
+}
+function plainOf(name) {
+  const entry = cache[name];
+  const key = name + ":" + entry.updated;
+  if (!textMemo.has(key)) textMemo.set(key, displayText(entry.memo.content));
+  return textMemo.get(key);
+}
+function tagsOf(text) {
+  const out = [];
+  const re = /(?:^|\s)#([^\s#]+)/g;
+  let m;
+  while ((m = re.exec(text))) if (!/^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(m[1])) out.push(m[1]);
+  return out;
+}
+// ── 폴더 (PC 앱과 같은 규칙: 'folder' 값 하나, '/' 로 하위 폴더, 비어 있으면 미분류) ──
+const FOLDER_ALL = "", FOLDER_UNFILED = "/unfiled", DEFAULT_FOLDERS = ["개인", "업무"];
+// PC 앱이 드라이브에 올려 두는 공유 설정. 폴더 목록·순서와 새 메모 기본값을 여기서 읽습니다.
+const SETTINGS_FILE = "_settings.json", LS_SETTINGS = "memos.settings.v1";
+let shared = {updated: 0, data: null};      // {updated: 원격 수정시각, data: {updated_at, settings: {...}}}
+try { shared = JSON.parse(lsGet(LS_SETTINGS) || "null") || shared; } catch (e) { /* 저장된 값이 깨졌으면 기본값 */ }
+const sharedSetting = (key, fallback) => {
+  const settings = shared.data && shared.data.settings;
+  return settings && settings[key] !== undefined ? settings[key] : fallback;
+};
+const LS_FOLDER = "memos.folder";
+let folderFilter = lsGet(LS_FOLDER) || FOLDER_ALL;
+
+function normFolder(path) {
+  if (typeof path !== "string") return "";
+  return path.replace(/\\/g, "/").split("/").map((x) => x.trim()).filter(Boolean).join("/");
+}
+function folderContains(selected, memoFolder) {
+  if (selected === FOLDER_ALL) return true;
+  if (selected === FOLDER_UNFILED) return memoFolder === "";
+  return memoFolder === selected || memoFolder.startsWith(selected + "/");
+}
+/** 주어진 순서를 지키면서 폴더를 나무 모양으로 늘어놓습니다. 하위 폴더는 상위 폴더 바로 아래에 모읍니다. (PC 앱과 같은 규칙) */
+function arrangeFolders(paths) {
+  const order = new Map();
+  for (const raw of paths) {
+    const parts = normFolder(raw).split("/").filter(Boolean);
+    for (let i = 1; i <= parts.length; i++) {
+      const key = parts.slice(0, i).join("/");
+      if (!order.has(key)) order.set(key, order.size);
+    }
+  }
+  const out = [];
+  const walk = (parent) => {
+    const depth = parent ? parent.split("/").length : 0;
+    Array.from(order.keys())
+      .filter((p) => p.split("/").length === depth + 1 && (!parent || p.startsWith(parent + "/")))
+      .sort((a, b) => order.get(a) - order.get(b))
+      .forEach((child) => { out.push(child); walk(child); });
+  };
+  walk("");
+  return out;
+}
+/** 보여 줄 폴더 목록: PC에서 정한 순서가 먼저, 메모에서만 발견된 폴더는 이름순으로 뒤에. */
+function allFolders() {
+  const saved = sharedSetting("folders", DEFAULT_FOLDERS);
+  const found = new Set();
+  for (const name of Object.keys(cache)) found.add(normFolder(cache[name].memo.folder));
+  if (editing) found.add(normFolder(editing.memo.folder));
+  found.delete("");
+  return arrangeFolders((Array.isArray(saved) ? saved : DEFAULT_FOLDERS).concat(Array.from(found).sort((a, b) => a.localeCompare(b))));
+}
+/** 폴더별 메모 개수. 하위 폴더의 메모도 상위 폴더에 포함해 셉니다. */
+function folderCounts() {
+  const counts = {[FOLDER_ALL]: 0, [FOLDER_UNFILED]: 0};
+  for (const name of Object.keys(cache)) {
+    counts[FOLDER_ALL]++;
+    const parts = normFolder(cache[name].memo.folder).split("/").filter(Boolean);
+    if (!parts.length) { counts[FOLDER_UNFILED]++; continue; }
+    for (let i = 1; i <= parts.length; i++) {
+      const key = parts.slice(0, i).join("/");
+      counts[key] = (counts[key] || 0) + 1;
+    }
+  }
+  return counts;
+}
+const folderTitle = (path) => (path === FOLDER_ALL ? "전체 메모" : path === FOLDER_UNFILED ? "미분류" : path);
+const folderLabel = (path) => "　".repeat(path.split("/").length - 1) + path.split("/").pop();
+
+/** 새 폴더를 공유 설정의 폴더 목록 맨 뒤에 넣어 올립니다. (빈 폴더도 다른 기기에 보이게) */
+async function addSharedFolder(path) {
+  path = normFolder(path);
+  if (!path || allFolders().includes(path) && (sharedSetting("folders", []) || []).includes(path)) return;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const data = JSON.parse(JSON.stringify(shared.data || {settings: {}}));
+    if (!data.settings || typeof data.settings !== "object") data.settings = {};
+    const saved = Array.isArray(data.settings.folders) ? data.settings.folders : DEFAULT_FOLDERS.slice();
+    data.settings.folders = arrangeFolders(saved.concat([path]));
+    data.updated_at = nowIso();
+    const req = {name: SETTINGS_FILE, content: JSON.stringify(data, null, 2)};
+    if (shared.updated) req.ifUpdated = shared.updated;
+    const res = await api("save", req);
+    if (!res.conflict) {
+      shared = {updated: res.updated, data};
+      lsSet(LS_SETTINGS, JSON.stringify(shared));
+      return;
+    }
+    // 그사이 다른 기기가 설정을 바꿈: 새 내용을 받아 그 위에 다시 추가
+    const {items} = await api("getMany", {names: [SETTINGS_FILE]});
+    if (items[0]) { try { shared = {updated: items[0].updated, data: JSON.parse(items[0].content)}; } catch (e) { /* 그대로 재시도 */ } }
+  }
+}
+
+function safeColor(color) {
+  return typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color) ? color : "transparent";
+}
+function nowIso() {
+  // PC 앱(파이썬)의 datetime.now().isoformat() 과 같은 꼴: 지역 시각, 마이크로초 6자리
+  const d = new Date();
+  const p = (n, l) => String(n).padStart(l || 2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}000`;
+}
+function shortDate(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${String(d.getFullYear()).slice(2)}.${p(d.getMonth() + 1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function newId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
+// ── 암호 메모 (PC 앱과 같은 형식: PBKDF2-SHA256 → AES-256-GCM) ───────────────
+const b64d = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+function b64e(buf) {
+  const bytes = new Uint8Array(buf);
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+async function deriveKey(password, salt, iterations) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({name: "PBKDF2", salt, iterations, hash: "SHA-256"}, base,
+    {name: "AES-GCM", length: 256}, false, ["encrypt", "decrypt"]);
+}
+const aesDecrypt = (key, nonceB64, dataB64) => crypto.subtle.decrypt({name: "AES-GCM", iv: b64d(nonceB64)}, key, b64d(dataB64));
+const importAes = (raw) => crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
+
+/** 암호가 맞으면 {plain, ctx} 를, 틀리면 예외를 냅니다. ctx 는 다시 저장할 때 씁니다. */
+async function unlockPayload(payload, password) {
+  const key = await deriveKey(password, b64d(payload.salt), Number(payload.iterations) || LOCK_ITERATIONS);
+  let bodyKey = key;
+  if (payload.version === 4) {
+    bodyKey = await importAes(await aesDecrypt(key, payload.user_nonce, payload.enc_dek_user));
+  }
+  const plain = new TextDecoder().decode(await aesDecrypt(bodyKey, payload.nonce, payload.ciphertext));
+  return {plain, ctx: {bodyKey, payload}};
+}
+/** 열려 있는 암호 메모의 본문을 다시 암호화합니다. 본문 키와 관리자 복구 정보는 그대로 둡니다. */
+async function sealBody(ctx, plain) {
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({name: "AES-GCM", iv: nonce}, ctx.bodyKey, new TextEncoder().encode(plain));
+  return Object.assign({}, ctx.payload, {nonce: b64e(nonce), ciphertext: b64e(ciphertext)});
+}
+/** 새 암호로 잠글 준비: 본문 키를 새로 만들고 암호 키로 감쌉니다. */
+async function newLockContext(password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const userNonce = crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(password, salt, LOCK_ITERATIONS);
+  const dekRaw = crypto.getRandomValues(new Uint8Array(32));
+  const wrapped = await crypto.subtle.encrypt({name: "AES-GCM", iv: userNonce}, key, dekRaw);
+  return {
+    bodyKey: await importAes(dekRaw),
+    payload: {
+      is_encrypted: true, version: 4, iterations: LOCK_ITERATIONS, salt: b64e(salt), nonce: "", ciphertext: "",
+      user_nonce: b64e(userNonce), enc_dek_user: b64e(wrapped), enc_dek_master: "", master_key_id: "",
+    },
+  };
+}
+
+// ── 동기화 (바뀐 파일만 내려받음) ────────────────────────────────────────────
+async function sync(announce) {
+  if (syncing) return;
+  syncing = true;
+  $("status").textContent = "불러오는 중…";
+  try {
+    const {files} = await api("list");
+    const remote = new Map(files.map((f) => [f.name, f.updated]));
+    for (const name of Object.keys(cache)) if (!remote.has(name)) delete cache[name];
+    const isMemoFile = (name) => !name.startsWith("_");
+    const need = files.filter((f) => (isMemoFile(f.name) ? (!cache[f.name] || cache[f.name].updated !== f.updated)
+                                                          : (f.name === SETTINGS_FILE && shared.updated !== f.updated)))
+                      .map((f) => f.name);
+    if (!remote.has(SETTINGS_FILE)) shared = {updated: 0, data: shared.data};
+    for (let i = 0; i < need.length; i += 15) {
+      $("status").textContent = `불러오는 중… ${Math.min(i + 15, need.length)}/${need.length}`;
+      const {items} = await api("getMany", {names: need.slice(i, i + 15)});
+      for (const it of items) {
+        let memo = null;
+        try { memo = JSON.parse(it.content); } catch (e) { /* 깨진 파일은 건너뜀 */ }
+        if (it.name === SETTINGS_FILE) {
+          if (memo && typeof memo === "object") { shared = {updated: it.updated, data: memo}; lsSet(LS_SETTINGS, JSON.stringify(shared)); }
+          continue;
+        }
+        if (memo && typeof memo === "object" && typeof memo.id === "string") cache[it.name] = {updated: it.updated, memo};
+      }
+    }
+    persistCache();
+    lastSync = Date.now();
+    $("status").textContent = "";
+    const newMemos = need.filter(isMemoFile).length;
+    if (announce) toast(newMemos ? `${newMemos}개 메모를 새로 받았습니다` : "최신 상태입니다");
+    if (!editing) show("v-list");
+    renderList();
+  } catch (e) {
+    $("status").textContent = "";
+    if (e instanceof AuthError) { show("v-auth"); return; }
+    toast("연결하지 못했습니다. 저장해 둔 목록을 보여 줍니다.");
+    if (!editing) { show("v-list"); renderList(); }
+  } finally {
+    syncing = false;
+  }
+}
+
+// ── 목록 ─────────────────────────────────────────────────────────────────────
+function renderList() {
+  const q = $("q").value.trim().toLowerCase();
+  const tagSelect = $("tag");
+  const chosenTag = tagSelect.value || "";
+  const allTags = new Set();
+  const rows = [];
+
+  const folderNames = allFolders();
+  if (folderFilter !== FOLDER_ALL && folderFilter !== FOLDER_UNFILED && !folderNames.includes(folderFilter)) folderFilter = FOLDER_ALL;
+  $("folder-name").textContent = folderTitle(folderFilter);
+  renderDrawer(folderNames);
+
+  for (const name of Object.keys(cache)) {
+    const memo = cache[name].memo;
+    if (!folderContains(folderFilter, normFolder(memo.folder))) continue;
+    const locked = isLockedPayload(memo.content) || isLegacyPayload(memo.content);
+    const text = locked ? "" : plainOf(name);
+    const tags = memo.is_code_memo || locked ? [] : tagsOf(text);
+    tags.forEach((t) => allTags.add(t));
+    if (filter === "general" && memo.is_code_memo) continue;
+    if (filter === "code" && !memo.is_code_memo) continue;
+    if (filter === "fav" && !memo.is_favorite) continue;
+    if (chosenTag && !tags.includes(chosenTag)) continue;
+    const title = String(memo.title || "");
+    if (q && !title.toLowerCase().includes(q) && !text.toLowerCase().includes(q)) continue;
+    rows.push({name, memo, locked, text, title});
+  }
+  rows.sort((a, b) => (Number(!!b.memo.is_favorite) - Number(!!a.memo.is_favorite))
+    || String(b.memo.updated_at || "").localeCompare(String(a.memo.updated_at || "")));
+
+  tagSelect.textContent = "";
+  tagSelect.appendChild(el("option", {value: "", textContent: "# 태그"}));
+  for (const t of Array.from(allTags).sort()) tagSelect.appendChild(el("option", {value: t, textContent: "#" + t}));
+  tagSelect.value = allTags.has(chosenTag) ? chosenTag : "";
+
+  const list = $("items");
+  list.textContent = "";
+  if (!rows.length) {
+    list.appendChild(el("li", {className: "empty", textContent: Object.keys(cache).length ? "조건에 맞는 메모가 없습니다." : "메모가 없습니다. 오른쪽 아래 + 로 새 메모를 만드세요."}));
+    return;
+  }
+  for (const r of rows) {
+    const stripe = el("div", {className: "stripe"});
+    stripe.style.background = safeColor(r.memo.bg_color);
+    const top = el("div", {className: "item-top"}, [el("div", {className: "item-title", textContent: r.title || "(제목 없음)"})]);
+    if (r.memo.is_favorite) top.appendChild(el("span", {className: "badge star", textContent: "★"}));
+    if (r.locked) top.appendChild(el("span", {className: "badge", textContent: "암호"}));
+    if (r.memo.is_code_memo) top.appendChild(el("span", {className: "badge", textContent: "코드"}));
+    const snippet = r.locked ? "암호 메모입니다" : r.text.replace(/\s+/g, " ").trim().slice(0, 120);
+    const main = el("div", {className: "item-main"}, [
+      top,
+      el("div", {className: "item-snippet", textContent: snippet || " "}),
+      el("div", {className: "item-date", textContent: shortDate(r.memo.updated_at)}),
+    ]);
+    const li = el("li", {className: "item"}, [stripe, main]);
+    li.onclick = () => openMemo(r.name);
+    list.appendChild(li);
+  }
+}
+
+function renderDrawer(folderNames) {
+  const counts = folderCounts();
+  const list = $("drawer-list");
+  list.textContent = "";
+  const rows = [[FOLDER_ALL, "전체 메모"]].concat(folderNames.map((p) => [p, folderLabel(p)]), [[FOLDER_UNFILED, "미분류"]]);
+  for (const [path, label] of rows) {
+    const li = el("li", {className: "drawer-item" + (path === folderFilter ? " on" : "")}, [
+      el("span", {className: "name", textContent: label}),
+      el("span", {className: "count", textContent: String(counts[path] || 0)}),
+    ]);
+    li.onclick = () => pickFolder(path);
+    list.appendChild(li);
+  }
+  const add = el("li", {className: "drawer-item add", textContent: "＋ 새 폴더"});
+  add.onclick = newFolderFromDrawer;
+  list.appendChild(add);
+}
+
+function setDrawer(open) {
+  $("drawer").classList.toggle("open", open);
+  $("drawer-scrim").hidden = !open;
+}
+
+function pickFolder(path) {
+  folderFilter = path;
+  lsSet(LS_FOLDER, folderFilter);
+  setDrawer(false);
+  renderList();
+}
+
+async function newFolderFromDrawer() {
+  setDrawer(false);
+  const base = folderFilter !== FOLDER_ALL && folderFilter !== FOLDER_UNFILED ? folderFilter + "/" : "";
+  const res = await sheet({
+    title: "새 폴더", message: "하위 폴더는 '업무/프로젝트A'처럼 / 로 구분합니다." + (base ? `\n지금 폴더 아래에 만들려면 '${base}이름'으로 입력하세요.` : ""),
+    fields: [{name: "name", placeholder: "폴더 이름"}],
+    actions: [{label: "만들기", value: "ok", kind: "primary"}, {label: "취소", value: null}],
+  });
+  const path = normFolder(res.values.name);
+  if (res.value !== "ok" || !path) return;
+  try {
+    await addSharedFolder(path);
+    pickFolder(path);
+    toast(`'${path}' 폴더를 만들었습니다`);
+  } catch (e) {
+    toast("폴더를 만들지 못했습니다. 연결을 확인하세요.");
+  }
+}
+
+// ── 편집 ─────────────────────────────────────────────────────────────────────
+/**
+ * editing 의 주요 값
+ *   memo         : 저장할 메모 객체 (모르는 항목 포함)
+ *   updated      : 열었을 때의 원격 수정시각 (다른 기기가 고쳤는지 확인용)
+ *   contentPlain : 암호가 풀린 상태의 본문 원문 (글자 또는 서식 문서)
+ *   lockCtx      : 암호 메모면 다시 암호화할 때 쓸 키, 아니면 null
+ *   textEdited   : 본문 글자를 고쳤는지 (고치지 않았으면 서식 문서를 그대로 둠)
+ *   contentDirty : 본문을 다시 써야 하는지 (글자 수정 또는 암호 걸기/풀기)
+ *   dirty        : 저장할 것이 있는지
+ */
+async function openMemo(name) {
+  const entry = cache[name];
+  if (!entry) return;
+  const memo = JSON.parse(JSON.stringify(entry.memo));
+  const state = {name, memo, updated: entry.updated, isNew: false, lockCtx: null, contentPlain: "",
+                 textEdited: false, contentDirty: false, dirty: false, readOnly: false};
+
+  if (isLegacyPayload(memo.content)) {
+    state.readOnly = true;
+    state.contentPlain = "";
+  } else if (isLockedPayload(memo.content)) {
+    const opened = await askUnlock(memo.content, String(memo.title || ""));
+    if (!opened) return;
+    state.lockCtx = opened.ctx;
+    state.contentPlain = opened.plain;
+  } else {
+    state.contentPlain = typeof memo.content === "string" ? memo.content : "";
+  }
+  startEditing(state);
+}
+
+async function askUnlock(payload, title) {
+  for (let wrong = false; ; wrong = true) {
+    const res = await sheet({
+      title: "암호 메모", message: (title ? `'${title}'\n` : "") + (wrong ? "암호가 맞지 않습니다. 다시 입력하세요." : "암호를 입력하세요."),
+      fields: [{name: "pw", type: "password", placeholder: "암호"}],
+      actions: [{label: "열기", value: "ok", kind: "primary"}, {label: "취소", value: null}],
+    });
+    if (res.value !== "ok") return null;
+    try {
+      toast("여는 중…");
+      return await unlockPayload(payload, res.values.pw);
+    } catch (e) { /* 틀린 암호: 다시 묻기 */ }
+  }
+}
+
+function startEditing(state) {
+  editing = state;
+  const memo = state.memo;
+  const rich = isRichHtml(state.contentPlain);
+  $("title").value = String(memo.title || "");
+  $("body").value = displayText(state.contentPlain);
+  $("body").className = memo.is_code_memo ? "code" : "";
+  $("body").readOnly = state.readOnly;
+  $("title").readOnly = state.readOnly;
+
+  const notice = $("notice");
+  if (state.readOnly) {
+    notice.textContent = "예전 버전의 암호화 형식입니다. PC 앱에서 한 번 열어 변환한 뒤 사용하세요.";
+  } else if (rich) {
+    notice.textContent = "서식이 있는 메모입니다. 여기서 본문을 고쳐 저장하면 굵게·색 같은 서식은 사라지고 글자만 남습니다.";
+  }
+  notice.hidden = !(state.readOnly || rich);
+  for (const id of ["btn-fav", "btn-folder", "btn-color", "btn-lock", "btn-del"]) $(id).hidden = state.readOnly && id !== "btn-del";
+  refreshEditBar();
+  show("v-edit");
+  if (state.isNew) setTimeout(() => $("body").focus(), 50);
+}
+
+function refreshEditBar() {
+  if (!editing) return;
+  $("btn-fav").classList.toggle("on", !!editing.memo.is_favorite);
+  $("save-state").textContent = editing.saving ? "저장 중…" : editing.dirty ? "저장 안 됨" : editing.isNew ? "" : "저장됨";
+  const kind = (editing.memo.is_code_memo ? "코드 메모" : "일반 메모") + (editing.lockCtx ? " · 암호 메모(열림)" : "");
+  const folder = normFolder(editing.memo.folder);
+  $("meta").textContent = (folder ? "📁 " + folder + " · " : "") + kind + (editing.memo.updated_at ? " · " + shortDate(editing.memo.updated_at) : "");
+}
+
+function markDirty(textEdited) {
+  if (!editing || editing.readOnly) return;
+  editing.dirty = true;
+  if (textEdited) { editing.textEdited = true; editing.contentDirty = true; }
+  refreshEditBar();
+}
+
+/** 저장합니다. 저장했거나 저장할 것이 없으면 true, 사용자가 취소했거나 실패하면 false. */
+async function saveEditing(force) {
+  const state = editing;
+  if (!state || state.readOnly || !state.dirty) return true;
+  if (state.saving) return false;
+  state.saving = true;
+  refreshEditBar();
+  try {
+    const memo = Object.assign({}, state.memo);
+    memo.title = $("title").value.trim() || "제목 없음";
+    if (state.contentDirty) {
+      const plain = state.textEdited ? $("body").value : state.contentPlain;
+      memo.content = state.lockCtx ? await sealBody(state.lockCtx, plain) : plain;
+      memo.is_locked = !!state.lockCtx;
+    }
+    // 수정일시는 본문·제목을 고쳤을 때만 바꿉니다. 폴더·즐겨찾기·색처럼 속성만 바꾼 경우에는
+    // 다른 기기에 전해지도록 '속성 수정 시각'만 갱신합니다. (PC 앱과 같은 규칙)
+    const titleChanged = memo.title !== String(state.memo.title || "");
+    if (state.isNew || state.contentDirty || titleChanged) memo.updated_at = nowIso();
+    else memo.meta_updated_at = nowIso();
+    const req = {name: state.name, content: JSON.stringify(memo, null, 2)};
+    if (!state.isNew && !force) req.ifUpdated = state.updated;
+    const res = await api("save", req);
+
+    if (res.conflict) {
+      state.saving = false;
+      const pick = await sheet({
+        title: "다른 기기에서 수정된 메모입니다",
+        message: "이 메모를 연 뒤에 다른 기기에서 내용이 바뀌었습니다.",
+        actions: [
+          {label: "내 것을 사본으로 저장", value: "copy", kind: "primary"},
+          {label: "내 것으로 덮어쓰기", value: "force", kind: "danger"},
+          {label: "취소", value: null},
+        ],
+      });
+      if (pick.value === "force") return saveEditing(true);
+      if (pick.value === "copy") {
+        const id = newId();
+        state.memo = Object.assign({}, state.memo, {id});
+        state.name = id + ".json";
+        state.isNew = true;
+        $("title").value = ($("title").value.trim() || "제목 없음") + " (충돌 사본)";
+        return saveEditing(true);
+      }
+      refreshEditBar();
+      return false;
+    }
+
+    if (state.contentDirty) state.contentPlain = state.textEdited ? $("body").value : state.contentPlain;
+    state.memo = memo;
+    state.updated = res.updated;
+    state.isNew = false;
+    state.dirty = state.textEdited = state.contentDirty = false;
+    cache[state.name] = {updated: res.updated, memo: JSON.parse(JSON.stringify(memo))};
+    persistCache();
+    return true;
+  } catch (e) {
+    if (e instanceof AuthError) { toast("접근 암호가 맞지 않습니다."); } else { toast("저장하지 못했습니다. 연결을 확인하세요."); }
+    return false;
+  } finally {
+    state.saving = false;
+    refreshEditBar();
+  }
+}
+
+async function closeEditing() {
+  if (!editing) return;
+  if (!(await saveEditing())) {
+    if (!editing.dirty) return;
+    const pick = await sheet({
+      title: "저장되지 않았습니다", message: "저장하지 않고 나가면 고친 내용이 사라집니다.",
+      actions: [{label: "계속 편집", value: null, kind: "primary"}, {label: "저장하지 않고 나가기", value: "leave", kind: "danger"}],
+    });
+    if (pick.value !== "leave") return;
+  }
+  editing = null;
+  show("v-list");
+  renderList();
+}
+
+async function createMemo() {
+  const pick = await sheet({
+    title: "새 메모",
+    actions: [{label: "일반 메모", value: "general", kind: "primary"}, {label: "코드 메모", value: "code"}, {label: "취소", value: null}],
+  });
+  if (!pick.value) return;
+  const isCode = pick.value === "code";
+  const id = newId();
+  // 새 메모 기본값은 PC 환경설정(공유 설정)을 따릅니다. 아직 받은 설정이 없으면 기본값을 씁니다.
+  let color = sharedSetting("default_memo_color", "#FEF9C3");
+  if (color === "random") color = COLORS[Math.floor(Math.random() * 5)];
+  const codeTheme = sharedSetting("default_code_theme", "dark");
+  const memo = {
+    id, title: "", content: "", bg_color: isCode ? (codeTheme === "dark" ? "#2E3440" : "#FFFFFF") : safeColor(color) === "transparent" ? "#FEF9C3" : color,
+    font_size: 11, is_code_memo: isCode, is_favorite: false, is_pinned: false, updated_at: nowIso(),
+  };
+  if (isCode) Object.assign(memo, {code_lang: sharedSetting("default_code_lang", "Plain Text"), code_theme: codeTheme, show_line_numbers: true});
+  // 폴더를 골라 둔 상태라면 새 메모도 그 폴더에 넣습니다.
+  if (folderFilter !== FOLDER_ALL && folderFilter !== FOLDER_UNFILED) memo.folder = folderFilter;
+  startEditing({name: id + ".json", memo, updated: 0, isNew: true, lockCtx: null, contentPlain: "",
+                textEdited: false, contentDirty: false, dirty: false, readOnly: false});
+}
+
+async function deleteEditing() {
+  const state = editing;
+  if (!state) return;
+  const pick = await sheet({
+    title: "메모를 삭제할까요?", message: "드라이브의 휴지통 폴더로 옮겨집니다. PC 앱에서도 휴지통으로 이동합니다.",
+    actions: [{label: "삭제", value: "del", kind: "danger"}, {label: "취소", value: null}],
+  });
+  if (pick.value !== "del") return;
+  try {
+    if (!state.isNew) await api("remove", {name: state.name});
+    delete cache[state.name];
+    persistCache();
+    editing = null;
+    show("v-list");
+    renderList();
+    toast("삭제했습니다");
+  } catch (e) {
+    toast("삭제하지 못했습니다. 연결을 확인하세요.");
+  }
+}
+
+async function lockMenu() {
+  const state = editing;
+  if (!state || state.readOnly) return;
+  if (!crypto.subtle) { toast("이 브라우저에서는 암호 기능을 쓸 수 없습니다."); return; }
+
+  if (state.lockCtx) {
+    const pick = await sheet({
+      title: "암호 메모", message: "지금은 암호가 풀려 있습니다. 목록으로 나가면 다시 잠깁니다.",
+      actions: [{label: "암호 제거 (일반 메모로)", value: "remove", kind: "danger"}, {label: "닫기", value: null}],
+    });
+    if (pick.value === "remove") {
+      state.lockCtx = null;
+      state.contentDirty = true;
+      markDirty(false);
+      toast("저장하면 암호가 제거됩니다");
+    }
+    return;
+  }
+
+  const res = await sheet({
+    title: "이 메모에 암호 걸기",
+    message: "암호를 잊으면 복구할 수 없습니다.\n(폰에서 건 암호에는 관리자 복구 정보가 들어가지 않습니다. PC 앱에서 한 번 열어 저장하면 추가됩니다.)",
+    fields: [{name: "a", type: "password", placeholder: "새 암호"}, {name: "b", type: "password", placeholder: "새 암호 다시 입력"}],
+    actions: [{label: "암호 걸기", value: "ok", kind: "primary"}, {label: "취소", value: null}],
+  });
+  if (res.value !== "ok") return;
+  if (!res.values.a) { toast("암호를 입력하세요"); return; }
+  if (res.values.a !== res.values.b) { toast("두 암호가 서로 다릅니다"); return; }
+  toast("암호를 거는 중…");
+  state.lockCtx = await newLockContext(res.values.a);
+  state.contentDirty = true;
+  markDirty(false);
+  await saveEditing();
+  toast("암호를 걸었습니다");
+}
+
+async function folderMenu() {
+  if (!editing || editing.readOnly) return;
+  const current = normFolder(editing.memo.folder);
+  const mark = (path) => (path === current ? "✓ " : "");
+  const actions = [{label: "입력한 이름의 새 폴더로", value: "/new", kind: "primary"},
+                   {label: mark("") + "미분류", value: "/none"}];
+  for (const path of allFolders()) actions.push({label: mark(path) + path, value: path});
+  actions.push({label: "취소", value: null});
+  const pick = await sheet({
+    title: "폴더로 이동", message: "하위 폴더는 '업무/프로젝트A'처럼 / 로 구분합니다.",
+    fields: [{name: "name", placeholder: "새 폴더 이름"}], actions,
+  });
+  if (pick.value === null) return;
+  let target = pick.value;
+  if (target === "/none") target = "";
+  if (target === "/new") {
+    target = normFolder(pick.values.name);
+    if (!target) { toast("새 폴더 이름을 입력하세요"); return; }
+    addSharedFolder(target).catch(() => { /* 목록 저장에 실패해도 메모에는 폴더가 적히므로 계속 진행 */ });
+  }
+  editing.memo.folder = target;
+  markDirty(false);
+  toast(target ? `'${target}' 폴더로 옮깁니다` : "미분류로 옮깁니다");
+}
+
+async function colorMenu() {
+  if (!editing || editing.readOnly) return;
+  const pick = await sheet({title: "메모 색", swatches: COLORS, actions: [{label: "취소", value: null}]});
+  if (!pick.value) return;
+  editing.memo.bg_color = pick.value;
+  markDirty(false);
+}
+
+// ── 이벤트 연결 ──────────────────────────────────────────────────────────────
+$("btn-sync").onclick = () => sync(true);
+$("q").oninput = renderList;
+$("tag").onchange = renderList;
+$("btn-drawer").onclick = () => setDrawer(!$("drawer").classList.contains("open"));
+$("drawer-scrim").onclick = () => setDrawer(false);
+// 전체 / 일반 / 코드 / ★ 필터
+document.querySelectorAll(".chip").forEach((chip) => {
+  chip.onclick = () => {
+    filter = chip.dataset.filter;
+    document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("on", c === chip));
+    renderList();
+  };
+});
+$("fab").onclick = createMemo;
+$("btn-back").onclick = closeEditing;
+$("btn-del").onclick = deleteEditing;
+$("btn-lock").onclick = lockMenu;
+$("btn-color").onclick = colorMenu;
+$("btn-folder").onclick = folderMenu;
+$("btn-fav").onclick = () => {
+  if (!editing || editing.readOnly) return;
+  editing.memo.is_favorite = !editing.memo.is_favorite;
+  markDirty(false);
+};
+$("title").oninput = () => markDirty(false);
+$("body").oninput = () => markDirty(true);
+$("body").onkeydown = (ev) => {
+  // 키보드를 연결한 아이패드 등: 코드 메모에서 Tab 은 공백 4칸
+  if (ev.key !== "Tab" || !editing || !editing.memo.is_code_memo || editing.readOnly) return;
+  ev.preventDefault();
+  const body = $("body");
+  body.setRangeText("    ", body.selectionStart, body.selectionEnd, "end");
+  markDirty(true);
+};
+$("auth-ok").onclick = () => {
+  token = $("auth-token").value;
+  lsSet(LS_TOKEN, token);
+  $("auth-token").value = "";
+  sync(false);
+};
+$("auth-token").onkeydown = (ev) => { if (ev.key === "Enter") $("auth-ok").click(); };
+
+// 화면을 떠날 때(다른 앱으로 전환 등) 고친 내용을 저장하고, 돌아오면 목록을 새로 받습니다.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (editing && editing.dirty) saveEditing();
+  } else if (!editing && Date.now() - lastSync > 60000) {
+    sync(false);
+  }
+});
+
+// ── 시작 ─────────────────────────────────────────────────────────────────────
+/**
+ * 주소에 ?k=접근암호 가 붙어 있으면 그 값을 씁니다.
+ * 사파리는 이 화면의 저장 공간을 오래 유지해 주지 않아 기억해 둔 암호가 사라질 수 있습니다.
+ * 암호를 붙인 주소를 홈 화면에 추가해 두면 매번 입력하지 않아도 됩니다.
+ */
+function tokenFromAddress() {
+  return new Promise((resolve) => {
+    const done = (value) => resolve(typeof value === "string" ? value : "");
+    try {
+      if (window.google && google.script && google.script.url && google.script.url.getLocation) {
+        setTimeout(() => done(""), 1500);          // 응답이 없어도 시작은 하도록
+        google.script.url.getLocation((loc) => done(loc && loc.parameter ? loc.parameter.k : ""));
+      } else {
+        done(new URLSearchParams(location.search).get("k"));
+      }
+    } catch (e) { done(""); }
+  });
+}
+
+loadCache();
+show("v-list");
+if (Object.keys(cache).length) renderList();
+tokenFromAddress().then((fromAddress) => {
+  if (fromAddress) token = fromAddress;
+  sync(false);
+});
+</script>
+</body>
+</html>

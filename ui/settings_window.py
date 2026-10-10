@@ -4,11 +4,13 @@ from core.sync_manager import is_auto_start_enabled
 from ui.themes import LIGHT_THEMES, DARK_THEMES
 from ui import modern_style
 from ui.wheel_guard import guard_wheel
+from ui import screen_bounds
 from typing import Any
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLineEdit, QMessageBox, QLabel,
     QComboBox, QCheckBox, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
-    QFontComboBox, QTabWidget, QKeySequenceEdit, QGroupBox, QScrollArea, QSlider, QSpinBox, QAbstractSpinBox
+    QFontComboBox, QTabWidget, QKeySequenceEdit, QGroupBox, QScrollArea, QSlider, QSpinBox, QAbstractSpinBox,
+    QSizeGrip, QApplication
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QGuiApplication, QColor, QKeySequence, QFont, QFontMetrics
@@ -84,10 +86,37 @@ class SettingsWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowTitle("Memos Settings")
 
+        # Windows 기본 제목 줄을 쓰면 끌어 옮길 때 가장자리에 붙이거나 화면 안에 묶어 두는 동작이 매끄럽지 않습니다.
+        # 탐색기처럼 자체 제목 줄을 그리고 끌기·크기 조절을 직접 처리합니다.
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        self._drag_start_cursor = None
+        self._drag_start_pos = None
+
         self.setMinimumSize(580, 440)
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(18, 18, 18, 18)
+        main_layout.setContentsMargins(18, 12, 18, 18)
         main_layout.setSpacing(10)
+
+        # 제목 줄: 가운데에 제목, 오른쪽 끝에 최소화·닫기
+        title_bar = QGridLayout()
+        title_bar.setContentsMargins(0, 0, 0, 0)
+        title_buttons = QHBoxLayout()
+        title_buttons.setSpacing(6)
+        title_buttons.addStretch(1)
+        self.btn_win_min = QPushButton("")
+        self.btn_win_close = QPushButton("")
+        for btn, tip, action in ((self.btn_win_min, "최소화", self.showMinimized), (self.btn_win_close, "닫기", self.close)):
+            btn.setFixedSize(32, 28)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setToolTip(tip)
+            btn.clicked.connect(action)
+            title_buttons.addWidget(btn)
+        title_bar.addLayout(title_buttons, 0, 0)
+        self.title_label = QLabel("환경설정")
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        title_bar.addWidget(self.title_label, 0, 0, Qt.AlignmentFlag.AlignCenter)
+        main_layout.addLayout(title_bar)
+        self.grip = QSizeGrip(self)
 
         # 저장 버튼 — 탭 위 상단에 배치
         self.sb = QPushButton("  설정 저장")
@@ -201,6 +230,18 @@ class SettingsWindow(QWidget):
         url_box.addWidget(self.btn_test_url)
         g1_l.addLayout(url_box)
 
+        g1_l.addWidget(QLabel("동기화 접근 암호 (선택):"))
+        self.token_input = QLineEdit()
+        self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.token_input.setPlaceholderText("스크립트 속성 ACCESS_TOKEN 에 넣은 값")
+        self.token_input.setFixedHeight(40)
+        g1_l.addWidget(self.token_input)
+        token_hint = QLabel("스크립트에 ACCESS_TOKEN 을 설정하면 이 값을 아는 기기만 메모를 읽고 쓸 수 있습니다. "
+                            "모바일 화면에서도 같은 값을 입력합니다.")
+        token_hint.setProperty("role", "hint")
+        token_hint.setWordWrap(True)
+        g1_l.addWidget(token_hint)
+
         g1_l.addWidget(QLabel("로컬 메모 저장 위치:"))
         ph = QHBoxLayout()
         self.path_input = QLineEdit()
@@ -214,11 +255,17 @@ class SettingsWindow(QWidget):
         ph.addWidget(self.btn_change_path)
         g1_l.addLayout(ph)
 
-        g1_l.addWidget(QLabel("자동 동기화 주기:"))
+        g1_l.addWidget(QLabel("변경 후 동기화까지 기다리는 시간:"))
         self.sync_interval_combo = QComboBox()
-        self.sync_interval_combo.addItems(["1분마다", "10분마다", "30분마다", "1시간마다"])
+        self.sync_interval_combo.addItems(["1분 뒤", "10분 뒤", "30분 뒤", "1시간 뒤"])
         self.sync_interval_combo.setFixedHeight(40)
         g1_l.addWidget(self.sync_interval_combo)
+        sync_hint = QLabel("정해진 간격마다 무조건 동기화하지 않습니다. 메모를 고치면 이 시간만큼 기다렸다가 바뀐 메모만 올립니다. "
+                           "고친 것이 없을 때는 다른 기기의 변경이 있는지 15분마다 파일 목록만 확인합니다. "
+                           "탐색기의 동기화 버튼을 누르면 바로 동기화합니다.")
+        sync_hint.setProperty("role", "hint")
+        sync_hint.setWordWrap(True)
+        g1_l.addWidget(sync_hint)
         l_sync.addWidget(g1)
         l_sync.addStretch()
 
@@ -459,6 +506,23 @@ class SettingsWindow(QWidget):
         g_explorer_l.addWidget(self.cb_explorer_fixed, 2, 0, 1, 2)
         g_explorer_l.setColumnStretch(1, 1)
         l_font.addWidget(g_explorer)
+
+        g_folder = QGroupBox("폴더 표시 방식")
+        g_folder_l = QVBoxLayout(g_folder)
+        g_folder_l.setContentsMargins(14, 22, 14, 14)
+        g_folder_l.setSpacing(8)
+        self.folder_ui_box = QComboBox()
+        self.folder_ui_box.addItem("탭 줄 (위쪽에 폴더가 한 줄로)", "tabs")
+        self.folder_ui_box.addItem("사이드바 (왼쪽에 폴더 목록)", "sidebar")
+        self.folder_ui_box.addItem("드롭다운 (버튼 하나)", "dropdown")
+        self.folder_ui_box.setFixedHeight(36)
+        g_folder_l.addWidget(self.folder_ui_box)
+        folder_hint = QLabel("탭 줄은 폴더가 몇 개 안 될 때, 사이드바는 폴더가 많거나 여러 단계일 때 편합니다. "
+                             "사이드바는 탐색기 왼쪽 위의 폴더 버튼으로 열고 닫습니다.")
+        folder_hint.setProperty("role", "hint")
+        folder_hint.setWordWrap(True)
+        g_folder_l.addWidget(folder_hint)
+        l_font.addWidget(g_folder)
         l_font.addStretch()
 
         scroll_font = QScrollArea()
@@ -519,6 +583,42 @@ class SettingsWindow(QWidget):
 
         self._apply_initial_window_size()
 
+    # ── 화면 밖으로 나가지 않고, 화면보다 커지지 않게 ──────────────────────────
+    def _limit_to_screen(self, at: Any = None) -> None:
+        if getattr(self, '_limiting', False) or self.isMaximized() or self.isMinimized():
+            return
+        self._limiting = True
+        try:
+            limit = screen_bounds.max_inner_size(self, at)
+            if limit is not None:
+                self.setMaximumSize(*limit)
+            screen_bounds.keep_inside(self, at)
+        finally:
+            self._limiting = False
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        self._limit_to_screen()
+
+    # ── 끌어서 옮기기 (탐색기와 같은 방식: 가장자리에 붙고, 화면 밖으로는 나가지 않음) ──
+    def mousePressEvent(self, e: Any) -> None:
+        if e.button() == Qt.MouseButton.LeftButton and not self.isMaximized():
+            self._drag_start_cursor = e.globalPosition().toPoint()
+            self._drag_start_pos = self.pos()
+
+    def mouseMoveEvent(self, e: Any) -> None:
+        if self._drag_start_cursor is None or self.isMaximized():
+            return
+        ctrl_held = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
+        x, y = screen_bounds.drag_position(self, self._drag_start_cursor, self._drag_start_pos,
+                                           e.globalPosition().toPoint(), snap=not ctrl_held)
+        self.move(x, y)
+
+    def mouseReleaseEvent(self, e: Any) -> None:
+        if self._drag_start_cursor is not None:
+            self._drag_start_cursor = None
+            self._limit_to_screen()         # 다른 모니터로 옮겼으면 그 모니터 크기에 맞춤
+
     def closeEvent(self, event: Any) -> None:
         """닫힘 시 현재 창 geometry를 settings에 저장하여 다음 실행 시 같은 크기로 열리도록 합니다."""
         self.sm.settings['settings_window_geom'] = [self.x(), self.y(), self.width(), self.height()]
@@ -532,6 +632,7 @@ class SettingsWindow(QWidget):
             return
 
         self.sm.drive_api.set_web_app_url(url)
+        self.sm.drive_api.set_access_token(self.token_input.text())
         if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager and self.sm.ui_manager.explorer_window:
             self.sm.ui_manager.explorer_window.show_toast("🔄 구글 드라이브 연결 테스트 중...")
 
@@ -558,9 +659,9 @@ class SettingsWindow(QWidget):
     @pyqtSlot()
     def _on_ping_failed(self) -> None:
         if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager and self.sm.ui_manager.explorer_window:
-            self.sm.ui_manager.explorer_window.show_toast("❌ 구글 드라이브 연결 실패 (URL 및 권한 확인)")
+            self.sm.ui_manager.explorer_window.show_toast("❌ 구글 드라이브 연결 실패 (URL·접근 암호·권한 확인)")
         else:
-            QMessageBox.warning(self, "연결 테스트 실패", "구글 서버 응답이 없거나 URL이 올바르지 않습니다.")
+            QMessageBox.warning(self, "연결 테스트 실패", "구글 서버 응답이 없거나 URL 또는 접근 암호가 올바르지 않습니다.")
 
     def apply_theme_style(self) -> None:
         is_dark = self.sm.settings.get('app_theme', 'white') == "dark"
@@ -569,6 +670,8 @@ class SettingsWindow(QWidget):
             self.tabs.setTabIcon(1, self.sm.ui_manager.get_theme_icon("cloude.svg", is_dark))
             self.tabs.setTabIcon(2, self.sm.ui_manager.get_theme_icon("colorpalette_89189.svg", is_dark))
             self.tabs.setTabIcon(3, self.sm.ui_manager.get_theme_icon("keyboard_119981.svg", is_dark))
+            self.btn_win_min.setIcon(self.sm.ui_manager.get_theme_icon("minimize.svg", is_dark))
+            self.btn_win_close.setIcon(self.sm.ui_manager.get_theme_icon("close.svg", is_dark, override_color="#FF453A"))
             self.btn_test_url.setIcon(self.sm.ui_manager.get_theme_icon("search.svg", is_dark))
             self.btn_change_path.setIcon(self.sm.ui_manager.get_theme_icon("memo.svg", is_dark))
 
@@ -578,6 +681,8 @@ class SettingsWindow(QWidget):
     def resizeEvent(self, event) -> None:
         """창 크기 변경 시 폰트 크기를 동적으로 재계산하여 적용합니다."""
         super().resizeEvent(event)
+        self.grip.move(self.width() - 18, self.height() - 18)
+        self.grip.resize(16, 16)
         new_pt = self._calc_font_pt_from_size()
         if new_pt != self.ui_font_pt:
             self.ui_font_pt = new_pt
@@ -619,6 +724,7 @@ class SettingsWindow(QWidget):
         ns = {
             "use_sync": self.sync_cb.isChecked(),
             "drive_folder_id": self.url_input.text().strip(),
+            "drive_access_token": self.token_input.text().strip(),
             "local_memo_path": self.path_input.text().strip(),
             "sync_interval_index": self.sync_interval_combo.currentIndex(),
             "auto_start": auto_start_now,
@@ -650,6 +756,7 @@ class SettingsWindow(QWidget):
             "ui_style": self.ui_style_box.currentData(),
             "auto_save_idle_sec": self.auto_save_interval_box.currentData(),
             "explorer_fixed_size": self.cb_explorer_fixed.isChecked(),
+            "folder_ui": self.folder_ui_box.currentData(),
             "explorer_geom": self._explorer_geom_from_inputs(),
             "settings_window_font_pt": self.ui_font_pt,
             "shortcuts": shortcuts_dict
@@ -658,41 +765,11 @@ class SettingsWindow(QWidget):
         if not auto_start_ok:
             QMessageBox.warning(self, "자동 실행", "윈도우 자동 실행 설정을 변경하지 못했습니다. (레지스트리 쓰기 실패)")
 
-        if hasattr(self.sm, 'ui_manager') and hasattr(self.sm.ui_manager, 'update_tray_menu'):
-            self.sm.ui_manager.update_tray_menu()
-
-        explorer = getattr(getattr(self.sm, 'ui_manager', None), 'explorer_window', None)
-        if explorer:
-            explorer.apply_size_settings()
-
-        # 디자인 스타일 변경을 열려 있는 모든 창에 바로 반영
+        # 바뀐 설정을 열려 있는 모든 창(탐색기·메모·트레이)에 바로 반영
         self.apply_theme_style()
-        if explorer:
-            explorer.apply_theme_style()
-            explorer.update_filter_buttons()
-            explorer.update_table()
-        if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager:
-            for w in self.sm.ui_manager.memo_windows.values():
-                w.apply_data()
-
-        # ─── 단축키 변경 즉시 반영: 열려있는 모든 메모창 rebind ───────────────
-        if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager:
-            for w in self.sm.ui_manager.memo_windows.values():
-                if hasattr(w, 'rebind_shortcuts'):
-                    w.rebind_shortcuts()
-
-        # default_rolled_height 변경 시 현재 접혀있는 모든 메모에 즉시 반영
-        if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager:
-            for w in self.sm.ui_manager.memo_windows.values():
-                if getattr(w, '_is_rolled_up', False):
-                    new_h = ns['default_rolled_height']
-                    w.memo_data['rolled_height'] = new_h
-                    w.setMinimumSize(0, 0)
-                    w.setMaximumSize(16777215, 16777215)
-                    w.resize(w.width(), new_h)
-                    w.setMinimumHeight(new_h)
-                    w.setMaximumHeight(new_h)
-                    w._apply_rolled_ui(new_h)
+        ui_manager = getattr(self.sm, 'ui_manager', None)
+        if ui_manager and hasattr(ui_manager, 'apply_settings_to_windows'):
+            ui_manager.apply_settings_to_windows()
 
         QMessageBox.information(self, "알림", "설정이 성공적으로 저장되었습니다.")
 
@@ -706,6 +783,7 @@ class SettingsWindow(QWidget):
         s = self.sm.settings
         self.sync_cb.setChecked(s.get("use_sync", False))
         self.url_input.setText(s.get("drive_folder_id",""))
+        self.token_input.setText(s.get("drive_access_token", ""))
         self.path_input.setText(str(self.sm.local_path))
         self.sync_interval_combo.setCurrentIndex(s.get("sync_interval_index", 0))
         # 설정 파일이 아니라 레지스트리의 실제 등록 상태를 보여줍니다.
@@ -734,6 +812,12 @@ class SettingsWindow(QWidget):
         self.spin_explorer_width.setValue(ex_w)
         self.spin_explorer_height.setValue(ex_h)
         self.cb_explorer_fixed.setChecked(s.get("explorer_fixed_size", False))
+        # 탐색기 크기는 탐색기가 놓인 모니터의 작업 영역보다 크게 넣을 수 없습니다.
+        area = screen_bounds.work_area(self._explorer_window() or self)
+        if area is not None:
+            self.spin_explorer_width.setMaximum(max(580, area.width()))
+            self.spin_explorer_height.setMaximum(max(440, area.height()))
+        self.folder_ui_box.setCurrentIndex(max(0, self.folder_ui_box.findData(s.get("folder_ui", "tabs"))))
 
         self.cb_gen_line_num.setChecked(s.get("default_gen_line_numbers", s.get("default_show_line_numbers", False)))
         self.cb_gen_line_bg.setChecked(s.get("default_gen_line_bg", s.get("default_show_line_bg", False)))
@@ -792,7 +876,7 @@ class SettingsWindow(QWidget):
     def _current_explorer_size(self) -> tuple:
         explorer = self._explorer_window()
         if explorer and not explorer.isMaximized():
-            return explorer.width(), explorer.height()
+            return explorer.content_width(), explorer.height()
         geom = self.sm.settings.get("explorer_geom")
         if geom and len(geom) == 4:
             return int(geom[2]), int(geom[3])

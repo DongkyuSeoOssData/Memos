@@ -1,7 +1,9 @@
 from utils.text_utils import clean_plain_text
 from utils.file_utils import MEMO_IO_LOCK, atomic_write_json, is_safe_memo_id
-from core.sync_worker import SyncWorker
+from core.sync_worker import SyncWorker, shared_hash
 from core.defaults import DEFAULT_SHORTCUTS
+from core.folders import DEFAULT_FOLDERS
+from core import shared_settings
 import copy
 import os
 import traceback
@@ -13,7 +15,7 @@ import winreg
 from datetime import datetime, timedelta
 from typing import Any, List, Dict, Optional, Tuple
 from pathlib import Path
-from PyQt6.QtCore import QTimer, QThread, QObject
+from PyQt6.QtCore import QTimer, QThread, QObject, pyqtSignal
 from PyQt6.QtWidgets import QSystemTrayIcon
 from utils.crypto_manager import CryptoManager
 
@@ -56,9 +58,16 @@ def set_auto_start(enable: bool, key_path: str = AUTO_START_KEY_PATH, app_name: 
 
 
 class SyncManager(QObject):
+    # 동기화할 변경이 생겼음을 알립니다. (저장이 다른 스레드에서 일어나도 타이머는 주 스레드에서 걸리도록 신호로 전달)
+    _changes_pending = pyqtSignal()
+    # 이 PC에서 바뀐 것이 없을 때, 다른 기기의 변경을 확인하는 간격. 확인은 파일 목록 요청 한 번입니다.
+    REMOTE_CHECK_SEC = 15 * 60
+    # 변경 뒤 동기화까지 기다리는 시간 (환경설정의 sync_interval_index 로 고름)
+    PUSH_DELAYS_SEC = [60, 600, 1800, 3600]
     DEFAULT_SETTINGS: Dict[str, Any] = {
         "use_sync": False,
         "drive_folder_id": "",
+        "drive_access_token": "",
         "local_memo_path": str(Path.home() / ".memoit_custom" / "memos"),
         "sync_interval_index": 0,
         "auto_start": False,
@@ -87,6 +96,12 @@ class SyncManager(QObject):
         "locked_memo_relock_min": 5,
         "explorer_is_pinned": True,
         "explorer_fixed_size": False,
+        # 탐색기 폴더 목록(이 PC에 적어 둔 것)과 마지막으로 고른 폴더
+        "folders": list(DEFAULT_FOLDERS),
+        "explorer_folder": "",
+        # 탐색기에서 폴더를 고르는 방식: "tabs"(탭 줄) / "sidebar"(왼쪽 목록) / "dropdown"
+        "folder_ui": "tabs",
+        "folder_sidebar_open": True,
         "shortcuts": dict(DEFAULT_SHORTCUTS)
     }
 
@@ -101,10 +116,32 @@ class SyncManager(QObject):
         self.error_log_path = self.base_path / "error.log"
 
         self.settings = self.load_settings()
+        # 공유 설정(여러 기기가 함께 쓰는 설정)을 마지막으로 바꾼 시각. 처음이면 설정 파일의 수정 시각으로 둡니다.
+        if not self.settings.get(shared_settings.STAMP_KEY):
+            try:
+                stamp = datetime.fromtimestamp(self.settings_path.stat().st_mtime)
+            except OSError:
+                stamp = datetime.now()
+            self.settings[shared_settings.STAMP_KEY] = stamp.isoformat()
+        self._shared_fingerprint = shared_settings.fingerprint(self.settings)
 
         self.ui_manager: Any = None
         self._sync_running: bool = False
         self._resync_requested: bool = False
+        # 마지막 동기화 이후 이 PC에서 내용이 바뀐 메모 id. 이것들만 읽어서 올립니다.
+        self._dirty_ids: set = set()
+        self._sending_ids: set = set()
+        # 메모별 '공유하는 부분'의 해시. 창을 옮기는 것처럼 동기화와 무관한 저장을 가려내는 데 씁니다.
+        self._shared_hashes: Dict[str, str] = {}
+        # 앱을 켠 뒤 첫 동기화와 수동 동기화는 모든 메모를 훑습니다. (꺼져 있는 동안 바뀐 것을 놓치지 않도록)
+        self._full_scan_pending: bool = True
+        self._current_worker: Optional[SyncWorker] = None
+        self._announce_next_sync: bool = False
+        self._last_sync_at: Optional[datetime] = None
+        self._push_timer = QTimer()
+        self._push_timer.setSingleShot(True)
+        self._push_timer.timeout.connect(self._sync_changes)
+        self._changes_pending.connect(self._arm_push_timer)
         # 잠금 해제된 암호 메모의 (키, 솔트). 메모리에만 두며 다시 잠그면 지웁니다.
         self._memo_keys: Dict[str, Tuple[bytes, bytes]] = {}
         self.active_threads: List[QThread] = []
@@ -116,6 +153,7 @@ class SyncManager(QObject):
         self.trash_path.mkdir(parents=True, exist_ok=True)
 
         self.drive_api.set_web_app_url(self.settings.get("drive_folder_id", ""))
+        self._apply_access_token()
         self.sync_timer = QTimer()
         self.setup_timer()
 
@@ -268,11 +306,18 @@ class SyncManager(QObject):
                 self.log_error("설정 파일 로드 실패", e)
         return defaults
 
-    def save_settings(self, new_s: Dict[str, Any]) -> None:
+    def save_settings(self, new_s: Dict[str, Any], stamp_shared: bool = True) -> None:
         # 넘겨받은 키만 갱신합니다. 통째로 교체하면 new_s에 없는 키(창 위치 등)가 사라집니다.
         merged_shortcuts = {**self.settings.get("shortcuts", {}), **new_s.get("shortcuts", {})}
         self.settings.update(new_s)
         self.settings["shortcuts"] = merged_shortcuts
+        # 공유 설정이 바뀌었으면 바꾼 시각을 적어 둡니다. 다음 동기화 때 다른 기기로 전해집니다.
+        fingerprint = shared_settings.fingerprint(self.settings)
+        if fingerprint != self._shared_fingerprint:
+            self._shared_fingerprint = fingerprint
+            if stamp_shared:
+                self.settings[shared_settings.STAMP_KEY] = datetime.now().isoformat()
+                self._changes_pending.emit()
         try:
             atomic_write_json(self.settings_path, self.settings)
             self.local_path = Path(self.settings.get("local_memo_path", str(self.base_path / "memos")))
@@ -280,9 +325,16 @@ class SyncManager(QObject):
             self.trash_path = self.local_path / "trash_bin"
             self.trash_path.mkdir(parents=True, exist_ok=True)
             self.drive_api.set_web_app_url(self.settings.get("drive_folder_id", ""))
+            self._apply_access_token()
             self.setup_timer()
         except Exception as e:
             self.log_error("설정 파일 저장 실패", e)
+
+    def _apply_access_token(self) -> None:
+        # 시험용 가짜 드라이브처럼 접근 암호를 받지 않는 구현도 있으므로 있을 때만 넘깁니다.
+        setter = getattr(self.drive_api, "set_access_token", None)
+        if setter:
+            setter(self.settings.get("drive_access_token", ""))
 
     def apply_auto_start(self, enable: bool) -> bool:
         """자동 실행을 레지스트리에 반영하고, 실제 반영된 상태를 설정에 기록합니다."""
@@ -293,18 +345,57 @@ class SyncManager(QObject):
         return ok
 
     def setup_timer(self) -> None:
-        intervals = [60, 600, 1800, 3600]
-        idx = self.settings.get("sync_interval_index", 0)
-        idx = max(0, min(idx, len(intervals) - 1))
+        """동기화 타이머를 설정에 맞춥니다.
+
+        정해진 간격마다 무조건 동기화하지 않습니다.
+        - 이 PC에서 내용이 바뀌면, 그때부터 설정한 시간만큼 기다렸다가 바뀐 메모만 올립니다.
+        - 바뀐 것이 없을 때는 다른 기기의 변경이 있는지 가끔(REMOTE_CHECK_SEC) 파일 목록만 확인합니다.
+        """
         self.sync_timer.stop()
         try:
             self.sync_timer.timeout.disconnect()
         except Exception:
             pass
+        if not self.settings.get("use_sync", True):
+            self._push_timer.stop()
+            return
+        self.sync_timer.timeout.connect(self.check_remote)
+        self.sync_timer.start(self.REMOTE_CHECK_SEC * 1000)
+        if self._dirty_ids and not self._push_timer.isActive():
+            self._arm_push_timer()
 
-        if self.settings.get("use_sync", True):
-            self.sync_timer.timeout.connect(self.sync_all)
-            self.sync_timer.start(intervals[idx] * 1000)
+    def push_delay_sec(self) -> int:
+        idx = self.settings.get("sync_interval_index", 0)
+        try:
+            idx = max(0, min(int(idx), len(self.PUSH_DELAYS_SEC) - 1))
+        except (TypeError, ValueError):
+            idx = 0
+        return self.PUSH_DELAYS_SEC[idx]
+
+    def mark_dirty(self, memo_id: str) -> None:
+        """이 메모가 바뀌었으니 다음 동기화 때 올려야 함을 적어 둡니다."""
+        if memo_id:
+            self._dirty_ids.add(memo_id)
+            self._changes_pending.emit()
+
+    def _arm_push_timer(self) -> None:
+        """변경이 생긴 뒤 설정한 시간만큼 기다렸다가 동기화합니다. 이미 기다리는 중이면 그대로 둡니다."""
+        if self.settings.get("use_sync", True) and not self._push_timer.isActive():
+            self._push_timer.start(self.push_delay_sec() * 1000)
+
+    def _sync_changes(self) -> None:
+        self._start_sync()
+
+    def check_remote(self) -> None:
+        """다른 기기에서 바뀐 것이 있는지 확인합니다. 이 PC의 메모 파일은 바뀐 것만 읽습니다."""
+        self._start_sync()
+
+    def check_remote_if_stale(self, max_age_sec: int = 60) -> None:
+        """마지막 동기화가 오래됐으면 다른 기기의 변경을 확인합니다. (탐색기를 열 때 등)"""
+        if not self.settings.get("use_sync", True):
+            return
+        if self._last_sync_at is None or (datetime.now() - self._last_sync_at).total_seconds() >= max_age_sec:
+            self.check_remote()
 
     def load_local_memos(self) -> List[Dict[str, Any]]:
         with MEMO_IO_LOCK:
@@ -407,6 +498,7 @@ class SyncManager(QObject):
                 atomic_write_json(dst, data)
                 src.unlink()
                 self.remove_pending_delete(memo_id)
+            self.mark_dirty(memo_id)
             return True
         except Exception as e:
             self.log_error(f"로컬 메모 복구 실패 ({memo_id}): {e}", e)
@@ -452,10 +544,16 @@ class SyncManager(QObject):
 
         try:
             atomic_write_json(f, memo_to_save)
-            return True
         except Exception as e:
             self.log_error(f"로컬 메모 저장 실패 ({memo_id}): {e}", e)
             return False
+        # 다른 기기와 공유하는 부분(본문·제목·폴더 등)이 실제로 바뀐 경우에만 동기화 대상으로 표시합니다.
+        # 창 위치·크기처럼 이 PC에만 속한 값만 바뀐 저장은 동기화를 일으키지 않습니다.
+        new_hash = shared_hash(memo_to_save)
+        if self._shared_hashes.get(memo_id) != new_hash:
+            self._shared_hashes[memo_id] = new_hash
+            self.mark_dirty(memo_id)
+        return True
 
     def rename_memo_locally(self, ot: str, nt: str, data: Dict[str, Any]) -> bool:
         try:
@@ -605,28 +703,70 @@ class SyncManager(QObject):
             self._start_sync()
 
     def sync_all(self) -> None:
-        """원격 변경분을 먼저 가져온 뒤 로컬 변경분을 올립니다. (타이머·동기화 버튼 공용)"""
-        self._start_sync()
+        """지금 바로 전부 동기화합니다. (동기화 버튼·트레이 메뉴·앱 시작 직후) 모든 메모를 훑어 빠진 것이 없게 합니다."""
+        if not self.settings.get("use_sync", True):
+            self.on_sync_finished(True, "로컬 모드로 작동 중입니다. (동기화 OFF)")
+            return
+        self._full_scan_pending = True
+        self._announce_next_sync = True
+        if self._sync_running:
+            self._resync_requested = True
+        else:
+            self._start_sync()
 
     def _start_sync(self) -> None:
         if not self.settings.get("use_sync", True):
-            self.on_sync_finished(True, "로컬 모드로 작동 중입니다. (동기화 OFF)")
             return
         # 이전 주기가 아직 돌고 있으면 건너뜁니다. (두 워커가 같은 파일을 동시에 올리고 받는 것 방지)
         if self._sync_running:
             return
         self._sync_running = True
+        self._push_timer.stop()
         worker = SyncWorker(self)
+        # 전체를 훑을 때는 None, 아니면 바뀐 메모 id 만 넘겨 그것들만 읽고 올리게 합니다.
+        self._sending_ids = set(self._dirty_ids)
+        self._dirty_ids.clear()
+        worker.push_ids = None if self._full_scan_pending else set(self._sending_ids)
+        worker.quiet = not self._announce_next_sync
+        self._announce_next_sync = False
+        self._current_worker = worker
         worker.finished.connect(self._on_sync_cycle_done)
         worker.pulled.connect(self.on_memos_pulled)
         worker.removed.connect(self.on_memos_removed)
+        worker.settings_pulled.connect(self.apply_remote_settings)
         self._start_worker(worker)
 
     def _on_sync_cycle_done(self, success: bool, message: str) -> None:
+        worker, self._current_worker = self._current_worker, None
+        self._last_sync_quiet = bool(getattr(worker, "quiet", False))
         self._sync_running = False
+        self._last_sync_at = datetime.now()
+        if success:
+            self._full_scan_pending = False
+            # 올리지 못한 메모는 다음에 다시 시도합니다.
+            self._dirty_ids |= set(getattr(worker, "unsent_ids", set()))
+        else:
+            self._dirty_ids |= self._sending_ids
+        self._sending_ids = set()
         if self._resync_requested:
             self._resync_requested = False
-            QTimer.singleShot(0, self.sync_all)
+            QTimer.singleShot(0, self._start_sync)
+        elif self._dirty_ids:
+            self._arm_push_timer()
+
+    def apply_remote_settings(self, remote: Dict[str, Any]) -> None:
+        """다른 기기에서 바꾼 공유 설정을 이 PC에 반영합니다. (드라이브에서 받은 것이 더 최신일 때 호출)"""
+        incoming = shared_settings.from_remote(remote)
+        stamp = str(remote.get("updated_at", "")) if isinstance(remote, dict) else ""
+        if not incoming or not stamp:
+            return
+        if "shortcuts" in incoming and isinstance(incoming["shortcuts"], dict):
+            # 이 버전에 새로 생긴 단축키가 받은 쪽에 없더라도 사라지지 않게 기본값 위에 얹습니다.
+            incoming["shortcuts"] = {**DEFAULT_SHORTCUTS, **incoming["shortcuts"]}
+            self.settings["shortcuts"] = {}
+        self.save_settings({**incoming, shared_settings.STAMP_KEY: stamp}, stamp_shared=False)
+        if self.ui_manager and hasattr(self.ui_manager, "apply_settings_to_windows"):
+            self.ui_manager.apply_settings_to_windows(reload_settings_window=True)
 
     def on_memos_pulled(self, memo_ids: List[str]) -> None:
         if memo_ids and self.ui_manager:
@@ -662,6 +802,9 @@ class SyncManager(QObject):
         if not message:
             return
         print(f"[동기화 로그] 성공: {success}, 내용: {message}")
+        # 뒤에서 조용히 돈 확인에서 바뀐 것이 없었다면 알리지 않습니다.
+        if success and "변경사항 없음" in message and getattr(self, "_last_sync_quiet", False):
+            return
         if self.ui_manager:
             if self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
                 self.ui_manager.explorer_window.show_toast(message)

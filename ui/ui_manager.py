@@ -22,6 +22,7 @@ PASTEL_COLORS = ["#E0F2FE", "#DCFCE7", "#FEF9C3", "#FCE7F3", "#FFFFFF"]
 from ui.themes import app_palette
 from ui import modern_style
 from core.defaults import DEFAULT_SHORTCUTS
+from core import folders
 
 
 class UIManager:
@@ -178,6 +179,37 @@ class UIManager:
         self._tray_menu = menu
         self.tray_icon.setContextMenu(self._tray_menu)
         self.register_global_hotkeys()
+
+    def apply_settings_to_windows(self, reload_settings_window: bool = False) -> None:
+        """설정이 바뀐 뒤(환경설정 저장, 다른 기기에서 받은 공유 설정) 열려 있는 모든 창에 바로 반영합니다."""
+        settings = self.sync_manager.settings
+        self.update_tray_menu()                 # 트레이 메뉴의 단축키 표시와 전역 단축키 재등록
+
+        if self.settings_window and self.settings_window.isVisible():
+            if reload_settings_window:
+                self.settings_window.load()     # 화면의 값이 예전 것이면 저장할 때 되돌려 버리므로 새 값으로 채움
+            self.settings_window.apply_theme_style()
+
+        explorer = self.explorer_window
+        if explorer:
+            explorer.apply_size_settings()
+            explorer.apply_theme_style()
+            explorer.update_filter_buttons()
+            explorer.refresh()                  # 폴더 목록·표시 방식 포함
+
+        rolled_h = max(36, int(settings.get('default_rolled_height', 53)))
+        for w in list(self.memo_windows.values()):
+            w.apply_data()
+            w.rebind_shortcuts()
+            if w._is_rolled_up:
+                # 접힌 메모의 높이 설정이 바뀌었으면 바로 맞춥니다.
+                w.memo_data['rolled_height'] = rolled_h
+                w.setMinimumSize(0, 0)
+                w.setMaximumSize(16777215, 16777215)
+                w.resize(w.width(), rolled_h)
+                w.setMinimumHeight(rolled_h)
+                w.setMaximumHeight(rolled_h)
+                w._apply_rolled_ui(rolled_h)
 
     def register_global_hotkeys(self) -> None:
         """전역 단축키를 (재)등록합니다. 등록된 조합은 이 앱만 받고 다른 프로그램에는 전달되지 않습니다."""
@@ -351,6 +383,8 @@ class UIManager:
         self.explorer_window.setWindowState(self.explorer_window.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)
         self.explorer_window.show()
         self.enforce_z_order_layering()
+        # 탐색기를 열 때, 한동안 확인하지 않았다면 다른 기기의 변경을 받아 옵니다.
+        self.sync_manager.check_remote_if_stale()
 
     def open_settings(self) -> None:
         if self.settings_window and self.settings_window.isVisible():
@@ -476,6 +510,10 @@ class UIManager:
                 'show_line_numbers': cfg.get('default_gen_line_numbers', cfg.get('default_show_line_numbers', False)),
                 'show_line_bg': cfg.get('default_gen_line_bg', cfg.get('default_show_line_bg', False)),
             })
+        # 탐색기에서 폴더를 골라 둔 상태라면 새 메모도 그 폴더에 넣습니다.
+        ex = self.explorer_window
+        if ex and ex.current_folder not in (folders.ALL, folders.UNFILED):
+            memo_data['folder'] = ex.current_folder
         self.create_new_memo(memo_data, show_on_create=True)
 
     def resolve_memo_overlap(self, memo_win: 'MemoWindow') -> None:

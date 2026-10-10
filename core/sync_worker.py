@@ -6,6 +6,7 @@ from typing import Any, List, Dict, Optional
 from pathlib import Path
 from PyQt6.QtCore import pyqtSignal, QObject
 from utils.file_utils import MEMO_IO_LOCK, atomic_write_json, is_safe_memo_id
+from core import shared_settings
 
 
 # 이 PC에서만 의미가 있는 값. 드라이브에 올리지 않고, 내려받을 때도 이 PC의 값을 그대로 둡니다.
@@ -36,6 +37,15 @@ def shared_hash(memo: Dict[str, Any]) -> str:
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()
 
 
+def version_dt(memo: Dict[str, Any]) -> datetime:
+    """어느 쪽이 더 최신인지 비교할 때 쓰는 시각.
+
+    updated_at 은 본문·제목을 고친 시각(화면의 '수정일시')이고, meta_updated_at 은 폴더·즐겨찾기처럼
+    속성만 바꾼 시각입니다. 속성만 바꿔도 다른 기기에 전해져야 하므로 둘 중 늦은 쪽으로 비교합니다.
+    """
+    return max(_parse_dt(memo.get('updated_at', '')), _parse_dt(memo.get('meta_updated_at', '')))
+
+
 def _parse_dt(value: str) -> datetime:
     try:
         return datetime.fromisoformat(value) if value else datetime.min
@@ -49,6 +59,8 @@ class SyncWorker(QObject):
     pulled = pyqtSignal(list)
     # 다른 기기에서 삭제되어 로컬 휴지통으로 옮긴 메모 id 목록
     removed = pyqtSignal(list)
+    # 드라이브에 있는 공유 설정이 이 PC 것보다 최신일 때: 받은 내용 그대로
+    settings_pulled = pyqtSignal(dict)
 
     def __init__(self, sync_manager: Any) -> None:
         super().__init__()
@@ -57,6 +69,12 @@ class SyncWorker(QObject):
         # "_url" 키에는 이 상태가 어느 GAS 주소 기준인지 기록합니다.
         self.state_path: Path = self.sm.base_path / "sync_state.json"
         self.state: Dict[str, Dict[str, Any]] = {}
+        # 올릴 후보. None 이면 모든 메모 파일을 훑고, 집합이면 그 id 의 파일만 읽습니다.
+        self.push_ids: Optional[set] = None
+        # 올리려 했지만 실패한 메모 id (다음 동기화에서 다시 시도)
+        self.unsent_ids: set = set()
+        # True 면 바뀐 것이 없을 때 화면에 알리지 않습니다. (뒤에서 도는 확인용)
+        self.quiet: bool = False
 
     def execute(self) -> None:
         try:
@@ -121,8 +139,10 @@ class SyncWorker(QObject):
             return
         self._load_state()
         self._flush_pending_deletes()
-        pulled = self._pull()
+        files = self.sm.drive_api.list_files()
+        pulled = self._pull(files)
         pushed = self._push()
+        self._sync_settings(files)
         self._save_state()
         if pulled or pushed:
             self.finished.emit(True, f"동기화 완료 (가져오기 {pulled}개 / 업로드 {pushed}개)")
@@ -177,11 +197,18 @@ class SyncWorker(QObject):
         self.removed.emit(candidates)
 
     def _push(self) -> int:
-        """마지막 동기화 이후 파일이 바뀐 메모만 올립니다."""
+        """마지막 동기화 이후 파일이 바뀐 메모만 올립니다.
+
+        push_ids 가 주어지면 그 메모 파일만 읽습니다. (바뀐 것이 없는데 모든 파일을 읽고 해시를 내는 낭비를 피함)
+        """
         count = 0
-        for f in list(self.sm.local_path.glob("*.json")):
-            if "trash_bin" in str(f):
-                continue
+        if self.push_ids is None:
+            candidates = [f for f in self.sm.local_path.glob("*.json") if "trash_bin" not in str(f)]
+        else:
+            candidates = [self.sm.local_path / f"{memo_id}.json" for memo_id in sorted(self.push_ids)
+                          if is_safe_memo_id(memo_id)]
+            candidates = [f for f in candidates if f.exists()]
+        for f in candidates:
             local = self._read_local(f)
             if not local:
                 continue
@@ -197,11 +224,45 @@ class SyncWorker(QObject):
                 # 업로드로 원격 수정시각이 바뀌었으므로 다음 pull에서 한 번 다시 확인합니다.
                 entry.pop("remote", None)
                 count += 1
+            else:
+                self.unsent_ids.add(memo_id)
         return count
 
-    def _pull(self) -> int:
+    def _sync_settings(self, files: Optional[List[Dict[str, Any]]]) -> None:
+        """공유 설정 파일(_settings.json)을 주고받습니다. 더 나중에 바꾼 쪽의 설정이 남습니다."""
+        if files is None:
+            return
+        name = shared_settings.SETTINGS_FILE
+        listed = next((f for f in files if f.get("name") == name), None)
+        entry = self.state.setdefault("_settings", {})
+        local_stamp = str(self.sm.settings.get(shared_settings.STAMP_KEY, ""))
+
+        if listed is not None:
+            marker = listed.get("updated")
+            if marker is None or entry.get("remote") != marker:
+                remote = self.sm.drive_api.download_file(name)
+                if not isinstance(remote, dict):
+                    return                      # 받지 못함: 다음 주기에 다시
+                entry["remote"] = marker
+                # 내용이 깨진 파일은 없는 것으로 보고, 아래에서 이 PC의 설정으로 다시 올립니다.
+                remote_stamp = str(remote.get("updated_at", "")) if shared_settings.from_remote(remote) else ""
+                entry["seen"] = remote_stamp
+                if remote_stamp > local_stamp:
+                    self.settings_pulled.emit(remote)
+                    return
+            # 드라이브의 것이 이 PC 것과 같거나 더 최신이면 올릴 필요 없음
+            if str(entry.get("seen", "")) >= local_stamp:
+                return
+
+        if not local_stamp:
+            return
+        payload = {"updated_at": local_stamp, "settings": shared_settings.shared_subset(self.sm.settings)}
+        if self.sm.drive_api.upload_file(name, payload):
+            entry["seen"] = local_stamp
+            entry.pop("remote", None)           # 올린 뒤 원격 수정시각이 바뀌므로 다음에 한 번 다시 확인
+
+    def _pull(self, files: Optional[List[Dict[str, Any]]]) -> int:
         """원격 목록의 수정시각이 지난번과 달라진 파일만 받아, 로컬보다 최신이면 반영합니다."""
-        files = self.sm.drive_api.list_files()
         pulled_ids: List[str] = []
         if files is None:
             # 목록 조회 실패: 받을 것도, 삭제로 판단할 것도 없음
@@ -213,8 +274,8 @@ class SyncWorker(QObject):
 
         for f in files:
             name = f.get("name")
-            if not name or not name.endswith(".json"):
-                continue
+            if not name or not name.endswith(".json") or name.startswith("_"):
+                continue                        # '_'로 시작하는 것은 메모가 아니라 공유 설정 같은 부속 파일
             if name[:-5] in pending:
                 # 이 PC에서 지웠지만 아직 드라이브에서 못 지운 메모: 다시 내려받지 않음
                 continue
@@ -240,8 +301,8 @@ class SyncWorker(QObject):
 
                     if local:
                         local_memo, local_hash = local
-                        remote_dt = _parse_dt(data_json.get('updated_at', ''))
-                        local_dt = _parse_dt(local_memo.get('updated_at', ''))
+                        remote_dt = version_dt(data_json)
+                        local_dt = version_dt(local_memo)
                         if remote_dt <= local_dt:
                             if remote_marker is not None:
                                 entry["remote"] = remote_marker

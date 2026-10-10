@@ -295,6 +295,7 @@ def apply_explorer(ex: Any) -> None:
     )
     apply_explorer_preview(ex)
     apply_explorer_filters(ex)
+    apply_explorer_folders(ex)
     apply_explorer_table(ex)
 
 
@@ -324,16 +325,64 @@ def apply_explorer_preview(ex: Any) -> None:
     """)
 
 
+def _segment_qss(ex: Any, pad: str = "6px 14px") -> tuple:
+    """여러 개 중 하나를 고르는 버튼 묶음의 (선택됨, 선택 안 됨) 모양. 필터와 폴더 탭이 함께 씁니다."""
+    pal, is_dark = app_palette(_settings_of(ex))
+    pt = _explorer_pt(ex)
+    on = (f"QPushButton {{ padding: {pad}; background: {pal['accent']}; border: 1px solid {pal['accent']}; "
+          f"border-radius: 0px; color: white; font-weight: 600; font-size: {pt}pt; font-family: {UI_FONT}; }}")
+    off = (f"QPushButton {{ padding: {pad}; background: {_tint(is_dark, 0.06)}; border: 1px solid transparent; "
+           f"border-radius: 0px; color: {pal['text']}; font-weight: 600; font-size: {pt}pt; font-family: {UI_FONT}; }} "
+           f"QPushButton:hover {{ background: {_tint(is_dark, 0.12)}; }}")
+    return on, off
+
+
+@_styled
+def apply_explorer_folders(ex: Any) -> None:
+    """폴더 고르는 화면: 탭 줄의 버튼, 사이드바 목록, 제목 옆의 폴더 버튼. (폴더 목록이 바뀔 때마다 호출)"""
+    pal, is_dark = app_palette(_settings_of(ex))
+    pt = _explorer_pt(ex)
+    accent, text = pal['accent'], pal['text']
+    on, off = _segment_qss(ex, pad="4px 12px")
+    sub_on = (f"QPushButton {{ padding: 2px 10px; background: {_rgba(accent, 0.14)}; border: 1px solid {_rgba(accent, 0.5)}; "
+              f"border-radius: 0px; color: {accent}; font-weight: 600; font-size: {pt}pt; font-family: {UI_FONT}; }}")
+    sub_off = (f"QPushButton {{ padding: 2px 10px; background: transparent; border: 1px solid {pal['border']}; "
+               f"border-radius: 0px; color: {_muted(is_dark)}; font-weight: 500; font-size: {pt}pt; font-family: {UI_FONT}; }} "
+               f"QPushButton:hover {{ color: {text}; border-color: {_tint(is_dark, 0.3)}; }}")
+    for btn in ex.folder_tab_buttons:
+        if btn.property("sub_tab"):
+            btn.setStyleSheet(sub_on if btn.isChecked() else sub_off)
+        else:
+            btn.setStyleSheet(on if btn.isChecked() else off)
+    # 줄이 넘칠 때 나타나는 < > 버튼
+    nav = sub_off + f"QPushButton {{ padding: 0; font-weight: 700; }} QPushButton:disabled {{ color: {_tint(is_dark, 0.2)}; }}"
+    for strip in (ex.folder_tab_strip, ex.folder_subtab_strip):
+        strip.btn_prev.setStyleSheet(nav)
+        strip.btn_next.setStyleSheet(nav)
+    ex.btn_folder.setIcon(ex.ui_manager.get_theme_icon("folder.svg", is_dark, override_color=accent))
+    ex.btn_folder.setStyleSheet(f"""
+        QPushButton {{
+            padding: 0 12px 0 8px; background: {_rgba(accent, 0.12)}; border: 1px solid transparent; border-radius: 0px;
+            color: {accent}; font-weight: 700; font-size: {pt}pt; font-family: {UI_FONT}; text-align: left;
+        }}
+        QPushButton:hover {{ background: {_rgba(accent, 0.22)}; }}
+    """)
+    ex.folder_list.setStyleSheet(f"""
+        QListWidget {{
+            background: {pal['card']}; border: 1px solid {pal['border']}; border-radius: 0px; outline: none;
+            color: {text}; font-size: {pt}pt; font-family: {UI_FONT}; padding: 4px 0;
+        }}
+        QListWidget::item {{ padding: 7px 10px; border: none; }}
+        QListWidget::item:hover {{ background: {_tint(is_dark, 0.05)}; }}
+        QListWidget::item:selected {{ background: {_rgba(accent, 0.16)}; color: {accent}; font-weight: 700; }}
+        {scrollbars(is_dark)}
+    """)
+
+
 @_styled
 def apply_explorer_filters(ex: Any) -> None:
     """전체/일반/코드 필터: 선택된 항목만 강조색으로 채웁니다."""
-    pal, is_dark = app_palette(_settings_of(ex))
-    pt = _explorer_pt(ex)
-    on = (f"QPushButton {{ padding: 6px 14px; background: {pal['accent']}; border: 1px solid {pal['accent']}; "
-          f"border-radius: 0px; color: white; font-weight: 600; font-size: {pt}pt; font-family: {UI_FONT}; }}")
-    off = (f"QPushButton {{ padding: 6px 14px; background: {_tint(is_dark, 0.06)}; border: 1px solid transparent; "
-           f"border-radius: 0px; color: {pal['text']}; font-weight: 600; font-size: {pt}pt; font-family: {UI_FONT}; }} "
-           f"QPushButton:hover {{ background: {_tint(is_dark, 0.12)}; }}")
+    on, off = _segment_qss(ex)
     for btn, mode in ((ex.btn_filter_all, "ALL"), (ex.btn_filter_gen, "GENERAL"), (ex.btn_filter_code, "CODE")):
         btn.setStyleSheet(on if ex.filter_mode == mode else off)
 
@@ -363,7 +412,7 @@ def apply_settings(win: Any) -> None:
     field_bg = pal['input'] if is_dark else pal['card']
 
     win.setStyleSheet(f"""
-        SettingsWindow#SettingsWindow, QWidget#SettingsWindow {{ background-color: {pal['bg']}; }}
+        SettingsWindow#SettingsWindow, QWidget#SettingsWindow {{ background-color: {pal['bg']}; border: 1px solid {border}; }}
         QWidget {{ font-family: {UI_FONT}; font-size: {pt}pt; color: {text}; background-color: {pal['bg']}; }}
         QTabWidget::pane {{ border: none; background: {pal['bg']}; top: 6px; }}
         QTabBar {{ background: transparent; }}
@@ -436,6 +485,10 @@ def apply_settings(win: Any) -> None:
         QPushButton:hover {{ background: {_rgba(accent, 0.85)}; }}
     """)
     set_save_icon(win, "#FFFFFF")
+    # 자체 제목 줄
+    win.title_label.setStyleSheet(
+        f"font-size: {pt + 1}pt; font-weight: 700; color: {text}; background: transparent; font-family: {UI_FONT};")
+    style_window_buttons(text, win.btn_win_close, win.btn_win_min)
 
 
 # ═══ 메모 창 ═════════════════════════════════════════════════════════════════
