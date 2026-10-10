@@ -1,34 +1,16 @@
 from ui.dialogs import ConflictDialog
 from ui.ui_utils import apply_ios_shadow
 from ui.themes import LIGHT_THEMES, DARK_THEMES
-import sys
 import re
-import random
 import datetime
-import math
-import uuid
-import json
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional
 from PyQt6.QtWidgets import (
-    QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, 
-    QLineEdit, QMenu, QSystemTrayIcon, QApplication, QMessageBox, 
-    QLabel, QComboBox, QCheckBox, QFileDialog, QTableWidget, 
-    QTableWidgetItem, QHeaderView, QDialog, QDialogButtonBox,
-    QGraphicsDropShadowEffect, QFrame, QSizeGrip, QFontComboBox,
-    QColorDialog, QTabWidget, QKeySequenceEdit, QGroupBox, QFormLayout,
-    QScrollArea, QSlider, QSpinBox, QWidgetAction, QSizePolicy
+    QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMenu, QApplication,
+    QMessageBox, QLabel, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QFrame,
+    QSizeGrip, QSizePolicy
 )
-from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, QEvent, QRect, QByteArray, pyqtSlot
-from PyQt6.QtGui import (
-    QGuiApplication, QIcon, QAction, QColor, QShortcut, QKeySequence, QFont, QFontDatabase,
-    QPixmap, QPainter, QTextListFormat, QTextCursor, QTextCharFormat, QPalette, QTextDocument,
-    QSyntaxHighlighter, QCursor
-)
-from PyQt6.QtSvg import QSvgRenderer
-import os
-import threading
-from utils.text_utils import convert_eng_kor_smart
+from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, pyqtSlot
+from PyQt6.QtGui import QGuiApplication, QShortcut, QKeySequence, QFont
 from utils.text_utils import clean_plain_text
 
 class MemoExplorerWindow(QWidget):
@@ -48,6 +30,17 @@ class MemoExplorerWindow(QWidget):
         self.is_trash_mode: bool = False
         self._old_pos: Optional[QPoint] = None
         self._is_loading_preview: bool = False
+        # 검색어 입력이 멈춘 뒤에만 목록을 다시 읽습니다. (글자마다 전체 재로딩 방지)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(300)
+        self._search_timer.timeout.connect(self.on_search)
+        # 미리보기 편집도 입력이 멈춘 뒤 한 번만 암호화·저장합니다.
+        self._pending_preview_memo: Optional[Dict[str, Any]] = None
+        self._preview_save_timer = QTimer(self)
+        self._preview_save_timer.setSingleShot(True)
+        self._preview_save_timer.setInterval(500)
+        self._preview_save_timer.timeout.connect(self._flush_preview_save)
         self.init_ui()
         self.apply_theme_style()
         self.bind_global_shortcuts()
@@ -162,9 +155,13 @@ class MemoExplorerWindow(QWidget):
         self.btn_app_theme.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_app_theme.clicked.connect(self.toggle_app_theme)
 
-        self.toast = QLabel("", self.bg)
-        self.toast.setStyleSheet("background-color: rgba(0, 122, 255, 0.8); color: white; font-weight: bold; font-size: 10.5pt; border-radius: 8px; padding: 6px 12px;")
+        # 알림(토스트)은 '미리보기' 제목 바로 옆에 표시합니다.
+        self.toast = QLabel("")
+        self.toast.setStyleSheet("background-color: rgba(0, 122, 255, 0.8); color: white; font-weight: bold; font-size: 9.5pt; border-radius: 8px; padding: 2px 10px;")
         self.toast.hide()
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(self.toast.hide)
 
         ctrl.addWidget(self.btn_app_theme)
         ctrl.addStretch()
@@ -235,7 +232,7 @@ class MemoExplorerWindow(QWidget):
         self.s_in = QLineEdit()
         self.s_in.setPlaceholderText("검색")
         self.s_in.setFixedHeight(36)
-        self.s_in.textChanged.connect(self.on_search)
+        self.s_in.textChanged.connect(lambda _text: self._search_timer.start())
 
         self.t_btn = QPushButton("휴지통 보기")
         self.t_btn.setCheckable(True)
@@ -297,7 +294,14 @@ class MemoExplorerWindow(QWidget):
         pg_l.addStretch()
         bg_l.addLayout(pg_l)
         
-        bg_l.addWidget(QLabel("미리보기"))
+        pv_head = QHBoxLayout()
+        pv_head.setSpacing(10)
+        pv_title = QLabel("미리보기")
+        pv_title.setMinimumHeight(24)
+        pv_head.addWidget(pv_title)
+        pv_head.addWidget(self.toast)
+        pv_head.addStretch()
+        bg_l.addLayout(pv_head)
         self.pv = QTextEdit()
         self.pv.setFixedHeight(120)
         self.pv.setReadOnly(False) 
@@ -332,9 +336,30 @@ class MemoExplorerWindow(QWidget):
         
         self.grip = QSizeGrip(self)
         self._apply_font_scale()
+        self.apply_size_settings()
+
+    def is_size_fixed(self) -> bool:
+        return bool(self.ui_manager.sync_manager.settings.get('explorer_fixed_size', False))
+
+    def apply_size_settings(self) -> None:
+        """환경설정의 탐색기 크기·고정 옵션을 창에 반영합니다."""
+        geom = self.ui_manager.sync_manager.settings.get('explorer_geom')
+        fixed = self.is_size_fixed()
+        if fixed and self.isMaximized():
+            self.showNormal()
+        self.setMinimumSize(580, 440)
+        self.setMaximumSize(16777215, 16777215)
+        if geom and len(geom) == 4 and not self.isMaximized():
+            self.resize(max(580, int(geom[2])), max(440, int(geom[3])))
+        if fixed:
+            # 모니터 간 이동(DPI 변경) 등 어떤 경우에도 크기가 변하지 않도록 고정
+            self.setFixedSize(self.size())
+        self.grip.setVisible(not fixed)
 
     def toggle_maximize(self) -> None:
         """100% 정상 작동하는 윈도우 최대화/복원 기능"""
+        if self.is_size_fixed():
+            return
         if self.isMaximized():
             self.showNormal()
             self.btn_win_max.setText("")
@@ -902,21 +927,23 @@ class MemoExplorerWindow(QWidget):
 
     def show_toast(self, m: str) -> None: 
         self.toast.setText(f"✓ {m}")
-        self.toast.adjustSize()
-        self.toast.move((self.bg.width() - self.toast.width()) // 2, 20)
         self.toast.show()
-        self.toast.raise_()
-        QTimer.singleShot(3500, self.toast.hide)
+        self._toast_timer.start(3500)
 
     def mousePressEvent(self, e: Any) -> None: 
         if e.button() == Qt.MouseButton.LeftButton:
             self._old_pos = e.globalPosition().toPoint()
+            self._drag_size = self.size()
             
     def mouseMoveEvent(self, e: Any) -> None:
         if self._old_pos and not self.isMaximized(): 
             d = e.globalPosition().toPoint() - self._old_pos
             self.move(self.x() + d.x(), self.y() + d.y())
             self._old_pos = e.globalPosition().toPoint()
+            # 배율이 다른 모니터로 넘어갈 때 창이 커지는 현상 방지: 드래그 시작 시 크기를 유지
+            drag_size = getattr(self, '_drag_size', None)
+            if drag_size is not None and self.size() != drag_size:
+                self.resize(drag_size)
             
     def mouseReleaseEvent(self, e: Any) -> None:
         self._old_pos = None
@@ -943,7 +970,7 @@ class MemoExplorerWindow(QWidget):
         self.b_new.clicked.connect(self.ui_manager.create_empty_memo)
         self.b_new_code.clicked.connect(self.ui_manager.create_code_memo)
         self.b_ref.clicked.connect(self.refresh)
-        self.b_sync.clicked.connect(self.ui_manager.sync_manager.sync_push)
+        self.b_sync.clicked.connect(self.ui_manager.sync_manager.sync_all)
         self.b_del.clicked.connect(self.del_checked)
         self.b_res.clicked.connect(self.res_checked)
         self.b_empty_trash.clicked.connect(self.empty_trash)
@@ -1047,9 +1074,22 @@ class MemoExplorerWindow(QWidget):
         
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
+    def _save_memo_meta(self, memo: Dict[str, Any], **changes: Any) -> None:
+        """즐겨찾기·고정·색상 같은 메모 속성을 저장합니다.
+
+        메모 창이 열려 있으면 창이 들고 있는 데이터에도 같이 반영합니다.
+        (그렇지 않으면 창이 다음에 저장할 때 예전 값으로 되돌려 버립니다)
+        """
+        memo.update(changes)
+        w = self.ui_manager.memo_windows.get(memo.get('id', ''))
+        if w:
+            w.memo_data.update(changes)
+            self.ui_manager.sync_manager.save_memo_locally(w.memo_data)
+        else:
+            self.ui_manager.sync_manager.save_memo_locally(memo)
+
     def toggle_protect(self, memo: Dict[str, Any]) -> None:
-        memo['is_protected'] = not memo.get('is_protected', False)
-        self.ui_manager.sync_manager.save_memo_locally(memo)
+        self._save_memo_meta(memo, is_protected=not memo.get('is_protected', False))
         self.show_toast(f"{'🔒 삭제 방지 설정됨' if memo['is_protected'] else '🔓 삭제 방지 해제됨'}")
         self.refresh()
 
@@ -1071,8 +1111,7 @@ class MemoExplorerWindow(QWidget):
 
         new_pinned_state = not memo.get('is_pinned', False)
         for m in target_memos:
-            m['is_pinned'] = new_pinned_state
-            self.ui_manager.sync_manager.save_memo_locally(m)
+            self._save_memo_meta(m, is_pinned=new_pinned_state)
             memo_id = m.get('id')
             if memo_id and memo_id in self.ui_manager.memo_windows:
                 self.ui_manager.memo_windows[memo_id].apply_data()
@@ -1081,14 +1120,16 @@ class MemoExplorerWindow(QWidget):
         self.refresh()
 
     def change_memo_color(self, memo: Dict[str, Any], color_hex: str) -> None:
-        memo['bg_color'] = color_hex
-        self.ui_manager.sync_manager.save_memo_locally(memo)
+        self._save_memo_meta(memo, bg_color=color_hex)
         memo_id = memo.get('id')
         if memo_id and memo_id in self.ui_manager.memo_windows:
             self.ui_manager.memo_windows[memo_id].apply_data()
         self.refresh()
 
     def copy_memo_text(self, memo: Dict[str, Any]) -> None:
+        if memo.get('_locked') or memo.get('_unreadable'):
+            self.show_toast("🔒 잠긴 메모는 복사할 수 없습니다.")
+            return
         raw_cnt = memo.get('content', '')
         text = clean_plain_text(raw_cnt)
         QApplication.clipboard().setText(text)
@@ -1112,10 +1153,23 @@ class MemoExplorerWindow(QWidget):
         if m_item:
             m = m_item.data(Qt.ItemDataRole.UserRole)
             if m:
+                self._flush_preview_save()
                 self._is_loading_preview = True
+                sealed = bool(m.get('_locked') or m.get('_unreadable'))
+                # 창에 아직 저장되지 않은 입력이 있으면 먼저 저장하고 그 내용을 보여줍니다.
+                w = self.ui_manager.memo_windows.get(m.get('id', ''))
+                if w and not sealed and not w.is_sealed():
+                    w.flush_auto_save()
+                    m['content'] = w.memo_data.get('content', m.get('content', ''))
                 content = m.get('content', '')
                 is_code = m.get('is_code_memo', False)
-                clean_text = clean_plain_text(content)
+                if m.get('_locked'):
+                    clean_text = "🔒 암호 메모입니다. 메모를 열어 암호를 입력하면 볼 수 있습니다."
+                elif m.get('_unreadable'):
+                    clean_text = "⚠ 본문을 복호화할 수 없는 메모입니다."
+                else:
+                    clean_text = clean_plain_text(content)
+                self.pv.setReadOnly(self.is_trash_mode or sealed)
 
                 theme = self.ui_manager.sync_manager.settings.get('app_theme', 'white')
                 is_dark = (theme == "dark")
@@ -1153,22 +1207,41 @@ class MemoExplorerWindow(QWidget):
         if m_item:
             m = m_item.data(Qt.ItemDataRole.UserRole)
             if not m: return
+            if m.get('_locked') or m.get('_unreadable') or self.pv.isReadOnly():
+                return
             memo_id = m.get('id', '')
             new_content = self.pv.toHtml()
             m['content'] = new_content
             m['updated_at'] = datetime.datetime.now().isoformat()
-            
-            self.ui_manager.sync_manager.save_memo_locally(m)
+
+            if self._pending_preview_memo is not None and self._pending_preview_memo is not m:
+                self._flush_preview_save()
+            self._pending_preview_memo = m
+            self._preview_save_timer.start()
             
             if memo_id in self.ui_manager.memo_windows:
                 w = self.ui_manager.memo_windows[memo_id]
                 w._is_updating_from_explorer = True
                 w.text_edit.setHtml(new_content)
                 w._is_updating_from_explorer = False
+                # 창이 들고 있는 데이터도 맞춰 두어야, 창이 나중에 저장할 때 미리보기 편집을 되돌리지 않습니다.
+                w.memo_data['content'] = new_content
+                w.memo_data['updated_at'] = m['updated_at']
                 
             if self.table.item(r, 3):
                 self.table.item(r, 3).setText(datetime.datetime.now().strftime("%y%m%d.%H%M"))
             
+    def _flush_preview_save(self) -> None:
+        self._preview_save_timer.stop()
+        m = self._pending_preview_memo
+        self._pending_preview_memo = None
+        if m is not None:
+            self.ui_manager.sync_manager.save_memo_locally(m)
+
+    def hideEvent(self, event: Any) -> None:
+        self._flush_preview_save()
+        super().hideEvent(event)
+
     def on_cell_double_click(self, r: int, c: int) -> None:
         if not self.is_trash_mode:
             m_item = self.table.item(r, 2)
@@ -1238,6 +1311,7 @@ class MemoExplorerWindow(QWidget):
             
     @pyqtSlot()
     def refresh(self) -> None:
+        self._flush_preview_save()
         q = self.s_in.text().lower()
         sb = self.s_type.currentIndex() == 1
         all_m = self.ui_manager.sync_manager.load_trash_memos() if self.is_trash_mode else self.ui_manager.sync_manager.load_local_memos()
@@ -1292,7 +1366,7 @@ class MemoExplorerWindow(QWidget):
             if self.filter_mode == "CODE" and not is_code: continue
             
             plain_cnt = clean_plain_text(m.get('content',''))
-            if tag_filter and tag_filter not in plain_cnt:
+            if tag_filter and tag_filter[1:] not in re.findall(r'#([^\s#]+)', plain_cnt):
                 continue
             if q:
                 if sb and q not in plain_cnt.lower(): continue
@@ -1350,6 +1424,8 @@ class MemoExplorerWindow(QWidget):
                 badge_text = f"[{lang}] {title_text}"
             else:
                 badge_text = f"{title_text}"
+            if m.get('is_locked'):
+                badge_text = f"🔒 {badge_text}"
 
             t = QTableWidgetItem(badge_text)
             if hasattr(self.ui_manager, 'get_theme_icon'):
@@ -1366,7 +1442,11 @@ class MemoExplorerWindow(QWidget):
             self.table.setItem(r, 2, t)
             
             up = m.get('updated_at', '')
-            ds = datetime.datetime.fromisoformat(up).strftime("%y%m%d.%H%M") if up else ""
+            try:
+                ds = datetime.datetime.fromisoformat(up).strftime("%y%m%d.%H%M") if up else ""
+            except (TypeError, ValueError):
+                # 수정시각이 깨진 메모 하나 때문에 목록 전체가 멈추지 않도록 함
+                ds = ""
             dt = QTableWidgetItem(ds)
             dt.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
             self.table.setItem(r, 3, dt)
@@ -1396,8 +1476,7 @@ class MemoExplorerWindow(QWidget):
         self.shortcut_font_refresh()
         
     def toggle_fav(self, memo: Dict[str, Any]) -> None:
-        memo['is_favorite'] = not memo.get('is_favorite', False)
-        self.ui_manager.sync_manager.save_memo_locally(memo)
+        self._save_memo_meta(memo, is_favorite=not memo.get('is_favorite', False))
         self.refresh()
 
     def del_checked(self) -> None:

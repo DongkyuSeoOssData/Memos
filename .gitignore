@@ -40,3 +40,6 @@ final_*.log
 
 # [보안 로직]
 secure_vault.py
+
+# [관리자 복구 개인키] 절대 커밋 금지
+*.pem

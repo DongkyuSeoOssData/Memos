@@ -49,7 +49,14 @@ class CodeHighlighter(QSyntaxHighlighter):
             kw_pat = r'\b(public|private|protected|class|void|string|int|bool|if|else|for|foreach|while|return|using|namespace|dim|as|function|def|var|let|const|import)\b'
             self.rules.append((re.compile(kw_pat, re.IGNORECASE), kw_fmt))
             self.rules.append((re.compile(r'"[^"\\]*(\\.[^"\\]*)*"|\'[^\'\\]*(\\.[^\'\\]*)*\''), str_fmt))
-            self.rules.append((re.compile(r'//.*|#.*|\'.*'), cm_fmt))
+            # 주석 기호는 언어마다 다릅니다. (작은따옴표 주석은 VB에만 해당)
+            if "VB" in self.lang:
+                comment_pat = r"'.*"
+            elif "PYTHON" in self.lang or "POWER" in self.lang:
+                comment_pat = r'#.*'
+            else:
+                comment_pat = r'//.*'
+            self.rules.append((re.compile(comment_pat), cm_fmt))
             self.rules.append((re.compile(r'\b[A-Z][a-zA-Z0-9_]*\b'), type_fmt))
             self.rules.append((re.compile(r'\b[-+]?\d+\b'), num_fmt))
         else:
@@ -90,6 +97,11 @@ class MemoTextEdit(QTextEdit):
         self.textChanged.connect(self.update_line_number_area)
 
     def mousePressEvent(self, e: Any) -> None:
+        if e.button() == Qt.MouseButton.LeftButton and self.memo_window.memo_data.get('_locked'):
+            # 잠긴 암호 메모: 본문을 클릭하면 암호를 묻습니다.
+            self.memo_window.prompt_unlock()
+            e.accept()
+            return
         if e.button() == Qt.MouseButton.LeftButton and (e.modifiers() & Qt.KeyboardModifier.AltModifier):
             click_cursor = self.cursorForPosition(e.pos())
             all_positions = [c.position() for c in ([self.textCursor()] + self.extra_cursors)]
@@ -154,7 +166,12 @@ class MemoTextEdit(QTextEdit):
 
     def keyPressEvent(self, e: Any) -> None:
         if e.key() == Qt.Key.Key_Escape:
-            self.memo_window.close()
+            # 멀티 커서가 켜져 있으면 Esc는 커서만 해제하고, 그렇지 않을 때만 메모를 닫습니다.
+            if self.extra_cursors:
+                self.extra_cursors.clear()
+                self.viewport().update()
+            else:
+                self.memo_window.close()
             e.accept()
             return
 
@@ -182,12 +199,6 @@ class MemoTextEdit(QTextEdit):
 
         # 멀티 커서 활성화 시 타이핑 / 백스페이스 / Delete 동기화 처리
         if self.extra_cursors:
-            if e.key() == Qt.Key.Key_Escape:
-                self.extra_cursors.clear()
-                self.viewport().update()
-                e.accept()
-                return
-
             all_cursors = [self.textCursor()] + self.extra_cursors
             pos_dict = {}
             for c in all_cursors:

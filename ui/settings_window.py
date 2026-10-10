@@ -1,36 +1,18 @@
 from PyQt6.QtCore import QMetaObject, pyqtSlot
 from ui.ui_utils import apply_ios_shadow
+from core.defaults import DEFAULT_SHORTCUTS
+from core.sync_manager import is_auto_start_enabled
 from ui.themes import LIGHT_THEMES, DARK_THEMES
-import sys
-import re
 import random
-import datetime
-import math
-import uuid
-import json
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+from typing import Any
 from PyQt6.QtWidgets import (
-    QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, 
-    QLineEdit, QMenu, QSystemTrayIcon, QApplication, QMessageBox, 
-    QLabel, QComboBox, QCheckBox, QFileDialog, QTableWidget, 
-    QTableWidgetItem, QHeaderView, QDialog, QDialogButtonBox,
-    QGraphicsDropShadowEffect, QFrame, QSizeGrip, QFontComboBox,
-    QColorDialog, QTabWidget, QKeySequenceEdit, QGroupBox, QFormLayout,
-    QScrollArea, QSlider, QSpinBox, QWidgetAction
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLineEdit, QMessageBox, QLabel,
+    QComboBox, QCheckBox, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
+    QFontComboBox, QTabWidget, QKeySequenceEdit, QGroupBox, QScrollArea, QSlider, QSpinBox
 )
-from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, QEvent, QRect, QByteArray
-from PyQt6.QtGui import (
-    QGuiApplication,
-    QIcon, QAction, QColor, QShortcut, QKeySequence, QFont, QFontDatabase,
-    QPixmap, QPainter, QTextListFormat, QTextCursor, QTextCharFormat, QPalette, QTextDocument,
-    QSyntaxHighlighter, QCursor
-)
-from PyQt6.QtSvg import QSvgRenderer
-import os
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QGuiApplication, QColor, QKeySequence, QFont
 import threading
-from utils.text_utils import convert_eng_kor_smart
-from utils.text_utils import clean_plain_text
 
 class SettingsWindow(QWidget):
     def __init__(self, sm: Any) -> None:
@@ -122,12 +104,24 @@ class SettingsWindow(QWidget):
         l_gen.setContentsMargins(15, 15, 15, 15)
         l_gen.setSpacing(15)
         
-        g2 = QGroupBox("자동 로그인 및 보안 계정")
+        g2 = QGroupBox("암호 메모")
         g2_l = QVBoxLayout(g2)
         g2_l.setContentsMargins(18, 24, 18, 18)
-        self.cb_auto_login = QCheckBox("이 PC에서 비밀번호 기억 (자동 로그인)")
-        self.cb_auto_login.setStyleSheet("font-weight: bold; color: #007AFF; font-size: 10pt;")
-        g2_l.addWidget(self.cb_auto_login)
+        g2_l.setSpacing(8)
+        relock_row = QHBoxLayout()
+        relock_row.addWidget(QLabel("마지막 입력 후 자동 잠금:"))
+        self.spin_relock_min = QSpinBox()
+        self.spin_relock_min.setRange(0, 240)
+        self.spin_relock_min.setSuffix(" 분")
+        self.spin_relock_min.setSpecialValueText("자동 잠금 안 함")
+        self.spin_relock_min.setFixedHeight(34)
+        relock_row.addWidget(self.spin_relock_min)
+        relock_row.addStretch()
+        g2_l.addLayout(relock_row)
+        relock_hint = QLabel("메모 창 우클릭 → '이 메모에 암호 걸기'로 원하는 메모만 암호화합니다. 암호를 잊으면 복구할 수 없습니다.")
+        relock_hint.setStyleSheet("font-size: 8pt; color: #8E8E93;")
+        relock_hint.setWordWrap(True)
+        g2_l.addWidget(relock_hint)
         l_gen.addWidget(g2)
 
         g4 = QGroupBox("시스템 편의 및 실행 옵션")
@@ -151,6 +145,13 @@ class SettingsWindow(QWidget):
         ]:
             g4_l.addWidget(cb_item)
             
+        g4_l.addWidget(QLabel("자동 저장: 마지막 입력 후 대기 시간 (입력이 없으면 저장하지 않음, 닫을 때는 항상 저장):"))
+        self.auto_save_interval_box = QComboBox()
+        for label, sec in self.AUTO_SAVE_INTERVALS:
+            self.auto_save_interval_box.addItem(label, sec)
+        self.auto_save_interval_box.setFixedHeight(40)
+        g4_l.addWidget(self.auto_save_interval_box)
+
         g4_l.addWidget(QLabel("휴지통 보관 기간:"))
         self.trash_auto_delete_box = QComboBox()
         self.trash_auto_delete_box.addItems(["없음 (수동 비우기)", "즉시 삭제 (0일)", "15일 경과 시 자동 삭제", "30일 경과 시 자동 삭제"])
@@ -408,6 +409,32 @@ class SettingsWindow(QWidget):
         l_font.addWidget(g_opacity)
         l_font.addWidget(g_size)
         l_font.addWidget(g_rolled)
+
+        # 메모 탐색기 크기 설정 그룹
+        g_explorer = QGroupBox("메모 탐색기 크기")
+        g_explorer_l = QGridLayout(g_explorer)
+        g_explorer_l.setContentsMargins(14, 22, 14, 14)
+        g_explorer_l.setSpacing(8)
+
+        self.spin_explorer_width = QSpinBox()
+        self.spin_explorer_width.setRange(580, 3840)
+        self.spin_explorer_width.setSuffix(" px")
+        self.spin_explorer_width.setFixedHeight(34)
+
+        self.spin_explorer_height = QSpinBox()
+        self.spin_explorer_height.setRange(440, 2160)
+        self.spin_explorer_height.setSuffix(" px")
+        self.spin_explorer_height.setFixedHeight(34)
+
+        self.cb_explorer_fixed = QCheckBox("탐색기 크기 고정 (화면 이동·모니터 변경 시에도 크기 유지)")
+
+        g_explorer_l.addWidget(QLabel("탐색기 가로:"), 0, 0)
+        g_explorer_l.addWidget(self.spin_explorer_width, 0, 1)
+        g_explorer_l.addWidget(QLabel("탐색기 세로:"), 1, 0)
+        g_explorer_l.addWidget(self.spin_explorer_height, 1, 1)
+        g_explorer_l.addWidget(self.cb_explorer_fixed, 2, 0, 1, 2)
+        g_explorer_l.setColumnStretch(1, 1)
+        l_font.addWidget(g_explorer)
         l_font.addStretch()
 
         scroll_font = QScrollArea()
@@ -586,51 +613,29 @@ class SettingsWindow(QWidget):
         event.accept()
 
     def save(self) -> None:
-        is_auto_login = self.cb_auto_login.isChecked()
-        
-        shortcuts_dict = {}
-        shortcut_keys_map = {
-            "한/영 영타 오타 변환": "eng_kor_convert",
-            "서식 툴바 접기/열기": "toggle_fmt_bar",
-            "전체 메모 내용 복사": "copy_all",
-            "코드 자동 정렬 (Prettify)": "format_code",
-            "새 메모 생성": "new_memo",
-            "새 코드 메모 생성": "new_code_memo",
-            "메모 저장": "save",
-            "검색": "search",
-            "제목 수정": "rename",
-            "메모 탐색기 켜기/숨기기": "open_explorer",
-            "찾아 바꾸기 창 열기": "replace",
-            "찾아 바꾸기": "replace",
-            "화면 항상 고정(Pin) 토글": "toggle_pin",
-            "메모 창 접기/펼치기": "toggle_rollup",
-            "메모 창 접기/펼치기 토글": "toggle_rollup",
-            "현재 메모 삭제": "delete_memo",
-            "코드 테마 전환 (다크/라이트)": "toggle_code_theme",
-            "코드 테마 전환": "toggle_code_theme",
-            "접은 메모 정렬": "arrange_rolled_memos",
-            "메모 전체 정렬": "arrange_all_memos",
-            "모든 메모 숨기기/보이기 토글": "toggle_all_memos",
-            "모든 메모 숨기기/보이기": "toggle_all_memos",
-            "전체 메모 열기": "open_all_memos",
-            "행번호 표시 토글": "toggle_line_numbers",
-            "줄노트 배경 토글": "toggle_line_bg",
-        }
-        for r in range(self.shortcut_table.rowCount()):
-            name = self.shortcut_table.item(r, 0).text()
-            key_seq = self.shortcut_table.cellWidget(r, 1).keySequence().toString()
-            if name in shortcut_keys_map:
-                shortcuts_dict[shortcut_keys_map[name]] = key_seq
+        # 자동 실행은 레지스트리에 먼저 반영하고, 실제로 반영된 상태를 설정값으로 저장합니다.
+        want_auto_start = self.auto_start_cb.isChecked()
+        auto_start_ok = self.sm.apply_auto_start(want_auto_start)
+        auto_start_now = self.sm.settings.get("auto_start", False)
+        self.auto_start_cb.setChecked(auto_start_now)
                 
-        trash_days_map = {0: 0, 1: 0, 2: 15, 3: 30}
-        
+        shortcuts_dict = {}
+        for r in range(self.shortcut_table.rowCount()):
+            # 화면에 보이는 이름이 아니라 행에 심어 둔 설정 키로 찾습니다. (이름을 바꿔도 저장이 누락되지 않음)
+            key = self.shortcut_table.item(r, 0).data(Qt.ItemDataRole.UserRole)
+            if key:
+                shortcuts_dict[key] = self.shortcut_table.cellWidget(r, 1).keySequence().toString()
+
+        # 0: 자동 삭제 안 함, -1: 즉시 삭제, 그 외: 보관 일수
+        trash_days_map = {0: 0, 1: -1, 2: 15, 3: 30}
+
         ns = {
             "use_sync": self.sync_cb.isChecked(),
             "drive_folder_id": self.url_input.text().strip(),
             "local_memo_path": self.path_input.text().strip(),
             "sync_interval_index": self.sync_interval_combo.currentIndex(),
-            "auto_start": self.auto_start_cb.isChecked(),
-            "auto_login": is_auto_login,
+            "auto_start": auto_start_now,
+            "locked_memo_relock_min": self.spin_relock_min.value(),
             "default_memo_color": list(self.colors.values())[self.default_color_combo.currentIndex()],
             "default_font_family": self.default_font_box.currentFont().family(),
             "default_code_font_family": self.default_code_font_box.currentFont().family(),
@@ -655,15 +660,22 @@ class SettingsWindow(QWidget):
             "default_code_memo_width": self.spin_code_memo_width.value(),
             "default_code_memo_height": self.spin_code_memo_height.value(),
             "default_rolled_height": self.spin_rolled_height.value(),
+            "auto_save_idle_sec": self.auto_save_interval_box.currentData(),
+            "explorer_fixed_size": self.cb_explorer_fixed.isChecked(),
+            "explorer_geom": self._explorer_geom_from_inputs(),
             "settings_window_font_pt": self.ui_font_pt,
             "shortcuts": shortcuts_dict
         }
         self.sm.save_settings(ns)
-        if not is_auto_login:
-            self.sm.save_remembered_password("", False)
+        if not auto_start_ok:
+            QMessageBox.warning(self, "자동 실행", "윈도우 자동 실행 설정을 변경하지 못했습니다. (레지스트리 쓰기 실패)")
             
         if hasattr(self.sm, 'ui_manager') and hasattr(self.sm.ui_manager, 'update_tray_menu'):
             self.sm.ui_manager.update_tray_menu()
+
+        explorer = getattr(getattr(self.sm, 'ui_manager', None), 'explorer_window', None)
+        if explorer:
+            explorer.apply_size_settings()
         
         # ─── 단축키 변경 즉시 반영: 열려있는 모든 메모창 rebind ───────────────
         if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager:
@@ -698,8 +710,9 @@ class SettingsWindow(QWidget):
         self.url_input.setText(s.get("drive_folder_id",""))
         self.path_input.setText(str(self.sm.local_path))
         self.sync_interval_combo.setCurrentIndex(s.get("sync_interval_index", 0))
-        self.auto_start_cb.setChecked(s.get("auto_start", False))
-        self.cb_auto_login.setChecked(s.get("auto_login", False))
+        # 설정 파일이 아니라 레지스트리의 실제 등록 상태를 보여줍니다.
+        self.auto_start_cb.setChecked(is_auto_start_enabled())
+        self.spin_relock_min.setValue(int(s.get("locked_memo_relock_min", 5)))
         self.cb_default_pin.setChecked(s.get("default_is_pinned", False))
         self.cb_auto_eng_kor.setChecked(s.get("auto_eng_kor_convert", True))
         # 투명도 슬라이더 로드
@@ -711,6 +724,14 @@ class SettingsWindow(QWidget):
         self.spin_code_memo_width.setValue(s.get("default_code_memo_width", 500))
         self.spin_code_memo_height.setValue(s.get("default_code_memo_height", 380))
         self.spin_rolled_height.setValue(s.get("default_rolled_height", 53))
+
+        idx = self.auto_save_interval_box.findData(s.get("auto_save_idle_sec", 60))
+        self.auto_save_interval_box.setCurrentIndex(idx if idx >= 0 else self.auto_save_interval_box.findData(60))
+
+        ex_w, ex_h = self._current_explorer_size()
+        self.spin_explorer_width.setValue(ex_w)
+        self.spin_explorer_height.setValue(ex_h)
+        self.cb_explorer_fixed.setChecked(s.get("explorer_fixed_size", False))
         
         self.cb_gen_line_num.setChecked(s.get("default_gen_line_numbers", s.get("default_show_line_numbers", False)))
         self.cb_gen_line_bg.setChecked(s.get("default_gen_line_bg", s.get("default_show_line_bg", False)))
@@ -750,36 +771,45 @@ class SettingsWindow(QWidget):
                 break
                 
         trash_days = s.get("trash_auto_delete_days", 0)
-        if trash_days == 15: self.trash_auto_delete_box.setCurrentIndex(2)
+        if trash_days < 0: self.trash_auto_delete_box.setCurrentIndex(1)
+        elif trash_days == 15: self.trash_auto_delete_box.setCurrentIndex(2)
         elif trash_days == 30: self.trash_auto_delete_box.setCurrentIndex(3)
         else: self.trash_auto_delete_box.setCurrentIndex(0)
         
         self._fill_shortcut_table(s.get("shortcuts", {}))
 
-    # ─── 단축키 기본값 딕셔너리 ───────────────────────────────────────────────
-    DEFAULT_SHORTCUTS = {
-        "new_memo":            "Alt+N",       # 새 메모 생성 (전역)
-        "new_code_memo":       "Alt+Shift+N", # 새 코드 메모 생성 (전역)
-        "open_explorer":       "Alt+W",       # 탐색기 켜기/숨기기 (전역)
-        "toggle_all_memos":    "Alt+H",       # 모든 메모 숨기기/보이기 (전역)
-        "arrange_rolled_memos":"Alt+R",       # 접은 메모 정렬 (전역)
-        "arrange_all_memos":   "Alt+A",       # 펼친 메모 정렬 (전역)
-        "save":                "Ctrl+S",      # 메모 저장 (표준)
-        "search":              "Ctrl+F",      # 검색 (표준)
-        "replace":             "Ctrl+H",      # 찾아 바꾸기 (표준)
-        "rename":              "F2",          # 제목 수정
-        "toggle_rollup":       "Alt+M",       # 메모 창 접기/펼치기
-        "toggle_pin":          "Alt+P",       # 항상 위에 고정
-        "delete_memo":         "Alt+D",       # 메모 삭제
-        "toggle_line_numbers": "Alt+G",       # 행번호 표시 토글
-        "toggle_line_bg":      "Alt+B",       # 줄노트 배경 토글
-        "toggle_fmt_bar":      "Alt+T",       # 서식 툴바 접기/열기
-        "copy_all":            "Alt+C",       # 전체 내용 복사
-        "eng_kor_convert":     "Alt+E",       # 한/영 오타 변환
-        "format_code":         "Alt+F",       # 코드 자동 정렬
-        "toggle_code_theme":   "Alt+L",       # 코드 테마 전환
-        "open_all_memos":      "Alt+O",       # 전체 메모 열기
-    }
+    # (표시 이름, 초) — 마지막 입력 후 자동 저장까지 기다리는 시간
+    AUTO_SAVE_INTERVALS = [
+        ("1초", 1), ("10초", 10), ("30초", 30),
+        ("1분 (기본)", 60), ("5분", 300), ("10분", 600),
+    ]
+
+    def _explorer_window(self) -> Any:
+        return getattr(getattr(self.sm, 'ui_manager', None), 'explorer_window', None)
+
+    def _current_explorer_size(self) -> tuple:
+        explorer = self._explorer_window()
+        if explorer and not explorer.isMaximized():
+            return explorer.width(), explorer.height()
+        geom = self.sm.settings.get("explorer_geom")
+        if geom and len(geom) == 4:
+            return int(geom[2]), int(geom[3])
+        return 620, 480
+
+    def _explorer_geom_from_inputs(self) -> list:
+        """입력한 가로·세로에 현재 탐색기 위치를 합쳐 explorer_geom 형식으로 돌려줍니다."""
+        explorer = self._explorer_window()
+        geom = self.sm.settings.get("explorer_geom")
+        if explorer:
+            x, y = explorer.x(), explorer.y()
+        elif geom and len(geom) == 4:
+            x, y = int(geom[0]), int(geom[1])
+        else:
+            x, y = 100, 100
+        return [x, y, self.spin_explorer_width.value(), self.spin_explorer_height.value()]
+
+    # ─── 단축키 기본값 딕셔너리 (단일 출처: core/defaults.py) ─────────────────
+    DEFAULT_SHORTCUTS = DEFAULT_SHORTCUTS
 
     def _reset_shortcuts_to_default(self) -> None:
         """단축키 테이블을 DEFAULT_SHORTCUTS 기본값으로 초기화합니다.
@@ -793,51 +823,46 @@ class SettingsWindow(QWidget):
             "단축키가 기본값으로 초기화되었습니다.\n[저장] 버튼을 눌러야 실제 적용됩니다."
         )
 
+    # (기능명, settings key, 설명/비고)
+    SHORTCUT_ROWS = [
+        # ── 전역 단축키 (어디서나 작동, 이 앱이 독점) ───────────────────────────
+        ("새 메모 생성",               "new_memo",             "어디서나 작동하는 전역 단축키"),
+        ("새 코드 메모 생성",           "new_code_memo",        "어디서나 작동하는 전역 단축키"),
+        ("메모 탐색기 켜기/숨기기",     "open_explorer",        "탐색기가 보이면 숨기고, 숨어있으면 열기"),
+        ("모든 메모 숨기기/보이기",     "toggle_all_memos",     "어디서나 작동하는 전역 단축키"),
+        ("접은 메모 정렬",             "arrange_rolled_memos", "접힌 메모 전부 화면 아래 정렬"),
+        ("메모 전체 정렬",             "arrange_all_memos",    "펼친 메모 전부 계단식 정렬"),
+        # ── 메모 창 내 단축키 (포커스 필요) ─────────────────────────────────
+        ("메모 저장",                 "save",                 "수동 저장 (표준 Ctrl+S 유지 권장)"),
+        ("검색",                      "search",               "메모 내용 검색 (표준 Ctrl+F 유지 권장)"),
+        ("찾아 바꾸기",               "replace",              "찾아 바꾸기 창 열기 (표준 Ctrl+H)"),
+        ("제목 수정",                 "rename",               "제목 편집 모드 진입 (F2)"),
+        ("메모 창 접기/펼치기",        "toggle_rollup",        "현재 메모를 접거나 펼침"),
+        ("화면 항상 고정(Pin) 토글",   "toggle_pin",           "다른 창 위에 항상 표시"),
+        ("현재 메모 삭제",            "delete_memo",          "현재 포커스된 메모 삭제"),
+        ("행번호 표시 토글",           "toggle_line_numbers",  "행 번호 영역 켜기/끄기"),
+        ("줄노트 배경 토글",           "toggle_line_bg",       "줄노트 줄무늬 배경 켜기/끄기"),
+        ("서식 툴바 접기/열기",        "toggle_fmt_bar",       "하단 서식 도구모음 토글"),
+        ("전체 메모 내용 복사",        "copy_all",             "메모 전체 내용을 클립보드로"),
+        ("한/영 영타 오타 변환",       "eng_kor_convert",      "영어로 입력된 한글 오타 변환"),
+        ("코드 자동 정렬 (Prettify)",  "format_code",          "코드 메모 전용"),
+        ("코드 테마 전환",             "toggle_code_theme",    "코드 메모 다크/라이트 전환"),
+        ("전체 메모 열기",            "open_all_memos",       "저장된 모든 메모 표시"),
+    ]
+
     def _fill_shortcut_table(self, sc_map: dict) -> None:
         """단축키 테이블을 sc_map 기반으로 채웁니다. DEFAULT_SHORTCUTS를 fallback으로 사용합니다."""
-        d = self.DEFAULT_SHORTCUTS
-        # (기능명, 단축키값, 설명/비고, settings key)
-        shortcut_items = [
-            # ── 전역 단축키 (앱 수준 - keyboard 훅, 포커스 불필요) ──────────────
-            ("새 메모 생성",               sc_map.get("new_memo",            d["new_memo"]),            "어디서나 작동하는 전역 단축키"),
-            ("새 코드 메모 생성",           sc_map.get("new_code_memo",       d["new_code_memo"]),       "어디서나 작동하는 전역 단축키"),
-            ("메모 탐색기 켜기/숨기기",     sc_map.get("open_explorer",       d["open_explorer"]),       "탐색기가 보이면 숨기고, 숨어있으면 열기"),
-            ("모든 메모 숨기기/보이기",     sc_map.get("toggle_all_memos",    d["toggle_all_memos"]),    "어디서나 작동하는 전역 단축키"),
-            ("접은 메모 정렬",             sc_map.get("arrange_rolled_memos", d["arrange_rolled_memos"]),"접힌 메모 전부 화면 아래 정렬"),
-            ("메모 전체 정렬",             sc_map.get("arrange_all_memos",   d["arrange_all_memos"]),   "펼친 메모 전부 계단식 정렬"),
-            # ── 메모 창 내 단축키 (포커스 필요) ─────────────────────────────────
-            ("메모 저장",                 sc_map.get("save",                d["save"]),                "수동 저장 (표준 Ctrl+S 유지 권장)"),
-            ("검색",                      sc_map.get("search",              d["search"]),              "메모 내용 검색 (표준 Ctrl+F 유지 권장)"),
-            ("찾아 바꾸기",               sc_map.get("replace",             d["replace"]),             "찾아 바꾸기 창 열기 (표준 Ctrl+H)"),
-            ("제목 수정",                 sc_map.get("rename",              d["rename"]),              "제목 편집 모드 진입 (F2)"),
-            ("메모 창 접기/펼치기",        sc_map.get("toggle_rollup",       d["toggle_rollup"]),       "현재 메모를 접거나 펼침"),
-            ("화면 항상 고정(Pin) 토글",   sc_map.get("toggle_pin",          d["toggle_pin"]),          "다른 창 위에 항상 표시"),
-            ("현재 메모 삭제",            sc_map.get("delete_memo",         d["delete_memo"]),         "현재 포커스된 메모 삭제"),
-            ("행번호 표시 토글",           sc_map.get("toggle_line_numbers", d["toggle_line_numbers"]), "행 번호 영역 켜기/끄기"),
-            ("줄노트 배경 토글",           sc_map.get("toggle_line_bg",      d["toggle_line_bg"]),      "줄노트 줄무늬 배경 켜기/끄기"),
-            ("서식 툴바 접기/열기",        sc_map.get("toggle_fmt_bar",      d["toggle_fmt_bar"]),      "하단 서식 도구모음 토글"),
-            ("전체 메모 내용 복사",        sc_map.get("copy_all",            d["copy_all"]),            "메모 전체 내용을 클립보드로"),
-            ("한/영 영타 오타 변환",       sc_map.get("eng_kor_convert",     d["eng_kor_convert"]),     "영어로 입력된 한글 오타 변환"),
-            ("코드 자동 정렬 (Prettify)",  sc_map.get("format_code",         d["format_code"]),         "코드 메모 전용"),
-            ("코드 테마 전환",             sc_map.get("toggle_code_theme",   d["toggle_code_theme"]),   "코드 메모 다크/라이트 전환"),
-            ("전체 메모 열기",            sc_map.get("open_all_memos",      d["open_all_memos"]),      "저장된 모든 메모 표시"),
-        ]
-        
         self.shortcut_table.setRowCount(0)
-        from PyQt6.QtWidgets import QTableWidgetItem
-        from PyQt6.QtGui import QKeySequence, QColor
-        from PyQt6.QtWidgets import QKeySequenceEdit
-        from PyQt6.QtCore import Qt
-        
-        for label_text, seq_text, desc_text in shortcut_items:
+        for label_text, key, desc_text in self.SHORTCUT_ROWS:
             r = self.shortcut_table.rowCount()
             self.shortcut_table.insertRow(r)
 
             name_item = QTableWidgetItem(label_text)
             name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            name_item.setData(Qt.ItemDataRole.UserRole, key)
             self.shortcut_table.setItem(r, 0, name_item)
-            
-            k_edit = QKeySequenceEdit(QKeySequence(seq_text))
+
+            k_edit = QKeySequenceEdit(QKeySequence(sc_map.get(key, self.DEFAULT_SHORTCUTS[key])))
             k_edit.setStyleSheet("border: 1px solid #C7C7CC; border-radius: 6px; padding: 2px;")
             self.shortcut_table.setCellWidget(r, 1, k_edit)
 

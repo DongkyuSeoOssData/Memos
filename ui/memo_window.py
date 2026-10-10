@@ -1,33 +1,21 @@
 from ui.memo_editor import MemoTextEdit, CodeHighlighter
 from ui.ui_utils import apply_ios_shadow
 from ui.themes import LIGHT_THEMES, DARK_THEMES
-import sys
 import re
 import random
 import datetime
-import math
-import uuid
 import json
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
+from typing import Dict, Any, Optional
 from PyQt6.QtWidgets import (
-    QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, 
-    QLineEdit, QMenu, QSystemTrayIcon, QApplication, QMessageBox, 
-    QLabel, QComboBox, QCheckBox, QFileDialog, QTableWidget, 
-    QTableWidgetItem, QHeaderView, QDialog, QDialogButtonBox,
-    QGraphicsDropShadowEffect, QFrame, QSizeGrip, QFontComboBox,
-    QColorDialog, QTabWidget, QKeySequenceEdit, QGroupBox, QFormLayout,
-    QScrollArea, QSlider, QSpinBox, QWidgetAction
+    QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMenu, QApplication,
+    QMessageBox, QLabel, QComboBox, QFileDialog, QSizeGrip, QFontComboBox, QColorDialog, QSlider,
+    QWidgetAction
 )
-from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, QEvent, QRect, QByteArray
+from PyQt6.QtCore import Qt, QPoint, QTimer, QEvent
 from PyQt6.QtGui import (
-    QIcon, QAction, QColor, QShortcut, QKeySequence, QFont, QFontDatabase,
-    QPixmap, QPainter, QTextListFormat, QTextCursor, QTextCharFormat, QPalette, QTextDocument,
-    QSyntaxHighlighter, QCursor
+    QColor, QShortcut, QKeySequence, QFont, QTextListFormat, QTextCursor, QTextCharFormat,
+    QPalette, QTextDocument, QCursor
 )
-from PyQt6.QtSvg import QSvgRenderer
-import os
-import threading
 from utils.text_utils import convert_eng_kor_smart
 from utils.text_utils import clean_plain_text
 
@@ -55,6 +43,12 @@ class MemoWindow(QWidget):
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self.execute_auto_save)
+        self._dirty_since: Optional[float] = None
+
+        # 암호 메모: 마지막 입력 후 일정 시간이 지나면 다시 잠급니다.
+        self._relock_timer = QTimer(self)
+        self._relock_timer.setSingleShot(True)
+        self._relock_timer.timeout.connect(self.lock_now)
         
         self.highlighter: Optional[CodeHighlighter] = None
         
@@ -87,6 +81,7 @@ class MemoWindow(QWidget):
         for _sc in self.findChildren(QShortcut):
             _sc.setEnabled(False)
             _sc.setKey(QKeySequence())
+            _sc.deleteLater()
 
         s_cfg = self.memo_window_get_settings().get("shortcuts", {})
         
@@ -767,6 +762,19 @@ class MemoWindow(QWidget):
                 cm.addAction(n).triggered.connect(lambda checked, code=c: self.change_color(code))
 
         menu.addSeparator()
+        if self.memo_data.get('_locked'):
+            menu.addAction("🔓 잠금 해제 (암호 입력)").triggered.connect(self.prompt_unlock)
+            sm_lock = self._sync_manager()
+            if sm_lock and sm_lock.memo_has_master_recovery(self.memo_data.get('id', '')):
+                menu.addAction("관리자 키로 복구…").triggered.connect(self.recover_with_master_key)
+        elif self.memo_data.get('is_locked'):
+            menu.addAction("🔒 지금 잠그기").triggered.connect(self.lock_now)
+            menu.addAction("암호 변경").triggered.connect(self.set_memo_password)
+            menu.addAction("암호 제거 (일반 메모로)").triggered.connect(self.remove_memo_password)
+        elif not self.memo_data.get('_unreadable'):
+            menu.addAction("🔒 이 메모에 암호 걸기").triggered.connect(self.set_memo_password)
+
+        menu.addSeparator()
         # 🔆 투명도 슬라이더 서브메뉴
         opacity_menu = menu.addMenu("창 투명도 조절")
         opacity_widget = QWidget()
@@ -789,7 +797,7 @@ class MemoWindow(QWidget):
             opa_label.setText(f"불투명도: {val}%")
             self.memo_data['opacity'] = round(val / 100.0, 2)
             self.setWindowOpacity(self.memo_data['opacity'])
-            self._auto_save_timer.start(1000)
+            self._schedule_auto_save()
         opa_slider.valueChanged.connect(_update_opacity)
         opacity_layout.addWidget(opa_label)
         opacity_layout.addWidget(opa_slider)
@@ -939,7 +947,7 @@ class MemoWindow(QWidget):
         # 스타일시트·행번호 동기화
         self.apply_line_bg_style()
         self.text_edit.update_line_number_area()
-        self._auto_save_timer.start(1000)
+        self._schedule_auto_save()
 
     def choose_fg_color(self) -> None:
         color = QColorDialog.getColor(Qt.GlobalColor.black, self, "글씨색 선택")
@@ -1008,6 +1016,149 @@ class MemoWindow(QWidget):
                 cursor.createList(list_fmt)
         self.update_toolbar_button_states()
         self.manual_save()
+
+    # ── 암호 메모 ────────────────────────────────────────────────────────────
+    def is_sealed(self) -> bool:
+        """본문을 읽을 수 없는 상태(잠김 또는 손상)인지 여부. 이 상태에서는 본문을 저장하지 않습니다."""
+        return bool(self.memo_data.get('_locked') or self.memo_data.get('_unreadable'))
+
+    def _sync_manager(self) -> Any:
+        return self.ui_manager.sync_manager if getattr(self, 'ui_manager', None) else None
+
+    def _refresh_explorer(self) -> None:
+        ex = getattr(self.ui_manager, 'explorer_window', None) if getattr(self, 'ui_manager', None) else None
+        if ex and ex.isVisible():
+            ex.refresh()
+
+    def _ask_password(self, label: str) -> str:
+        from PyQt6.QtWidgets import QInputDialog
+        text, ok = QInputDialog.getText(self, "암호 메모", label, QLineEdit.EchoMode.Password)
+        return text if ok else ""
+
+    def restart_relock_timer(self) -> None:
+        self._relock_timer.stop()
+        if not self.memo_data.get('is_locked') or self.is_sealed():
+            return
+        try:
+            minutes = float(self.memo_window_get_settings().get("locked_memo_relock_min", 5))
+        except (TypeError, ValueError):
+            minutes = 5
+        if minutes > 0:
+            self._relock_timer.start(int(minutes * 60 * 1000))
+
+    def prompt_unlock(self) -> None:
+        sm = self._sync_manager()
+        if not sm or not self.memo_data.get('_locked') or getattr(self, '_is_prompting', False):
+            return
+        self._is_prompting = True
+        try:
+            pwd = self._ask_password("이 메모의 암호를 입력하세요:")
+            if not pwd:
+                return
+            plain = sm.unlock_memo(self.memo_data.get('id', ''), pwd)
+            if plain is None:
+                QMessageBox.warning(self, "암호 메모", "암호가 일치하지 않습니다.")
+                return
+            self.memo_data['content'] = plain
+            self.memo_data.pop('_locked', None)
+            self.apply_data()
+            self.restart_relock_timer()
+            self._refresh_explorer()
+        finally:
+            self._is_prompting = False
+
+    def recover_with_master_key(self) -> None:
+        """암호를 잊은 메모를 관리자 개인키 파일로 복구하고 새 암호를 설정합니다."""
+        sm = self._sync_manager()
+        if not sm or not self.memo_data.get('_locked'):
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "관리자 개인키 파일 선택", "", "PEM 키 파일 (*.pem);;모든 파일 (*)")
+        if not path:
+            return
+        try:
+            with open(path, "rb") as f:
+                pem = f.read()
+        except OSError:
+            QMessageBox.warning(self, "관리자 복구", "개인키 파일을 읽을 수 없습니다.")
+            return
+        passphrase = self._ask_password("개인키 파일의 암호를 입력하세요:")
+        new_pwd = self._ask_password("이 메모에 새로 설정할 암호:")
+        if not new_pwd:
+            return
+        if self._ask_password("새 암호를 한 번 더 입력하세요:") != new_pwd:
+            QMessageBox.warning(self, "관리자 복구", "두 암호가 일치하지 않습니다.")
+            return
+        try:
+            plain = sm.recover_memo_with_master(self.memo_data.get('id', ''), pem, passphrase, new_pwd)
+        except ValueError as e:
+            QMessageBox.warning(self, "관리자 복구", str(e))
+            return
+        self.memo_data['content'] = plain
+        self.memo_data.pop('_locked', None)
+        self.apply_data()
+        self.restart_relock_timer()
+        self.show_toast("🔓 복구 완료 · 새 암호 설정됨")
+        self._refresh_explorer()
+
+    def lock_now(self) -> None:
+        """암호 메모를 저장한 뒤 다시 잠급니다. 본문은 메모리에서도 지웁니다."""
+        sm = self._sync_manager()
+        if not sm or not self.memo_data.get('is_locked') or self.is_sealed():
+            return
+        self._auto_save_timer.stop()
+        self.execute_auto_save()
+        self._relock_timer.stop()
+        sm.relock_memo(self.memo_data.get('id', ''))
+        self.memo_data['content'] = ""
+        self.memo_data['_locked'] = True
+        self.apply_data()
+        self.show_toast("🔒 잠김")
+        self._refresh_explorer()
+
+    def set_memo_password(self) -> None:
+        sm = self._sync_manager()
+        if not sm or self.is_sealed():
+            return
+        pwd = self._ask_password("새 암호를 입력하세요:")
+        if not pwd:
+            return
+        if self._ask_password("확인을 위해 한 번 더 입력하세요:") != pwd:
+            QMessageBox.warning(self, "암호 메모", "두 암호가 일치하지 않습니다.")
+            return
+        if QMessageBox.question(
+            self, "암호 메모",
+            "암호를 잊으면 이 메모의 내용은 복구할 수 없습니다.\n계속할까요?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._auto_save_timer.stop()
+        self._dirty_since = None
+        self.memo_data['content'] = self.text_edit.toHtml()
+        self.memo_data['updated_at'] = datetime.datetime.now().isoformat()
+        if sm.set_memo_password(self.memo_data, pwd):
+            self.show_toast("🔒 암호 설정됨")
+            self.restart_relock_timer()
+            self._refresh_explorer()
+        else:
+            QMessageBox.warning(self, "암호 메모", "암호를 설정하지 못했습니다.")
+
+    def remove_memo_password(self) -> None:
+        sm = self._sync_manager()
+        if not sm or not self.memo_data.get('is_locked') or self.is_sealed():
+            return
+        if QMessageBox.question(
+            self, "암호 메모", "이 메모의 암호를 없애고 일반 메모로 되돌릴까요?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        self._auto_save_timer.stop()
+        self._dirty_since = None
+        self._relock_timer.stop()
+        self.memo_data['content'] = self.text_edit.toHtml()
+        self.memo_data['updated_at'] = datetime.datetime.now().isoformat()
+        if sm.remove_memo_password(self.memo_data):
+            self.show_toast("🔓 암호 제거됨")
+            self._refresh_explorer()
 
     def apply_number(self) -> None:
         cursor = self.text_edit.textCursor()
@@ -1240,9 +1391,46 @@ class MemoWindow(QWidget):
 
     def update_content(self) -> None:
         if getattr(self, '_is_updating_from_explorer', False) or getattr(self, '_is_applying_data', False): return
-        self._auto_save_timer.start(1000)
+        if self.is_sealed(): return
+        self._schedule_auto_save()
+        self.restart_relock_timer()
+
+    # 쉬지 않고 계속 입력하는 동안에도 최소한 이 간격으로는 저장합니다.
+    MAX_UNSAVED_SEC = 600
+
+    def _schedule_auto_save(self) -> None:
+        """마지막 입력 후 환경설정의 대기 시간이 지나면 저장하도록 예약합니다.
+
+        입력이 이어지면 예약을 뒤로 미루되, 첫 미저장 입력 후 MAX_UNSAVED_SEC를 넘기지는 않습니다.
+        """
+        import time
+        try:
+            idle = int(self.memo_window_get_settings().get("auto_save_idle_sec", 60))
+        except (TypeError, ValueError):
+            idle = 60
+        now = time.monotonic()
+        if self._dirty_since is None or not self._auto_save_timer.isActive():
+            self._dirty_since = now
+        remaining_cap = self.MAX_UNSAVED_SEC - (now - self._dirty_since)
+        delay = max(0.0, min(float(max(1, idle)), remaining_cap))
+        self._auto_save_timer.start(int(delay * 1000))
+
+    def flush_auto_save(self) -> None:
+        """예약된 자동 저장이 남아 있으면 지금 바로 저장합니다. (닫기·숨기기·앱 종료 시)"""
+        if self._auto_save_timer.isActive():
+            self._auto_save_timer.stop()
+            self.execute_auto_save()
+
+    def hideEvent(self, e: Any) -> None:
+        if not getattr(self, '_is_deleting', False):
+            self.flush_auto_save()
+        super().hideEvent(e)
 
     def execute_auto_save(self) -> None:
+        self._dirty_since = None
+        if self.is_sealed():
+            # 잠긴 상태의 빈 편집기를 본문으로 저장하면 안 됩니다.
+            return
         self.memo_data['content'] = self.text_edit.toHtml()
         self.memo_data['updated_at'] = datetime.datetime.now().isoformat()
         
@@ -1274,6 +1462,9 @@ class MemoWindow(QWidget):
             return
         self._is_applying_data = True
         try:
+            # 아래에서 memo_data['content']로 편집기를 다시 채우므로, 자동 저장 대기 중인 입력을 먼저 반영해 둡니다.
+            if self._auto_save_timer.isActive() and hasattr(self, 'text_edit'):
+                self.memo_data['content'] = self.text_edit.toHtml()
             self._apply_data_internal()
         finally:
             self._is_applying_data = False
@@ -1553,7 +1744,16 @@ class MemoWindow(QWidget):
         
         self.apply_line_bg_style()
         self.text_edit.update_line_number_area()
-                
+
+        # 잠긴(또는 읽을 수 없는) 메모는 편집을 막고 안내 문구를 보여줍니다.
+        self.text_edit.setReadOnly(self.is_sealed())
+        if self.memo_data.get('_locked'):
+            self.text_edit.setPlaceholderText("🔒 암호 메모입니다. 여기를 클릭하여 암호를 입력하세요.")
+        elif self.memo_data.get('_unreadable'):
+            self.text_edit.setPlaceholderText("⚠ 본문을 복호화할 수 없는 메모입니다. (원본은 그대로 보존됩니다)")
+        else:
+            self.text_edit.setPlaceholderText("")
+
         self._is_updating_from_explorer = False
         is_rolled = getattr(self, '_is_rolled_up', False) or self.memo_data.get('is_rolled_up', False)
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
@@ -1619,7 +1819,11 @@ class MemoWindow(QWidget):
                 self.window_layout.setContentsMargins(0, 0, 0, 0)
             
     def closeEvent(self, e: Any) -> None:
-        self._auto_save_timer.stop()
+        if getattr(self, '_is_deleting', False):
+            self._auto_save_timer.stop()
+        else:
+            # 아직 저장되지 않은 입력을 닫기 전에 반영
+            self.flush_auto_save()
         if hasattr(self, '_title_save_timer'):
             self._title_save_timer.stop()
 
@@ -1632,7 +1836,12 @@ class MemoWindow(QWidget):
         else:
             plain_text = clean_plain_text(self.text_edit.toHtml()).strip()
             
-        is_empty_draft = (not plain_text) and (not self.memo_data.get('is_manually_saved', False))
+        is_empty_draft = (
+            (not plain_text)
+            and (not self.memo_data.get('is_manually_saved', False))
+            and not self.memo_data.get('is_locked')
+            and not self.is_sealed()
+        )
         
         if is_empty_draft:
             self.delete_callback(self)
@@ -1661,6 +1870,11 @@ class MemoWindow(QWidget):
             self.memo_data['is_visible'] = False
             self.save_callback(self.memo_data)
             self.close_callback(self)
+            # 창을 닫으면 암호 메모의 키도 메모리에서 지웁니다.
+            self._relock_timer.stop()
+            sm = self._sync_manager()
+            if sm and self.memo_data.get('is_locked'):
+                sm.relock_memo(self.memo_data.get('id', ''))
         super().closeEvent(e)
         
     def enable_rename(self) -> None:
@@ -1730,6 +1944,7 @@ class MemoWindow(QWidget):
                     self.handle_rename()
 
             self._old_pos = e.globalPosition().toPoint()
+            self._press_geom = self.geometry()
             self._drag_start_pos = e.globalPosition().toPoint()
             self._drag_start_win_pos = self.pos()
             self._snap_lock_origin = None
@@ -1799,7 +2014,13 @@ class MemoWindow(QWidget):
         self._old_pos = None
         self._drag_from_title = False
         self._snap_lock_origin = None
-        
+
+        # 창을 옮기지도 크기를 바꾸지도 않은 단순 클릭이면 저장하지 않습니다.
+        press_geom = getattr(self, '_press_geom', None)
+        self._press_geom = None
+        if press_geom is not None and press_geom == self.geometry():
+            return
+
         if self._is_rolled_up:
             self.memo_data['rolled_position_y'] = self.y()
             self.memo_data['position_x'] = self.x()

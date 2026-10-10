@@ -46,23 +46,26 @@ class DriveAPI:
             print(f"GAS Ping Error: {e}")
             return False
 
-    def list_files(self) -> List[Dict[str, Any]]:
+    def list_files(self) -> Optional[List[Dict[str, Any]]]:
         """
         GAS를 통해 구글 드라이브의 Memos 폴더 내 파일 목록을 가져옵니다.
 
         Returns:
-            List[Dict[str, Any]]: 파일 객체 목록 (파일명, 수정시각 등 포함).
+            Optional[List[Dict[str, Any]]]: 파일 객체 목록 (파일명, 수정시각 등 포함).
+            목록을 받아오지 못했으면 None. ("파일이 하나도 없음"과 "조회 실패"를 구분하기 위함)
         """
         if not self.is_available() or not self.web_app_url:
-            return []
+            return None
         try:
             params = {"action": "list"}
             response = requests.get(self.web_app_url, params=params, timeout=10)
             if response.status_code == 200:
-                return response.json().get("files", [])
+                files = response.json().get("files")
+                if isinstance(files, list):
+                    return files
         except Exception as e:
             print(f"GAS List Error: {e}")
-        return []
+        return None
 
     def upload_file(self, filename: str, content: Dict[str, Any]) -> bool:
         """
@@ -84,7 +87,8 @@ class DriveAPI:
                 "content": json.dumps(content, ensure_ascii=False)
             }
             response = requests.post(self.web_app_url, data=json.dumps(data), timeout=10)
-            return response.status_code == 200
+            # GAS는 스크립트 오류·권한 문제도 200 + HTML로 돌려주므로, 스크립트가 보낸 "Success" 본문까지 확인합니다.
+            return response.status_code == 200 and response.text.strip().startswith("Success")
         except Exception as e:
             print(f"GAS Upload Error: {e}")
             return False
@@ -130,7 +134,7 @@ class DriveAPI:
         try:
             data = {"action": "delete", "filename": filename}
             response = requests.post(self.web_app_url, data=json.dumps(data), timeout=10)
-            return response.status_code == 200
+            return response.status_code == 200 and response.text.strip().startswith("Moved to Trash")
         except Exception as e:
             print(f"GAS Delete Error: {e}")
             return False

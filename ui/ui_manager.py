@@ -1,83 +1,26 @@
-from PyQt6.QtCore import QMetaObject, QObject, pyqtSlot
+from PyQt6.QtCore import QMetaObject
 
 from ui.memo_window import MemoWindow
 from ui.memo_explorer import MemoExplorerWindow
 from ui.settings_window import SettingsWindow
-from ui.dialogs import PasswordSetupDialog, PasswordLoginDialog, OTPRescueDialog, ConflictDialog
+from ui.global_hotkeys import GlobalHotkeys
 import sys
 import re
 import random
 import datetime
-import math
 import uuid
-import json
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
-from PyQt6.QtWidgets import (
-    QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, 
-    QLineEdit, QMenu, QSystemTrayIcon, QApplication, QMessageBox, 
-    QLabel, QComboBox, QCheckBox, QFileDialog, QTableWidget, 
-    QTableWidgetItem, QHeaderView, QDialog, QDialogButtonBox,
-    QGraphicsDropShadowEffect, QFrame, QSizeGrip, QFontComboBox,
-    QColorDialog, QTabWidget, QKeySequenceEdit, QGroupBox, QFormLayout,
-    QScrollArea, QSlider, QSpinBox, QWidgetAction
-)
-from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, QEvent, QRect, QByteArray
-from PyQt6.QtGui import (
-    QIcon, QAction, QColor, QShortcut, QKeySequence, QFont, QFontDatabase,
-    QPixmap, QPainter, QTextListFormat, QTextCursor, QTextCharFormat, QPalette, QTextDocument,
-    QSyntaxHighlighter, QCursor
-)
+from typing import List, Dict, Any, Optional
+from PyQt6.QtWidgets import QWidget, QMenu, QSystemTrayIcon, QApplication
+from PyQt6.QtCore import Qt, QTimer, QByteArray
+from PyQt6.QtGui import QIcon, QPixmap, QPainter
 from PyQt6.QtSvg import QSvgRenderer
-import os
 import threading
-from utils.text_utils import convert_eng_kor_smart
-from utils.text_utils import clean_plain_text
-
-try:
-    import keyboard
-except Exception:
-    # 외부 패키지 필요: pip install keyboard
-    keyboard = None
 
 PASTEL_COLORS = ["#E0F2FE", "#DCFCE7", "#FEF9C3", "#FCE7F3", "#FFFFFF"]
 
 from ui.themes import LIGHT_THEMES, DARK_THEMES
-
-
-class _GlobalHotkeyDispatcher(QObject):
-    def __init__(self, ui_manager: 'UIManager') -> None:
-        super().__init__()
-        self.ui_manager = ui_manager
-
-    @pyqtSlot()
-    def trigger_create_empty_memo(self) -> None:
-        self.ui_manager.create_empty_memo()
-
-    @pyqtSlot()
-    def trigger_create_code_memo(self) -> None:
-        self.ui_manager.create_code_memo()
-
-    @pyqtSlot()
-    def trigger_open_memo_explorer(self) -> None:
-        self.ui_manager.open_memo_explorer()
-
-    @pyqtSlot()
-    def trigger_toggle_explorer(self) -> None:
-        """탐색기 창을 토글합니다 (켜기/숨기기)."""
-        self.ui_manager.toggle_explorer()
-
-    @pyqtSlot()
-    def trigger_toggle_all(self) -> None:
-        self.ui_manager.toggle_all()
-
-    @pyqtSlot()
-    def trigger_arrange_rolled_memos(self) -> None:
-        self.ui_manager.arrange_rolled_up_memos()
-
-    @pyqtSlot()
-    def trigger_arrange_all_memos(self) -> None:
-        self.ui_manager.arrange_memos()
+from core.defaults import DEFAULT_SHORTCUTS
 
 
 class UIManager:
@@ -91,10 +34,23 @@ class UIManager:
         self.explorer_window: Optional[MemoExplorerWindow] = None
         self.settings_window: Optional['SettingsWindow'] = None
         self._cascade_count: int = 0
-        self._global_hotkey_handles: List[Any] = []
-        self._hotkey_dispatcher = _GlobalHotkeyDispatcher(self)
+        self._hotkeys = GlobalHotkeys()
         self.sync_manager.set_ui_manager(self)
         self.setup_tray()
+        app = QApplication.instance()
+        if app:
+            app.aboutToQuit.connect(self.flush_pending_saves)
+
+    def flush_pending_saves(self) -> None:
+        """앱 종료 직전, 자동 저장 주기를 기다리던 입력을 모두 저장합니다."""
+        for w in list(self.memo_windows.values()):
+            try:
+                w.flush_auto_save()
+            except Exception as e:
+                self.sync_manager.log_error(f"종료 시 메모 저장 실패: {e}", e)
+        if self.explorer_window:
+            self.explorer_window._flush_preview_save()
+        self._hotkeys.unregister_all()
     
     def get_theme_icon(self, svg_name: str, is_dark: Optional[bool] = None, override_color: Optional[str] = None) -> QIcon:
         if getattr(sys, 'frozen', False):
@@ -173,34 +129,34 @@ class UIManager:
 
         menu.setStyleSheet(f"QMenu {{ background: {pal['card']}; color: {pal['text']}; border: 1px solid {pal['border']}; border-radius: 10px; padding: 4px; }} QMenu::item:selected {{ background-color: {pal['accent']}; color: white; border-radius: 6px; }}")
         
-        s = self.sync_manager.settings.get("shortcuts", {})
-        
-        act_new = menu.addAction(self._fmt_sc("새 메모", s.get('new_memo', 'Ctrl+N')))
+        s = {**DEFAULT_SHORTCUTS, **self.sync_manager.settings.get("shortcuts", {})}
+
+        act_new = menu.addAction(self._fmt_sc("새 메모", s['new_memo']))
         act_new.setIcon(self.get_theme_icon("memo.svg", is_dark))
         act_new.triggered.connect(self.create_empty_memo)
 
-        act_code = menu.addAction(self._fmt_sc("새 코드 메모", s.get('new_code_memo', 'Ctrl+Shift+N')))
+        act_code = menu.addAction(self._fmt_sc("새 코드 메모", s['new_code_memo']))
         act_code.setIcon(self.get_theme_icon("codememo.svg", is_dark))
         act_code.triggered.connect(self.create_code_memo)
 
-        act_arr_r = menu.addAction(self._fmt_sc("접은 메모 정렬", s.get('arrange_rolled_memos', 'Ctrl+Alt+R')))
+        act_arr_r = menu.addAction(self._fmt_sc("접은 메모 정렬", s['arrange_rolled_memos']))
         act_arr_r.setIcon(self.get_theme_icon("정렬1.svg", is_dark))
         act_arr_r.triggered.connect(self.arrange_rolled_up_memos)
 
-        act_exp = menu.addAction(self._fmt_sc("메모 탐색기", s.get('open_explorer', 'Ctrl+E')))
+        act_exp = menu.addAction(self._fmt_sc("메모 탐색기", s['open_explorer']))
         act_exp.setIcon(self.get_theme_icon("memo.svg", is_dark))
         act_exp.triggered.connect(self.open_memo_explorer)
 
-        act_arr_a = menu.addAction(self._fmt_sc("펼친 메모 정렬", s.get('arrange_all_memos', 'Ctrl+Alt+A')))
+        act_arr_a = menu.addAction(self._fmt_sc("펼친 메모 정렬", s['arrange_all_memos']))
         act_arr_a.setIcon(self.get_theme_icon("정렬2.svg", is_dark))
         act_arr_a.triggered.connect(self.arrange_memos)
 
         act_sync = menu.addAction("지금 동기화")
         act_sync.setIcon(self.get_theme_icon("cloude.svg", is_dark))
-        act_sync.triggered.connect(self.sync_manager.sync_push)
+        act_sync.triggered.connect(self.sync_manager.sync_all)
         
         title_toggle = "모두 숨기기" if self._all_visible else "모두 보이기"
-        self.toggle_action = menu.addAction(self._fmt_sc(title_toggle, s.get('toggle_all_memos', 'Ctrl+Shift+H')))
+        self.toggle_action = menu.addAction(self._fmt_sc(title_toggle, s['toggle_all_memos']))
         self.toggle_action.setIcon(self.get_theme_icon("minimize.svg", is_dark))
         self.toggle_action.triggered.connect(self.toggle_all)
         
@@ -218,58 +174,32 @@ class UIManager:
         self.tray_icon.setContextMenu(self._tray_menu)
         self.register_global_hotkeys()
 
-    def _normalize_keyboard_hotkey(self, shortcut: str) -> str:
-        normalized = shortcut.strip().replace(" ", "")
-        replacements = {
-            "Ctrl": "ctrl",
-            "Shift": "shift",
-            "Alt": "alt",
-            "Win": "windows",
-            "Meta": "windows",
-        }
-        for old, new in replacements.items():
-            normalized = normalized.replace(old, new)
-            normalized = normalized.replace(old.lower(), new)
-        return normalized.lower()
-
-    def _invoke_hotkey(self, method_name: str) -> None:
-        QMetaObject.invokeMethod(self._hotkey_dispatcher, method_name, Qt.ConnectionType.QueuedConnection)
-
-    def _clear_global_hotkeys(self) -> None:
-        if keyboard is None:
-            return
-        while self._global_hotkey_handles:
-            handle = self._global_hotkey_handles.pop()
-            try:
-                keyboard.remove_hotkey(handle)
-            except Exception:
-                pass
-
     def register_global_hotkeys(self) -> None:
-        self._clear_global_hotkeys()
-        if keyboard is None:
-            return
+        """전역 단축키를 (재)등록합니다. 등록된 조합은 이 앱만 받고 다른 프로그램에는 전달되지 않습니다."""
+        self._hotkeys.unregister_all()
 
-        shortcuts = self.sync_manager.settings.get("shortcuts", {})
+        shortcuts = {**DEFAULT_SHORTCUTS, **self.sync_manager.settings.get("shortcuts", {})}
         bindings = [
-            ("new_memo",            "trigger_create_empty_memo"),
-            ("new_code_memo",       "trigger_create_code_memo"),
-            ("open_explorer",       "trigger_toggle_explorer"),
-            ("toggle_all_memos",    "trigger_toggle_all"),
-            ("arrange_rolled_memos","trigger_arrange_rolled_memos"),
-            ("arrange_all_memos",   "trigger_arrange_all_memos"),
+            ("new_memo",            self.create_empty_memo),
+            ("new_code_memo",       self.create_code_memo),
+            ("open_explorer",       self.toggle_explorer),
+            ("toggle_all_memos",    self.toggle_all),
+            ("arrange_rolled_memos",self.arrange_rolled_up_memos),
+            ("arrange_all_memos",   self.arrange_memos),
         ]
 
-        for shortcut_key, method_name in bindings:
+        failed = []
+        for shortcut_key, callback in bindings:
             shortcut = shortcuts.get(shortcut_key, "")
             if not shortcut:
                 continue
-            key_combo = self._normalize_keyboard_hotkey(shortcut)
-            try:
-                handle = keyboard.add_hotkey(key_combo, lambda name=method_name: self._invoke_hotkey(name), suppress=False)
-                self._global_hotkey_handles.append(handle)
-            except Exception as exc:
-                self.sync_manager.log_error(f"글로벌 단축키 등록 실패 ({shortcut_key}: {key_combo}): {exc}", exc)
+            if not self._hotkeys.register(shortcut, callback):
+                failed.append(shortcut)
+        if failed:
+            msg = f"전역 단축키 등록 실패: {', '.join(failed)} (다른 프로그램이 사용 중이거나 지원하지 않는 조합)"
+            self.sync_manager.log_error(msg)
+            if hasattr(self, 'tray_icon'):
+                self.tray_icon.showMessage("Memos 단축키", msg, QSystemTrayIcon.MessageIcon.Warning, 4000)
 
     def enforce_z_order_layering(self) -> None:
         for w in self.memo_windows.values():
@@ -288,10 +218,10 @@ class UIManager:
         def _task():
             for w in memos_list:
                 try:
-                    w.memo_data['updated_at'] = datetime.now().isoformat()
+                    w.memo_data['updated_at'] = datetime.datetime.now().isoformat()
                     self.sync_manager.save_memo_locally(w.memo_data)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.sync_manager.log_error(f"정렬 후 메모 저장 실패: {e}", e)
             if self.explorer_window and self.explorer_window.isVisible():
                 QMetaObject.invokeMethod(self.explorer_window, "refresh", Qt.ConnectionType.QueuedConnection)
         import threading
@@ -432,8 +362,6 @@ class UIManager:
             self.open_memo_explorer()
 
     def open_memo_explorer(self) -> None:
-        if not self.ensure_unlocked():
-            return
         if not self.explorer_window:
             self.explorer_window = MemoExplorerWindow(self)
         self.explorer_window.setWindowState(self.explorer_window.windowState() & ~Qt.WindowState.WindowMinimized | Qt.WindowState.WindowActive)
@@ -444,34 +372,7 @@ class UIManager:
         self.settings_window = SettingsWindow(self.sync_manager)
         self.settings_window.show()
 
-    def ensure_unlocked(self) -> bool:
-        if not self.sync_manager.has_vault():
-            dlg = PasswordSetupDialog()
-            if dlg.exec() == QDialog.DialogCode.Accepted:
-                ok = self.sync_manager.create_vault(dlg.password)
-                if ok:
-                    self.sync_manager.save_remembered_password(dlg.password, dlg.remember)
-                return ok
-            else:
-                return False
-                
-        if self.sync_manager.is_unlocked():
-            return True
-            
-        if self.sync_manager.try_auto_login():
-            return True
-
-        dlg = PasswordLoginDialog(self.sync_manager)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            return True
-        else:
-            return False
-        
     def show_all_memos(self) -> None:
-        if not self.ensure_unlocked():
-            QMessageBox.warning(None, "잠금 해제 실패", "비밀번호 인증이 완료되지 않아 메모를 로드할 수 없습니다.")
-            return
-
         ms = self.sync_manager.load_local_memos()
         if not ms:
             self.create_empty_memo()
@@ -481,7 +382,13 @@ class UIManager:
             self.enforce_z_order_layering()
                 
     def show_specific_memo(self, identifier: str) -> None:
-        if not self.ensure_unlocked(): return
+        self._show_specific_memo(identifier)
+        # 잠긴 암호 메모를 열었으면 바로 암호를 묻습니다.
+        w = self.memo_windows.get(identifier)
+        if w and w.isVisible() and w.memo_data.get('_locked'):
+            QTimer.singleShot(0, w.prompt_unlock)
+
+    def _show_specific_memo(self, identifier: str) -> None:
         target_win = None
         if identifier in self.memo_windows:
             target_win = self.memo_windows[identifier]
@@ -515,7 +422,6 @@ class UIManager:
 
                     
     def create_empty_memo(self) -> None:
-        if not self.ensure_unlocked(): return
         memo_id = str(uuid.uuid4())
         
         cfg = getattr(self.sync_manager, 'settings', {})
@@ -571,7 +477,6 @@ class UIManager:
         self.create_new_memo(memo_data, show_on_create=True)
 
     def create_code_memo(self) -> None:
-        if not self.ensure_unlocked(): return
         memo_id = str(uuid.uuid4())
         cfg = getattr(self.sync_manager, 'settings', {})
         default_code_lang = cfg.get('default_code_lang', 'JSON')
@@ -702,6 +607,22 @@ class UIManager:
             for w in list(self.memo_windows.values()):
                 if w.memo_data.get('title') == identifier:
                     w.close()
+
+    def reload_pulled_memos(self, memo_ids: List[str]) -> None:
+        """동기화로 디스크 내용이 바뀐 메모 중 열려 있는 창을 새 내용으로 갱신합니다."""
+        open_ids = [i for i in memo_ids if i in self.memo_windows]
+        if not open_ids:
+            return
+        fresh = {m.get('id'): m for m in self.sync_manager.load_local_memos()}
+        for memo_id in open_ids:
+            w = self.memo_windows[memo_id]
+            m = fresh.get(memo_id)
+            # 입력 중(자동저장 대기)인 창은 건드리지 않습니다. 곧 저장되는 사용자 입력이 우선합니다.
+            if not m or w._auto_save_timer.isActive():
+                continue
+            m['is_visible'] = w.memo_data.get('is_visible', m.get('is_visible', True))
+            w.memo_data = m
+            w.apply_data()
 
     def notify_save(self, m: Dict[str, Any]) -> None: 
         self.sync_manager.save_memo_locally(m)
