@@ -5,6 +5,7 @@ from core import reminders
 from ui import checklist
 from ui.check_marks import CheckEdit
 from ui.lock_overlay import WindowOverlay
+from ui.settings_window import SettingsWindow
 from ui.themes import app_palette
 from ui import modern_style
 from core import folders
@@ -30,6 +31,7 @@ class MemoExplorerWindow(QWidget):
     FAVORITE_COLOR = "#F5A623"
     SIDEBAR_WIDTH = 176          # 사이드바(폴더 목록)의 너비
     SIDEBAR_GAP = 12
+    SETTINGS_WIDTH = 540         # 환경설정 패널의 너비
     # 창 둘레의 투명한 여백. 눈에 보이는 테두리는 창의 실제 크기보다 이만큼 안쪽에 있습니다.
     # 화면 끝에 붙일 때는 보이는 테두리가 끝에 닿도록 이 여백만큼 창이 화면 밖으로 나가게 합니다.
     EDGE_MARGIN = 15
@@ -47,6 +49,10 @@ class MemoExplorerWindow(QWidget):
         self.current_folder: str = str(self.ui_manager.sync_manager.settings.get("explorer_folder", folders.ALL) or folders.ALL)
         # 사이드바를 열어 창 왼쪽에 덧붙인 너비. 탐색기 본래 크기(글자 크기 계산·저장되는 창 크기)에는 넣지 않습니다.
         self._sidebar_extra: int = 0
+        # 환경설정 패널: 열면 탐색기 창이 그만큼 옆으로 늘어납니다. (오른쪽에 자리가 없으면 왼쪽)
+        self.settings_panel: Optional[SettingsWindow] = None
+        self._settings_extra: int = 0
+        self._settings_side: str = "right"
         self._old_pos: Optional[QPoint] = None
         self._is_loading_preview: bool = False
         # 검색어 입력이 멈춘 뒤에만 목록을 다시 읽습니다. (글자마다 전체 재로딩 방지)
@@ -503,7 +509,7 @@ class MemoExplorerWindow(QWidget):
         self._apply_minimum_size()
         self.setMaximumSize(16777215, 16777215)
         if geom and len(geom) == 4 and not self.isMaximized():
-            self.resize(max(580, int(geom[2])) + self._sidebar_extra, max(440, int(geom[3])))
+            self.resize(max(580, int(geom[2])) + self._sidebar_extra + self._settings_extra, max(440, int(geom[3])))
         if fixed:
             # 모니터 간 이동(DPI 변경) 등 어떤 경우에도 크기가 변하지 않도록 고정
             self.setFixedSize(self.size())
@@ -681,6 +687,10 @@ class MemoExplorerWindow(QWidget):
             self._refresh_btn_labels()
 
     def closeEvent(self, event: Any) -> None:
+        if not self.settle_unsaved_settings():           # 저장하지 않은 변경이 있는데 '취소'를 고르면 닫지 않음
+            event.ignore()
+            return
+        self.close_settings_panel()
         # 사이드바로 덧붙인 왼쪽 영역은 빼고, 탐색기 본래 위치·크기만 기억합니다.
         geom = [self.x() + self._sidebar_extra, self.y(), self.content_width(), self.height()]
         self.ui_manager.sync_manager.settings['explorer_geom'] = geom
@@ -899,7 +909,8 @@ class MemoExplorerWindow(QWidget):
         """창의 최소 크기. 폴더 탭 줄처럼 화면에 놓인 것이 늘어나면 그만큼 더 필요하므로, 배치가 요구하는 크기보다 작아지지 않게 합니다."""
         # 너비는 내용에 따라 늘리지 않습니다. (긴 폴더 이름은 줄여 보여 주고, 많은 탭은 < > 로 넘겨 봄)
         self._fit_header()
-        self.setMinimumSize(self.MIN_WIDTH + self._sidebar_extra, max(self.MIN_HEIGHT, self.minimumSizeHint().height()))
+        self.setMinimumSize(self.MIN_WIDTH + self._sidebar_extra + self._settings_extra,
+                            max(self.MIN_HEIGHT, self.minimumSizeHint().height()))
 
     MIN_WIDTH, MIN_HEIGHT = 580, 440
 
@@ -932,8 +943,8 @@ class MemoExplorerWindow(QWidget):
         self.folder_combo.view().setMinimumWidth(240)
 
     def content_width(self) -> int:
-        """사이드바로 덧붙인 영역을 뺀, 탐색기 본래 너비."""
-        return self.width() - self._sidebar_extra
+        """사이드바·환경설정 패널로 덧붙인 영역을 뺀, 탐색기 본래 너비."""
+        return self.width() - self._sidebar_extra - self._settings_extra
 
     def _set_sidebar_extra(self, extra: int) -> None:
         """폴더 목록을 여닫을 때 창을 왼쪽으로 그만큼 늘리거나 줄입니다.
@@ -959,6 +970,108 @@ class MemoExplorerWindow(QWidget):
             screen = QGuiApplication.screenAt(geom.center()) or QGuiApplication.primaryScreen()
             if screen:
                 left = max(screen.availableGeometry().left() - self.EDGE_MARGIN, left)
+        self.setGeometry(left, geom.y(), geom.width() + delta, geom.height())
+        self._apply_minimum_size()
+        if fixed:
+            self.setFixedSize(self.size())
+        self._limit_to_screen()
+
+    # ── 환경설정 패널 (폴더 사이드바처럼 탐색기와 한 창으로 열림) ──────────────
+    def settings_open(self) -> bool:
+        return self.settings_panel is not None
+
+    def _pick_settings_side(self) -> str:
+        """패널을 붙일 쪽. 오른쪽에 자리가 있으면 오른쪽, 없고 왼쪽에 있으면 왼쪽."""
+        need = self.SETTINGS_WIDTH + self.SIDEBAR_GAP
+        area = screen_bounds.work_area(self)
+        if area is None or self.isMaximized():
+            return "right"
+        left = self.x() + self.EDGE_MARGIN                       # 보이는 테두리의 왼쪽
+        right = self.x() + self.width() - self.EDGE_MARGIN
+        if right + need <= area.left() + area.width():
+            return "right"
+        return "left" if left - need >= area.left() else "right"
+
+    def open_settings_panel(self) -> None:
+        if self.settings_panel is not None:
+            return
+        panel = SettingsWindow(self.ui_manager.sync_manager, embedded=True)
+        panel.setFixedWidth(self.SETTINGS_WIDTH)
+        panel.on_close = self.ask_and_close_settings_panel
+        side = self._pick_settings_side()
+        outer = self.bg.layout()
+        if side == "left":
+            outer.insertWidget(0, panel)
+        else:
+            outer.addWidget(panel)
+        self.settings_panel = panel
+        panel.show()
+        self._resize_for_settings(self.SETTINGS_WIDTH + self.SIDEBAR_GAP, side)
+
+    def settle_unsaved_settings(self) -> bool:
+        """환경설정에 저장하지 않은 변경이 있으면 어떻게 할지 묻습니다. 닫아도 되면 True, 취소했으면 False.
+
+        '저장하고 닫기'를 고르면 여기서 저장합니다. 바뀐 것이 없으면 묻지 않습니다.
+        """
+        panel = self.settings_panel
+        if panel is None or not panel.is_dirty():
+            return True
+        if getattr(self, '_asking_unsaved', False):
+            return False                                 # 이미 묻고 있는 중
+        self._asking_unsaved = True
+        try:
+            choice = themed_dialog.choose(
+                self, "저장하지 않은 변경이 있습니다", "환경설정에서 바꾼 내용을 저장할까요?",
+                [("저장하고 닫기", "save", "primary"), ("저장 안 함", "discard", ""), ("취소", None, "")])
+        finally:
+            self._asking_unsaved = False
+        if choice == "save":
+            if self.settings_panel is not None:
+                self.settings_panel.save()
+            return True
+        return choice == "discard"
+
+    def ask_and_close_settings_panel(self) -> bool:
+        """환경설정 패널을 닫습니다. 저장하지 않은 변경이 있으면 먼저 묻고, 취소하면 닫지 않습니다(False)."""
+        if not self.settle_unsaved_settings():
+            return False
+        self.close_settings_panel()
+        return True
+
+    def request_hide(self) -> bool:
+        """탐색기를 숨깁니다. 환경설정에 저장하지 않은 변경이 있으면 먼저 묻고, 취소하면 숨기지 않습니다(False)."""
+        if not self.settle_unsaved_settings():
+            return False
+        self.hide()
+        return True
+
+    def close_settings_panel(self) -> None:
+        """환경설정 패널을 묻지 않고 닫습니다. (저장하지 않은 변경은 버림)"""
+        panel = self.settings_panel
+        if panel is None:
+            return
+        self.settings_panel = None
+        if self.ui_manager.settings_window is panel:
+            self.ui_manager.settings_window = None
+        self.bg.layout().removeWidget(panel)
+        panel.hide()
+        panel.deleteLater()
+        self._resize_for_settings(0, self._settings_side)
+
+    def _resize_for_settings(self, extra: int, side: str) -> None:
+        """환경설정 패널을 여닫을 때 창을 그만큼 늘리거나 줄입니다. 탐색기 본래 영역의 크기는 그대로 둡니다."""
+        delta = extra - self._settings_extra
+        self._settings_extra, self._settings_side = extra, side
+        if delta == 0 or self.isMaximized():
+            return
+        fixed = self.is_size_fixed()
+        geom = self.geometry()
+        for holder in (self.bg, self):
+            if holder.layout():
+                holder.layout().activate()
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        left = geom.x() - delta if side == "left" else geom.x()
         self.setGeometry(left, geom.y(), geom.width() + delta, geom.height())
         self._apply_minimum_size()
         if fixed:
@@ -1485,6 +1598,8 @@ class MemoExplorerWindow(QWidget):
 
     def hideEvent(self, event: Any) -> None:
         self._flush_preview_save()
+        if not event.spontaneous():                      # 최소화가 아니라 숨기거나 닫을 때: 환경설정 패널도 닫음
+            self.close_settings_panel()
         super().hideEvent(event)
 
     def on_cell_double_click(self, r: int, c: int) -> None:

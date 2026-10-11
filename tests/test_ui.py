@@ -70,6 +70,14 @@ class UiTestCase(unittest.TestCase):
 
         is_enabled = lambda *a, **k: self.auto_start["on"]
         self.confirm_answer = True
+        self.choice_answer = "discard"
+        self.choices_asked = []
+        self.real_choose = themed_dialog.choose
+
+        def fake_choose(parent, title, text, options):
+            self.choices_asked.append(title)
+            return self.choice_answer
+
         self.real_form_ask = lock_overlay.ask
         self.real = {"confirm": themed_dialog.confirm, "ask_form": themed_dialog.ask_form}
         real_toast = themed_dialog.toast
@@ -103,6 +111,8 @@ class UiTestCase(unittest.TestCase):
             mock.patch.object(themed_dialog, "ask_text",
                               lambda *a, **k: (self.answers.pop(0), True) if self.answers else ("", False)),
             mock.patch.object(themed_dialog, "confirm", lambda *a, **k: self.confirm_answer),
+            # 버튼 여러 개 중 고르기(저장하고 닫기 / 저장 안 함 / 취소)는 choice_answer 로 답하고, 물은 횟수를 셉니다.
+            mock.patch.object(themed_dialog, "choose", fake_choose),
             mock.patch.object(themed_dialog, "toast", spy_toast),
             mock.patch.object(lock_overlay, "ask", fake_form),
             # 잠긴 메모의 암호 칸에 커서를 두는 대신, 위의 대역으로 암호를 묻게 합니다.
@@ -188,17 +198,17 @@ class WindowManagementTest(UiTestCase):
         self.assertIsNot(self.ui.get_theme_icon("memo.svg", True), a)                       # 색이 다르면 다른 아이콘
         self.assertIsNot(self.ui.get_theme_icon("memo.svg", False, override_color="#FF0000"), a)
 
-    def test_settings_window_is_reused_while_open(self) -> None:
+    def test_settings_panel_is_reused_while_open(self) -> None:
         self.ui.open_settings()
         first = self.ui.settings_window
-        first.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-        first.show()
+        self.assertTrue(first.isVisible())
         self.ui.open_settings()
-        self.assertIs(self.ui.settings_window, first)
-        first.close()
+        self.assertIs(self.ui.settings_window, first)             # 이미 열려 있으면 새로 만들지 않음 (고치던 값 유지)
+        self.ui.explorer_window.close_settings_panel()
+        self.assertIsNone(self.ui.settings_window)
         self.ui.open_settings()
         self.assertIsNot(self.ui.settings_window, first)
-        self.ui.settings_window.close()
+        self.ui.explorer_window.close_settings_panel()
 
     def test_arrange_keeps_windows_on_their_screen_and_modified_time(self) -> None:
         a, b = self.open_window("memo-0000"), self.open_window("memo-0001")

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from PyQt6.QtWidgets import QMenu, QSystemTrayIcon, QApplication
 from PyQt6.QtCore import Qt, QTimer, QByteArray
-from PyQt6.QtGui import QIcon, QPixmap, QPainter
+from PyQt6.QtGui import QIcon, QKeySequence, QPixmap, QPainter, QShortcut
 from PyQt6.QtSvg import QSvgRenderer
 import threading
 
@@ -192,7 +192,7 @@ class UIManager:
         menu.addSeparator()
         act_quit = menu.addAction("종료")
         act_quit.setIcon(self.get_theme_icon("close.svg", is_dark, override_color="#FF453A"))
-        act_quit.triggered.connect(QApplication.quit)
+        act_quit.triggered.connect(self.quit_app)
 
         self._tray_menu = menu
         self.tray_icon.setContextMenu(self._tray_menu)
@@ -336,8 +336,17 @@ class UIManager:
             self.explorer_window.refresh()
 
     def register_global_hotkeys(self) -> None:
-        """전역 단축키를 (재)등록합니다. 등록된 조합은 이 앱만 받고 다른 프로그램에는 전달되지 않습니다."""
+        """새 메모·탐색기 열기 같은 단축키를 (재)등록합니다.
+
+        환경설정의 '다른 프로그램을 쓰는 중에도 단축키 받기'가
+          켜져 있으면: 전역 단축키로 등록합니다. 어디서나 동작하지만 그 조합은 이 앱만 받고 다른 프로그램에는 전달되지 않습니다.
+          꺼져 있으면: 메모 탐색기나 메모 창이 앞에 있을 때만 동작합니다. 다른 프로그램은 그 조합을 그대로 쓸 수 있습니다.
+        """
         self._hotkeys.unregister_all()
+        for shortcut in getattr(self, '_app_shortcuts', []):
+            shortcut.setEnabled(False)
+            shortcut.deleteLater()
+        self._app_shortcuts: List[QShortcut] = []
 
         shortcuts = {**DEFAULT_SHORTCUTS, **self.sync_manager.settings.get("shortcuts", {})}
         bindings = [
@@ -349,6 +358,18 @@ class UIManager:
             ("arrange_all_memos",   self.arrange_memos),
             ("quick_search",        self.toggle_quick_search),
         ]
+
+        if not self.sync_manager.settings.get("global_hotkeys", True):
+            app = QApplication.instance()
+            for shortcut_key, callback in bindings:
+                sequence = shortcuts.get(shortcut_key, "")
+                if not sequence:
+                    continue
+                shortcut = QShortcut(QKeySequence(sequence), app)
+                shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)      # 이 앱의 창이 앞에 있을 때만
+                shortcut.activated.connect(callback)
+                self._app_shortcuts.append(shortcut)
+            return
 
         failed = []
         for shortcut_key, callback in bindings:
@@ -465,7 +486,7 @@ class UIManager:
 
         if val in (2, 3):
             if self.explorer_window and self.explorer_window.isVisible():
-                self.explorer_window.hide()
+                self.explorer_window.request_hide()
             else:
                 self.open_memo_explorer()
 
@@ -498,7 +519,7 @@ class UIManager:
     def toggle_explorer(self) -> None:
         """메모 탐색기를 토글합니다. 보이면 숨기고, 숨어있으면 열어서 포커스를 줍니다."""
         if self.explorer_window and self.explorer_window.isVisible():
-            self.explorer_window.hide()
+            self.explorer_window.request_hide()      # 환경설정에 저장하지 않은 변경이 있으면 먼저 물음
         else:
             self.open_memo_explorer()
 
@@ -512,24 +533,31 @@ class UIManager:
         self.sync_manager.check_remote_if_stale()
 
     def open_settings(self) -> None:
-        if self.settings_window and self.settings_window.isVisible():
-            # 이미 열려 있으면 새로 만들지 않습니다. (고치던 값이 사라지지 않도록)
-            self.settings_window.setWindowState(self.settings_window.windowState() & ~Qt.WindowState.WindowMinimized)
-            self.settings_window.raise_()
-            self.settings_window.activateWindow()
-            return
-        self.settings_window = SettingsWindow(self.sync_manager)
-        self.settings_window.show()
-        # 탐색기가 떠 있으면 그 옆(자리에 따라 오른쪽이나 왼쪽)에 붙여서 엽니다.
-        if self.explorer_window and self.explorer_window.isVisible():
-            self.settings_window.dock_to(self.explorer_window)
+        """환경설정을 엽니다. 따로 창을 띄우지 않고 메모 탐색기 옆에 패널로 엽니다. (탐색기가 닫혀 있으면 함께 엶)"""
+        self.open_memo_explorer()
+        explorer = self.explorer_window
+        explorer.open_settings_panel()          # 이미 열려 있으면 그대로 둠 (고치던 값이 사라지지 않도록)
+        self.settings_window = explorer.settings_panel
+        explorer.raise_()
+        explorer.activateWindow()
 
     def toggle_settings(self) -> None:
         """환경설정이 열려 있으면 닫고, 닫혀 있으면 엽니다. (탐색기의 환경설정 버튼)"""
-        if self.settings_window and self.settings_window.isVisible() and not self.settings_window.isMinimized():
-            self.settings_window.close()
+        explorer = self.explorer_window
+        if explorer and explorer.isVisible() and explorer.settings_open():
+            explorer.ask_and_close_settings_panel()
         else:
             self.open_settings()
+
+    def quit_app(self) -> None:
+        """앱을 끝냅니다. 환경설정에 저장하지 않은 변경이 있으면 먼저 묻고, 취소하면 끝내지 않습니다."""
+        explorer = self.explorer_window
+        if explorer and explorer.settings_open() and explorer.settings_panel.is_dirty():
+            self.open_memo_explorer()                # 묻는 화면이 보이도록 탐색기를 앞으로
+            if not explorer.settle_unsaved_settings():
+                return
+            explorer.close_settings_panel()
+        QApplication.quit()
 
     def show_all_memos(self) -> None:
         ms = self.sync_manager.load_local_memos()

@@ -1003,39 +1003,107 @@ class LayoutAndGuideTest(test_ui.UiTestCase):
         for memo in guide.build(D(2026, 1, 1)):
             self.assertTrue(test_ui.smm.is_safe_memo_id(memo["id"]) if hasattr(test_ui.smm, "is_safe_memo_id") else True)
 
-    def test_settings_opens_attached_to_the_explorer(self) -> None:
+    def test_settings_opens_as_a_panel_inside_the_explorer(self) -> None:
         ex = self.explorer()
         ex.move(300, 200)
+        ex.resize(700, 600)
+        test_ui._app.processEvents()
+        before = ex.geometry()
+        content = ex.content_width()
+        table_left = ex.table.mapToGlobal(QPoint(0, 0)).x()
+        self.ui.open_settings()
+        test_ui._app.processEvents()
+        panel = self.ui.settings_window
+        self.assertIs(panel, ex.settings_panel)
+        self.assertIs(panel.window(), ex)                            # 따로 뜬 창이 아니라 탐색기 창의 일부
+        self.assertTrue(ex.bg.isAncestorOf(panel) and panel.isVisible())
+        extra = ex.SETTINGS_WIDTH + ex.SIDEBAR_GAP
+        self.assertEqual((ex.x(), ex.y(), ex.width(), ex.height()), (before.x(), before.y(), before.width() + extra, before.height()))
+        self.assertEqual(ex.content_width(), content)                # 탐색기 본래 영역의 크기와 자리는 그대로
+        self.assertEqual(ex.table.mapToGlobal(QPoint(0, 0)).x(), table_left)
+        self.assertGreater(panel.mapTo(ex, QPoint(0, 0)).x(), ex.table.mapTo(ex, QPoint(0, 0)).x())     # 오른쪽에 붙음
+        self.assertTrue(panel.btn_win_min.isHidden() and panel.grip.isHidden())
+        self.assertIn("border: none", panel.styleSheet())
+
+        panel.btn_win_close.click()                                  # 패널의 닫기는 패널만 닫음
+        test_ui._app.processEvents()
+        self.assertTrue(ex.isVisible())
+        self.assertIsNone(ex.settings_panel)
+        self.assertEqual(ex.geometry(), before)
+
+    def test_settings_panel_goes_left_when_there_is_no_room_on_the_right(self) -> None:
+        ex = self.explorer()
+        ex.resize(700, 600)
+        ex.move(4000 - ex.width(), 200)
+        test_ui._app.processEvents()
+        right_edge = ex.x() + ex.width()
+        table_left = ex.table.mapToGlobal(QPoint(0, 0)).x()
+        self.ui.open_settings()
+        test_ui._app.processEvents()
+        panel = ex.settings_panel
+        self.assertEqual(ex._settings_side, "left")
+        self.assertEqual(ex.x() + ex.width(), right_edge)            # 오른쪽 끝은 그대로, 왼쪽으로 늘어남
+        self.assertEqual(ex.table.mapToGlobal(QPoint(0, 0)).x(), table_left)
+        self.assertLess(panel.mapTo(ex, QPoint(0, 0)).x(), ex.table.mapTo(ex, QPoint(0, 0)).x())
+        ex.close_settings_panel()
+        self.assertEqual(ex.x() + ex.width(), right_edge)
+
+    def test_settings_panel_closes_with_the_explorer_and_is_not_saved_into_its_size(self) -> None:
+        ex = self.explorer()
+        ex.move(300, 200)
+        ex.resize(700, 600)
         test_ui._app.processEvents()
         self.ui.open_settings()
-        win = self.ui.settings_window
-        self.addCleanup(win.close)
-        frame = ex.bg.mapToGlobal(QPoint(0, 0))
-        self.assertEqual(win.docked_side(), "right")
-        self.assertEqual((win.x(), win.y()), (frame.x() + ex.bg.width(), frame.y()))      # 탐색기의 보이는 테두리에 딱 붙음
-        self.assertGreaterEqual(win.height(), ex.bg.height())
-
-        ex.move(360, 260)                                            # 탐색기를 옮기면 따라옴
+        ex.close()
         test_ui._app.processEvents()
-        frame = ex.bg.mapToGlobal(QPoint(0, 0))
-        self.assertEqual((win.x(), win.y()), (frame.x() + ex.bg.width(), frame.y()))
+        self.assertIsNone(ex.settings_panel)
+        self.assertIsNone(self.ui.settings_window)
+        self.assertEqual(self.sm.settings["explorer_geom"][2:], [700, 600])     # 패널 너비가 탐색기 크기로 저장되지 않음
+        ex.show()
+        self.assertEqual(ex.width(), 700)
 
-        ex.move(4000 - ex.width(), 260)                              # 오른쪽에 자리가 없으면 왼쪽에 붙음
-        test_ui._app.processEvents()
-        frame = ex.bg.mapToGlobal(QPoint(0, 0))
-        self.assertEqual(win.docked_side(), "left")
-        self.assertEqual(win.x() + win.width(), frame.x())
-
-        win.undock()                                                 # 직접 끌어 옮긴 뒤에는 따로 움직임
-        before = win.pos()
-        ex.move(500, 300)
-        test_ui._app.processEvents()
-        self.assertEqual(win.pos(), before)
-
-    def test_settings_without_explorer_opens_on_its_own(self) -> None:
         self.ui.open_settings()
-        self.addCleanup(self.ui.settings_window.close)
-        self.assertEqual(self.ui.settings_window.docked_side(), "")
+        ex.hide()                                                    # Alt+W 로 숨겨도 닫힘
+        test_ui._app.processEvents()
+        self.assertIsNone(ex.settings_panel)
+
+    def test_opening_settings_from_the_tray_brings_up_the_explorer(self) -> None:
+        self.assertIsNone(self.ui.explorer_window)
+        self.ui.open_settings()                                      # 탐색기가 닫혀 있어도
+        ex = self.ui.explorer_window
+        self.assertTrue(ex.isVisible() and ex.settings_open())       # 탐색기와 함께 열림
+
+    def test_saving_in_the_panel_keeps_it_open_and_the_size_right(self) -> None:
+        ex = self.explorer()
+        ex.resize(700, 600)
+        test_ui._app.processEvents()
+        self.ui.open_settings()
+        panel = ex.settings_panel
+        content = ex.content_width()
+        panel.save()
+        test_ui._app.processEvents()
+        self.assertIs(ex.settings_panel, panel)
+        self.assertTrue(panel.isVisible() and panel.toast.isVisible())
+        self.assertEqual(ex.content_width(), content)
+        self.assertEqual(ex.width(), content + ex.SETTINGS_WIDTH + ex.SIDEBAR_GAP)
+
+    def test_folder_sidebar_and_settings_panel_work_together(self) -> None:
+        self.sm.save_settings({"folder_ui": "sidebar", "folder_sidebar_open": True})
+        ex = self.explorer()
+        ex.resize(ex.width(), 600)
+        ex.move(900, 200)
+        ex.refresh()
+        test_ui._app.processEvents()
+        content, sidebar = ex.content_width(), ex._sidebar_extra
+        self.assertGreater(sidebar, 0)
+        self.ui.open_settings()
+        self.assertEqual(ex.content_width(), content)
+        self.assertEqual(ex.width(), content + sidebar + ex.SETTINGS_WIDTH + ex.SIDEBAR_GAP)
+        ex.toggle_folder_sidebar()                                   # 패널이 열린 채로 사이드바를 접어도
+        self.assertEqual(ex.content_width(), content)
+        self.assertTrue(ex.settings_open())
+        ex.close_settings_panel()
+        self.assertEqual(ex.width(), content)
 
     def test_quick_choice_rows_are_stacked(self) -> None:
         win = test_ui.sw.SettingsWindow(self.sm)
@@ -1192,9 +1260,7 @@ class LockedSizeAndEntryPointsTest(test_ui.UiTestCase):
         self.assertFalse(ex.btn_settings.icon().isNull())
         self.assertLess(ex.btn_settings.mapTo(ex, QPoint(0, 0)).y(), ex.pv.mapTo(ex, QPoint(0, 0)).y())
         ex.btn_settings.click()
-        self.addCleanup(self.ui.settings_window.close)
-        self.assertTrue(self.ui.settings_window.isVisible())
-        self.assertIn(self.ui.settings_window.docked_side(), ("left", "right"))
+        self.assertTrue(ex.settings_open() and self.ui.settings_window.isVisible())
 
     def test_guide_button_lives_in_settings_not_in_the_tray(self) -> None:
         win = test_ui.sw.SettingsWindow(self.sm)
@@ -1360,13 +1426,11 @@ class MultiDeleteAndHistoryPasswordTest(test_ui.UiTestCase):
         title = next(label for label in ex.findChildren(test_ui.QLabel) if label.text() == "미리보기")
         self.assertLess(ex.btn_settings.mapTo(ex, QPoint(0, 0)).x(), title.mapTo(ex, QPoint(0, 0)).x())
         ex.btn_settings.click()
-        win = self.ui.settings_window
-        self.assertTrue(win.isVisible())
+        self.assertTrue(ex.settings_open())
         ex.btn_settings.click()                                      # 열려 있을 때 누르면 닫힘
-        self.assertFalse(win.isVisible())
+        self.assertFalse(ex.settings_open())
         ex.btn_settings.click()
-        self.addCleanup(self.ui.settings_window.close)
-        self.assertTrue(self.ui.settings_window.isVisible())
+        self.assertTrue(ex.settings_open() and self.ui.settings_window.isVisible())
 
     def test_settings_layout_details(self) -> None:
         win = test_ui.sw.SettingsWindow(self.sm)
@@ -1470,6 +1534,167 @@ class LockedFirstFoldTest(test_ui.UiTestCase):
         self.assertEqual(w.width(), 280)
         saved = self.disk("memo-0000")
         self.assertEqual((saved["unrolled_width"], saved["unrolled_height"]), (500, 400))
+
+
+class HotkeyScopeTest(test_ui.UiTestCase):
+    def test_global_by_default(self) -> None:
+        self.assertEqual(len(self.ui._hotkeys.registered), 7)
+        self.assertEqual(self.ui._app_shortcuts, [])
+
+    def test_app_only_mode_leaves_the_keys_to_other_programs(self) -> None:
+        self.sm.save_settings({"global_hotkeys": False})
+        self.ui.register_global_hotkeys()
+        self.assertEqual(self.ui._hotkeys.registered, [])            # 전역으로는 아무것도 잡지 않음
+        shortcuts = self.ui._app_shortcuts
+        self.assertEqual(len(shortcuts), 7)
+        self.assertTrue(all(s.context() == Qt.ShortcutContext.ApplicationShortcut for s in shortcuts))
+        keys = {s.key().toString() for s in shortcuts}
+        self.assertIn("Alt+W", keys)
+        self.assertIn("Alt+Q", keys)
+        opener = next(s for s in shortcuts if s.key().toString() == "Alt+W")
+        opener.activated.emit()                                      # 앱 창이 앞에 있을 때 눌린 것처럼
+        self.assertTrue(self.ui.explorer_window.isVisible())
+
+        self.ui.register_global_hotkeys()                            # 다시 걸어도 겹쳐 쌓이지 않음
+        self.assertEqual(len(self.ui._app_shortcuts), 7)
+        self.sm.save_settings({"global_hotkeys": True})
+        self.ui.register_global_hotkeys()
+        self.assertEqual((len(self.ui._hotkeys.registered), self.ui._app_shortcuts), (7, []))
+
+    def test_cleared_shortcut_is_skipped_in_both_modes(self) -> None:
+        shortcuts = dict(self.sm.settings.get("shortcuts", {}), open_explorer="")
+        self.sm.save_settings({"shortcuts": shortcuts, "global_hotkeys": False})
+        self.ui.register_global_hotkeys()
+        self.assertEqual(len(self.ui._app_shortcuts), 6)
+
+    def test_option_is_on_the_shortcut_tab_and_applies_on_save(self) -> None:
+        win = test_ui.sw.SettingsWindow(self.sm)
+        self.addCleanup(win.close)
+        self.assertTrue(win.tabs.widget(3).isAncestorOf(win.cb_global_hotkeys))
+        self.assertTrue(win.cb_global_hotkeys.isChecked())
+        win.cb_global_hotkeys.setChecked(False)
+        win.save()
+        self.assertFalse(self.sm.settings["global_hotkeys"])
+        self.assertEqual((self.ui._hotkeys.registered, len(self.ui._app_shortcuts)), ([], 7))
+        again = test_ui.sw.SettingsWindow(self.sm)
+        self.addCleanup(again.close)
+        self.assertFalse(again.cb_global_hotkeys.isChecked())
+
+
+class UnsavedSettingsTest(test_ui.UiTestCase):
+    """환경설정에서 바꾸고 저장하지 않은 채 닫으려 하면 저장할지 묻습니다."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ex = self.explorer()
+        self.ex.resize(720, 640)
+        self.ui.open_settings()
+        self.panel = self.ex.settings_panel
+        test_ui._app.processEvents()
+
+    def change(self) -> None:
+        self.panel.spin_relock_min.setValue(self.panel.spin_relock_min.value() + 3)
+
+    def test_untouched_settings_close_without_asking(self) -> None:
+        self.assertFalse(self.panel.is_dirty())
+        self.assertNotIn("●", self.panel.sb.text())
+        self.ex.move(self.ex.x() + 40, self.ex.y() + 30)             # 탐색기를 옮기는 것은 설정을 바꾼 것이 아님
+        self.assertFalse(self.panel.is_dirty())
+        self.panel.btn_win_close.click()
+        self.assertEqual(self.choices_asked, [])
+        self.assertFalse(self.ex.settings_open())
+
+    def test_changing_marks_the_save_button_and_reverting_clears_it(self) -> None:
+        before = self.panel.spin_relock_min.value()
+        self.change()
+        self.assertTrue(self.panel.is_dirty())
+        self.assertIn("●", self.panel.sb.text())
+        self.panel.spin_relock_min.setValue(before)                   # 되돌리면 바뀐 것이 없는 것으로
+        self.assertFalse(self.panel.is_dirty())
+        self.assertNotIn("●", self.panel.sb.text())
+        for toggle in (self.panel.cb_global_hotkeys, self.panel.cb_default_pin):
+            toggle.setChecked(not toggle.isChecked())
+            self.assertTrue(self.panel.is_dirty())
+            toggle.setChecked(not toggle.isChecked())
+        self.panel.url_input.setText("https://example.invalid/x")
+        self.assertIn("●", self.panel.sb.text())
+
+    def test_saving_clears_the_mark(self) -> None:
+        self.change()
+        self.panel.save()
+        self.assertFalse(self.panel.is_dirty())
+        self.assertNotIn("●", self.panel.sb.text())
+        self.panel.btn_win_close.click()
+        self.assertEqual(self.choices_asked, [])
+
+    def test_cancel_keeps_everything_open(self) -> None:
+        self.change()
+        self.choice_answer = None
+        value = self.panel.spin_relock_min.value()
+        self.panel.btn_win_close.click()                             # 패널의 닫기
+        self.ex.btn_settings.click()                                 # 톱니바퀴
+        self.ui.toggle_explorer()                                    # Alt+W
+        self.ex.close()                                              # 탐색기 닫기
+        test_ui._app.processEvents()
+        self.assertEqual(len(self.choices_asked), 4)
+        self.assertTrue(self.ex.isVisible() and self.ex.settings_open())
+        self.assertEqual(self.panel.spin_relock_min.value(), value)   # 고치던 값도 그대로
+
+    def test_save_and_close(self) -> None:
+        self.change()
+        wanted = self.panel.spin_relock_min.value()
+        self.choice_answer = "save"
+        self.ex.close()
+        test_ui._app.processEvents()
+        self.assertEqual(self.choices_asked, ["저장하지 않은 변경이 있습니다"])
+        self.assertFalse(self.ex.isVisible())
+        self.assertEqual(self.sm.settings["locked_memo_relock_min"], wanted)
+
+    def test_discard_and_close(self) -> None:
+        before = self.sm.settings.get("locked_memo_relock_min", 5)
+        self.change()
+        self.choice_answer = "discard"
+        self.ui.toggle_explorer()
+        test_ui._app.processEvents()
+        self.assertFalse(self.ex.isVisible())
+        self.assertEqual(self.sm.settings.get("locked_memo_relock_min", 5), before)
+        self.assertEqual(len(self.choices_asked), 1)
+
+    def test_quitting_asks_too(self) -> None:
+        self.change()
+        with mock.patch.object(test_ui.uim.QApplication, "quit") as quit_app:
+            self.choice_answer = None
+            self.ui.quit_app()
+            quit_app.assert_not_called()                             # 취소하면 끝내지 않음
+            self.choice_answer = "save"
+            wanted = self.panel.spin_relock_min.value()
+            self.ui.quit_app()
+            quit_app.assert_called_once()
+        self.assertEqual(self.sm.settings["locked_memo_relock_min"], wanted)
+
+    def test_quitting_with_nothing_changed_does_not_ask(self) -> None:
+        with mock.patch.object(test_ui.uim.QApplication, "quit") as quit_app:
+            self.ui.quit_app()
+            quit_app.assert_called_once()
+        self.assertEqual(self.choices_asked, [])
+
+    def test_the_question_is_shown_inside_the_explorer(self) -> None:
+        from PyQt6.QtCore import QTimer
+        self.change()
+        seen = {}
+
+        def press() -> None:
+            overlay = self.ex.inline_overlay
+            seen["inside"] = overlay.isVisible() and overlay.isAncestorOf(overlay.panel)
+            seen["buttons"] = [b.text() for b in overlay.panel.buttons.values()]
+            overlay.panel.buttons[None].click()                      # 취소
+
+        QTimer.singleShot(0, press)
+        with mock.patch.object(test_ui.themed_dialog, "choose", self.real_choose):
+            closed = self.ex.ask_and_close_settings_panel()
+        self.assertEqual(seen, {"inside": True, "buttons": ["저장하고 닫기", "저장 안 함", "취소"]})
+        self.assertFalse(closed)
+        self.assertTrue(self.ex.settings_open())
 
 
 class QuickSearchTest(test_ui.UiTestCase):

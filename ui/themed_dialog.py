@@ -190,6 +190,80 @@ def confirm(parent: Any, title: str, text: str, ok_text: str = "확인", cancel_
     return dialog.exec() == QDialog.DialogCode.Accepted
 
 
+class ChoicePanel(QWidget):
+    """안내 글과 버튼 몇 개. 누른 버튼의 값을 submitted(값) 으로, 닫으면 cancelled 를 보냅니다.
+
+    options: [(버튼 글자, 값, 모양)] — 모양은 "primary" / "danger" / "" 이고, 값이 None 인 버튼은 취소입니다.
+    """
+
+    submitted = pyqtSignal(object)
+    cancelled = pyqtSignal()
+
+    def __init__(self, title: str, text: str, options: Sequence[Tuple[str, Any, str]]) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        if title:
+            head = QLabel(title)
+            head.setProperty("role", "title")
+            layout.addWidget(head)
+        note = QLabel(text)
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch(1)
+        self.buttons: Dict[Any, QPushButton] = {}
+        for label, value, role in options:
+            button = QPushButton(label)
+            if role:
+                button.setProperty("role", role)
+            if value is None:
+                button.clicked.connect(self.cancelled.emit)
+            else:
+                button.clicked.connect(lambda checked=False, v=value: self.submitted.emit(v))
+            row.addWidget(button)
+            self.buttons[value] = button
+        layout.addLayout(row)
+
+    def focus_first(self) -> None:
+        next(iter(self.buttons.values())).setFocus()
+
+    def keyPressEvent(self, event: Any) -> None:
+        if event.key() == Qt.Key.Key_Escape:
+            self.cancelled.emit()
+            return
+        super().keyPressEvent(event)
+
+
+def choose(parent: Any, title: str, text: str, options: Sequence[Tuple[str, Any, str]]) -> Any:
+    """버튼 여러 개 중 하나를 고르게 합니다. → 고른 버튼의 값 (취소·닫기는 None)
+
+    부른 창(메모·탐색기) 안에서 묻고, 그럴 수 없을 때만 대화상자를 띄웁니다.
+    """
+    panel = ChoicePanel(title, text, options)
+    panel.setMinimumWidth(340)
+    answer = _inline(parent, panel, "", 300, 140)
+    if answer is not NO_HOST:
+        return answer
+    panel.deleteLater()
+    dialog = ThemedDialog(parent, title, fit_content=True)
+    panel = ChoicePanel("", text, options)
+    panel.setMinimumWidth(360)
+    dialog.body.addWidget(panel)
+    result: Dict[str, Any] = {"value": None}
+
+    def done(value: Any) -> None:
+        result["value"] = value
+        dialog.accept()
+
+    panel.submitted.connect(done)
+    panel.cancelled.connect(dialog.reject)
+    dialog.exec()
+    return result["value"]
+
+
 # ── 여러 칸 입력 (암호 등) ─────────────────────────────────────────────────────
 class FormPanel(QWidget):
     """제목·설명·입력 칸 몇 개·확인/취소로 이루어진 입력 묶음.

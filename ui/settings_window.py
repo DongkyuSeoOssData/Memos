@@ -21,9 +21,17 @@ from PyQt6.QtGui import QDesktopServices, QGuiApplication, QColor, QKeySequence,
 import threading
 
 class SettingsWindow(QWidget):
-    def __init__(self, sm: Any) -> None:
+    """환경설정 화면.
+
+    embedded=True 면 따로 뜨는 창이 아니라 메모 탐색기 안의 옆 패널로 들어갑니다. (폴더 사이드바처럼 탐색기와 한 창)
+    이때는 창 테두리·끌어 옮기기·크기 조절이 없고, 닫기 버튼은 on_close 를 부릅니다.
+    """
+
+    def __init__(self, sm: Any, embedded: bool = False) -> None:
         super().__init__()
         self.sm = sm
+        self._embedded = embedded
+        self.on_close = None                # 패널로 들어갔을 때 닫기 버튼이 부를 함수 (탐색기가 넣어 줌)
         self.ui_font_pt = int(self.sm.settings.get("settings_window_font_pt", 10))
         self.colors = {
             "랜덤": "random",
@@ -37,6 +45,7 @@ class SettingsWindow(QWidget):
         self.init_ui()
         self.apply_theme_style()
         self.load()
+        self._watch_changes()
 
     def _apply_initial_window_size(self) -> None:
         """저장된 창 크기가 있으면 바로 복원하고, 없으면 가장 작은 모니터 1/6 크기로 초기화합니다."""
@@ -92,7 +101,8 @@ class SettingsWindow(QWidget):
 
         # Windows 기본 제목 줄을 쓰면 끌어 옮길 때 가장자리에 붙이거나 화면 안에 묶어 두는 동작이 매끄럽지 않습니다.
         # 탐색기처럼 자체 제목 줄을 그리고 끌기·크기 조절을 직접 처리합니다.
-        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+        if not self._embedded:
+            self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
         self._drag_start_cursor = None
         self._drag_start_pos = None
 
@@ -640,6 +650,16 @@ class SettingsWindow(QWidget):
         sc_header_row.addWidget(self.btn_reset_shortcuts)
         l_sc.addLayout(sc_header_row)
 
+        # 위쪽 여섯 개(새 메모·탐색기 등)를 다른 프로그램을 쓰는 중에도 받을지
+        self.cb_global_hotkeys = QCheckBox("다른 프로그램을 쓰는 중에도 단축키 받기 (전역 단축키)")
+        self.cb_global_hotkeys.setToolTip("새 메모 · 탐색기 열기 · 모두 숨기기 · 정렬 · 빠른 검색 단축키에 적용됩니다")
+        l_sc.addWidget(self.cb_global_hotkeys)
+        global_hint = QLabel("켜면 어디서나 동작하지만, 그 조합은 이 앱만 받아 다른 프로그램에서는 쓸 수 없습니다. "
+                             "끄면 메모 탐색기나 메모 창이 앞에 있을 때만 동작하고, 다른 프로그램은 그 조합을 그대로 씁니다.")
+        global_hint.setProperty("role", "hint")
+        global_hint.setWordWrap(True)
+        l_sc.addWidget(global_hint)
+
         # 3열: 기능 / 단축키 / 설명
         self.shortcut_table = QTableWidget(0, 3)
         self.shortcut_table.setHorizontalHeaderLabels(["기능", "단축키", "설명 / 비고"])
@@ -658,11 +678,27 @@ class SettingsWindow(QWidget):
         for kind in (QComboBox, QAbstractSpinBox, QSlider):
             guard_wheel(self, self.findChildren(kind))
 
-        self._apply_initial_window_size()
+        if self._embedded:
+            # 탐색기 안의 패널: 바깥 여백·최소화 버튼·크기 조절 손잡이가 필요 없고, 닫기는 패널만 닫습니다.
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            self.btn_win_min.hide()
+            self.grip.hide()
+            self.btn_win_close.clicked.disconnect()
+            self.btn_win_close.clicked.connect(self.request_close)
+            self.btn_win_close.setToolTip("환경설정 닫기")
+        else:
+            self._apply_initial_window_size()
+
+    def request_close(self) -> None:
+        """닫기 버튼. 탐색기 안의 패널이면 패널만 닫고, 따로 뜬 창이면 창을 닫습니다."""
+        if self._embedded and self.on_close:
+            self.on_close()
+        else:
+            self.close()
 
     # ── 화면 밖으로 나가지 않고, 화면보다 커지지 않게 ──────────────────────────
     def _limit_to_screen(self, at: Any = None) -> None:
-        if getattr(self, '_limiting', False) or self.isMaximized() or self.isMinimized():
+        if self._embedded or getattr(self, '_limiting', False) or self.isMaximized() or self.isMinimized():
             return
         self._limiting = True
         try:
@@ -677,75 +713,39 @@ class SettingsWindow(QWidget):
         super().showEvent(event)
         self._limit_to_screen()
 
-    # ── 탐색기 옆에 붙어서 열리기 ─────────────────────────────────────────────
-    def dock_to(self, explorer: Any) -> None:
-        """탐색기의 오른쪽(자리가 없으면 왼쪽)에 높이를 맞춰 붙입니다. 탐색기를 옮기면 따라 움직입니다.
-
-        이 창을 직접 끌어 옮기면 그때부터는 따로 움직입니다.
-        """
-        self._dock_target = explorer
-        explorer.installEventFilter(self)
-        self.place_docked()
-
-    def docked_side(self) -> str:
-        return getattr(self, '_docked_side', "")
-
-    def place_docked(self) -> None:
-        explorer = getattr(self, '_dock_target', None)
-        if explorer is None or not explorer.isVisible() or explorer.isMaximized() or self.isMaximized():
-            return
-        frame = explorer.bg                              # 탐색기의 보이는 영역 (둘레의 투명한 여백 제외)
-        origin = frame.mapToGlobal(QPoint(0, 0))
-        left, top, width, height = origin.x(), origin.y(), frame.width(), frame.height()
-        area = screen_bounds.work_area(explorer)
-        own_width = self.width()
-        right_x, left_x = left + width, left - own_width
-        fits_right = area is None or right_x + own_width <= area.left() + area.width()
-        fits_left = area is None or left_x >= area.left()
-        on_right = fits_right or not fits_left
-        self._docked_side = "right" if on_right else "left"
-        self._placing_docked = True
-        try:
-            self.setGeometry(right_x if on_right else left_x, top, own_width, max(self.minimumHeight(), height))
-        finally:
-            self._placing_docked = False
-
-    def eventFilter(self, obj: Any, event: Any) -> bool:
-        if obj is getattr(self, '_dock_target', None) and event.type() in (QEvent.Type.Move, QEvent.Type.Resize):
-            self.place_docked()
-        return super().eventFilter(obj, event)
-
-    def undock(self) -> None:
-        target = getattr(self, '_dock_target', None)
-        if target is not None:
-            target.removeEventFilter(self)
-        self._dock_target = None
-        self._docked_side = ""
-
     # ── 끌어서 옮기기 (탐색기와 같은 방식: 가장자리에 붙고, 화면 밖으로는 나가지 않음) ──
     def mousePressEvent(self, e: Any) -> None:
+        if self._embedded:
+            e.ignore()                                   # 패널일 때는 탐색기가 끌기를 처리
+            return
         if e.button() == Qt.MouseButton.LeftButton and not self.isMaximized():
             self._drag_start_cursor = e.globalPosition().toPoint()
             self._drag_start_pos = self.pos()
 
     def mouseMoveEvent(self, e: Any) -> None:
+        if self._embedded:
+            e.ignore()
+            return
         if self._drag_start_cursor is None or self.isMaximized():
             return
-        self.undock()                                    # 직접 끌어 옮기면 탐색기에서 떼어 냄
         ctrl_held = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
         x, y = screen_bounds.drag_position(self, self._drag_start_cursor, self._drag_start_pos,
                                            e.globalPosition().toPoint(), snap=not ctrl_held)
         self.move(x, y)
 
     def mouseReleaseEvent(self, e: Any) -> None:
+        if self._embedded:
+            e.ignore()
+            return
         if self._drag_start_cursor is not None:
             self._drag_start_cursor = None
             self._limit_to_screen()         # 다른 모니터로 옮겼으면 그 모니터 크기에 맞춤
 
     def closeEvent(self, event: Any) -> None:
         """닫힘 시 현재 창 geometry를 settings에 저장하여 다음 실행 시 같은 크기로 열리도록 합니다."""
-        self.sm.settings['settings_window_geom'] = [self.x(), self.y(), self.width(), self.height()]
-        self.sm.save_settings(self.sm.settings)
+        if not self._embedded:
+            self.sm.settings['settings_window_geom'] = [self.x(), self.y(), self.width(), self.height()]
+            self.sm.save_settings(self.sm.settings)
         super().closeEvent(event)
 
     def make_guide_memos(self) -> None:
@@ -805,6 +805,12 @@ class SettingsWindow(QWidget):
         self.show_toast("연결 실패 (주소·접근 암호 확인)", warn=True)
 
     def apply_theme_style(self) -> None:
+        self._apply_theme_style()
+        if self._embedded:
+            # 탐색기와 한 창으로 보이도록 패널 둘레의 테두리를 없앱니다.
+            self.setStyleSheet(self.styleSheet() + " QWidget#SettingsWindow { border: none; }")
+
+    def _apply_theme_style(self) -> None:
         is_dark = self.sm.settings.get('app_theme', 'white') == "dark"
         if hasattr(self.sm, 'ui_manager') and hasattr(self.sm.ui_manager, 'get_theme_icon'):
             self.tabs.setTabIcon(0, self.sm.ui_manager.get_theme_icon("setting.svg", is_dark))
@@ -852,6 +858,62 @@ class SettingsWindow(QWidget):
         auto_start_now = self.sm.settings.get("auto_start", False)
         self.auto_start_cb.setChecked(auto_start_now)
 
+        self.sm.save_settings(self.collect())
+
+        # 바뀐 설정을 열려 있는 모든 창(탐색기·메모·트레이)에 바로 반영
+        self.apply_theme_style()
+        ui_manager = getattr(self.sm, 'ui_manager', None)
+        if ui_manager and hasattr(ui_manager, 'apply_settings_to_windows'):
+            ui_manager.apply_settings_to_windows()
+        self.mark_clean()
+
+        if auto_start_ok:
+            self.show_toast("설정을 저장했습니다")
+        else:
+            self.show_toast("저장했지만 자동 실행은 바꾸지 못했습니다", warn=True)
+
+    # ── 저장하지 않은 변경 ───────────────────────────────────────────────────
+    # 화면의 값을 모은 것(collect)을 마지막으로 불러오거나 저장했을 때의 것과 견주어, 바뀐 것이 있는지 알아냅니다.
+    _NOT_COMPARED = ("settings_window_font_pt", "app_theme")      # 화면에서 고르는 값이 아닌 것
+
+    def _comparable(self) -> dict:
+        values = {k: v for k, v in self.collect().items() if k not in self._NOT_COMPARED}
+        values["explorer_geom"] = values["explorer_geom"][2:]      # 위치는 탐색기를 옮기면 달라지므로 크기만 견줌
+        return values
+
+    def mark_clean(self) -> None:
+        """지금 화면의 값을 '저장된 상태'로 삼습니다. (불러온 직후, 저장한 직후)"""
+        self._baseline = self._comparable()
+        self._refresh_dirty()
+
+    def is_dirty(self) -> bool:
+        """화면에서 바꾸고 아직 저장하지 않은 값이 있는지."""
+        return getattr(self, '_baseline', None) is not None and self._comparable() != self._baseline
+
+    def _refresh_dirty(self, *args: Any) -> None:
+        """저장하지 않은 변경이 있으면 저장 버튼에 표시합니다."""
+        if getattr(self, '_baseline', None) is None or getattr(self, '_loading_form', False):
+            return
+        self.sb.setText("  설정 저장  ●" if self.is_dirty() else "  설정 저장")
+        self.sb.setToolTip("저장하지 않은 변경이 있습니다" if self.is_dirty() else "")
+
+    def _watch_changes(self) -> None:
+        """값을 바꿀 때마다 저장 버튼의 표시를 맞춥니다."""
+        for box in self.findChildren(QComboBox):
+            box.currentIndexChanged.connect(self._refresh_dirty)
+        for box in self.findChildren(QCheckBox):
+            box.toggled.connect(self._refresh_dirty)
+        for box in self.findChildren(QAbstractSpinBox):
+            if hasattr(box, "valueChanged"):
+                box.valueChanged.connect(self._refresh_dirty)
+        for box in self.findChildren(QSlider):
+            box.valueChanged.connect(self._refresh_dirty)
+        for box in (self.url_input, self.token_input, self.path_input):
+            box.textChanged.connect(self._refresh_dirty)
+
+    def collect(self) -> dict:
+        """화면의 값을 설정 형식으로 모읍니다. (저장하지는 않음)"""
+        auto_start_now = self.auto_start_cb.isChecked()
         shortcuts_dict = {}
         for r in range(self.shortcut_table.rowCount()):
             # 화면에 보이는 이름이 아니라 행에 심어 둔 설정 키로 찾습니다. (이름을 바꿔도 저장이 누락되지 않음)
@@ -901,20 +963,10 @@ class SettingsWindow(QWidget):
             "folder_ui": self.folder_ui_box.currentData(),
             "explorer_geom": self._explorer_geom_from_inputs(),
             "settings_window_font_pt": self.ui_font_pt,
-            "shortcuts": shortcuts_dict
+            "shortcuts": shortcuts_dict,
+            "global_hotkeys": self.cb_global_hotkeys.isChecked(),
         }
-        self.sm.save_settings(ns)
-
-        # 바뀐 설정을 열려 있는 모든 창(탐색기·메모·트레이)에 바로 반영
-        self.apply_theme_style()
-        ui_manager = getattr(self.sm, 'ui_manager', None)
-        if ui_manager and hasattr(ui_manager, 'apply_settings_to_windows'):
-            ui_manager.apply_settings_to_windows()
-
-        if auto_start_ok:
-            self.show_toast("설정을 저장했습니다")
-        else:
-            self.show_toast("저장했지만 자동 실행은 바꾸지 못했습니다", warn=True)
+        return ns
 
 
     def sel(self) -> None:
@@ -923,6 +975,14 @@ class SettingsWindow(QWidget):
             self.path_input.setText(p)
 
     def load(self) -> None:
+        self._loading_form = True
+        try:
+            self._load_form()
+        finally:
+            self._loading_form = False
+        self.mark_clean()
+
+    def _load_form(self) -> None:
         s = self.sm.settings
         self.sync_cb.setChecked(s.get("use_sync", False))
         self.url_input.setText(s.get("drive_folder_id",""))
@@ -1008,6 +1068,7 @@ class SettingsWindow(QWidget):
         else: self.trash_auto_delete_box.setCurrentIndex(0)
 
         self._fill_shortcut_table(s.get("shortcuts", {}))
+        self.cb_global_hotkeys.setChecked(bool(s.get("global_hotkeys", True)))
 
     # (표시 이름, 초) — 마지막 입력 후 자동 저장까지 기다리는 시간
     AUTO_SAVE_INTERVALS = [
@@ -1048,11 +1109,12 @@ class SettingsWindow(QWidget):
         이 메서드는 UI만 변경하며, 실제 적용은 저장 버튼을 눌러야 합니다.
         """
         self._fill_shortcut_table(self.DEFAULT_SHORTCUTS)
+        self._refresh_dirty()
         self.show_toast("기본값으로 되돌림 · 저장해야 적용")
 
     # (기능명, settings key, 설명/비고)
     SHORTCUT_ROWS = [
-        # ── 전역 단축키 (어디서나 작동, 이 앱이 독점) ───────────────────────────
+        # ── 전역 단축키 (기본: 어디서나 작동. 환경설정에서 '이 앱의 창이 앞에 있을 때만'으로 바꿀 수 있음) ──
         ("새 메모 생성",               "new_memo",             "어디서나 작동하는 전역 단축키"),
         ("새 코드 메모 생성",           "new_code_memo",        "어디서나 작동하는 전역 단축키"),
         ("메모 탐색기 켜기/숨기기",     "open_explorer",        "탐색기가 보이면 숨기고, 숨어있으면 열기"),
@@ -1119,6 +1181,7 @@ class SettingsWindow(QWidget):
             k_edit.setProperty("shortcut_key", key)
             k_edit.setProperty("shortcut_label", label_text)
             k_edit.editingFinished.connect(lambda edit=k_edit: self._resolve_shortcut_conflict(edit))
+            k_edit.keySequenceChanged.connect(self._refresh_dirty)
             self.shortcut_table.setCellWidget(r, 1, k_edit)
 
             desc_item = QTableWidgetItem(desc_text)
