@@ -84,6 +84,62 @@ class OfflineSyncTest(SyncManagerTestCase):
         self.assertNotIn("memo-aaaa", self.sm.reminders)
 
 
+class BothSidesEditedTest(SyncManagerTestCase):
+    """두 기기에서 같은 메모를 고쳤을 때, 밀려나는 쪽이 사본으로 남습니다."""
+
+    def synced(self) -> None:
+        self.sm.save_memo_locally(self._memo("memo-aaaa", "one"))
+        SyncWorker(self.sm).run_sync()
+
+    def edit_remote(self, content: str, updated_at: str) -> None:
+        remote = dict(self.drive.files["memo-aaaa.json"][0])
+        remote.update(content=content, updated_at=updated_at)
+        self.drive.put("memo-aaaa.json", remote)
+
+    def test_newer_local_edit_keeps_the_remote_edit_as_a_copy(self) -> None:
+        self.synced()
+        self.edit_remote("phone edit", "2026-02-01T00:00:00")                     # 다른 기기에서 먼저 고침
+        self.sm.save_memo_locally(self._memo("memo-aaaa", "pc edit", "2026-03-01T00:00:00"))   # 이 PC에서 더 나중에 고침
+        worker = SyncWorker(self.sm)
+        worker.push_ids = {"memo-aaaa"}
+        worker.run_sync()
+        self.assertEqual(self._contents(), ["pc edit", "phone edit"])
+        self.assertEqual(self._disk("memo-aaaa")["content"], "pc edit")           # 원래 메모는 더 나중 것
+        self.assertEqual(self.drive.files["memo-aaaa.json"][0]["content"], "pc edit")
+        copy = next(m for m in self.sm.load_local_memos() if m["content"] == "phone edit")
+        self.assertIn("충돌 사본", copy["title"])
+        self.assertIn(f"{copy['id']}.json", self.drive.files)                     # 사본도 함께 올라감
+
+        SyncWorker(self.sm).run_sync()                                            # 다시 돌려도 사본이 늘지 않음
+        self.assertEqual(self._contents(), ["pc edit", "phone edit"])
+
+    def test_copy_is_kept_only_once_while_uploads_keep_failing(self) -> None:
+        self.synced()
+        self.edit_remote("phone edit", "2026-02-01T00:00:00")
+        self.sm.save_memo_locally(self._memo("memo-aaaa", "pc edit", "2026-03-01T00:00:00"))
+        real_upload = self.drive.upload_file
+        self.drive.upload_file = lambda name, content: False
+        for _ in range(3):
+            worker = SyncWorker(self.sm)
+            worker.run_sync()
+            # 원격 수정시각을 주지 않는 예전 스크립트처럼, 매번 다시 내려받게 만듭니다.
+            state = worker.state
+            state["memo-aaaa"].pop("remote", None)
+            worker._save_state()
+        self.assertEqual(self._contents(), ["pc edit", "phone edit"])
+        self.drive.upload_file = real_upload
+
+    def test_only_this_pc_edited_makes_no_copy(self) -> None:
+        self.synced()
+        self.sm.save_memo_locally(self._memo("memo-aaaa", "pc edit", "2026-03-01T00:00:00"))
+        worker = SyncWorker(self.sm)
+        worker._load_state()
+        worker.state["memo-aaaa"].pop("remote", None)                             # 다시 내려받아 견주게 함
+        worker._save_state()
+        SyncWorker(self.sm).run_sync()
+        self.assertEqual(self._contents(), ["pc edit"])
+
+
 class RenameTest(SyncManagerTestCase):
     def test_rename_reports_a_failed_save_and_restores_the_title(self) -> None:
         memo = self._memo("memo-aaaa", "one")
@@ -126,6 +182,71 @@ class SettingsRobustnessTest(support.UiTestCase):
         got = win.collect()
         self.assertEqual((got["default_memo_width"], got["locked_memo_relock_min"], got["drive_folder_id"],
                           got["default_font_size"]), (350, 5, "", 12))
+
+
+class LookOnlyRefreshTest(support.UiTestCase):
+    """모양만 바뀔 때는 본문을 다시 채우지 않습니다. (커서·실행 취소 기록이 그대로)"""
+
+    def typing_window(self):
+        w = self.open_window("memo-0000")
+        w.text_edit.setPlainText("first\nsecond\nthird")
+        cursor = w.text_edit.textCursor()
+        cursor.setPosition(8)
+        w.text_edit.setTextCursor(cursor)
+        w.text_edit.insertPlainText("X")                                          # 실행 취소할 것이 생김
+        return w
+
+    def check_untouched(self, w) -> None:
+        self.assertEqual(w.text_edit.textCursor().position(), 9)
+        self.assertEqual(w.text_edit.toPlainText(), "first\nseXcond\nthird")
+        self.assertTrue(w.text_edit.document().isUndoAvailable())
+
+    def test_saving_settings_keeps_the_cursor_and_undo(self) -> None:
+        w = self.typing_window()
+        self.ui.apply_settings_to_windows()
+        self.check_untouched(w)
+
+    def test_pin_color_and_theme_keep_the_cursor_and_undo(self) -> None:
+        w = self.typing_window()
+        w.toggle_pin()
+        self.check_untouched(w)
+        w.change_color("#DCFCE7")
+        self.check_untouched(w)
+        self.assertEqual(w.memo_data["bg_color"], "#DCFCE7")
+        self.explorer().toggle_app_theme() if hasattr(self.explorer(), "toggle_app_theme") else None
+        self.check_untouched(w)
+
+    def test_new_content_is_still_filled_in(self) -> None:
+        w = self.typing_window()
+        w._auto_save_timer.stop()
+        w.memo_data["content"] = "from another device"
+        w.apply_data()
+        self.assertEqual(w.text_edit.toPlainText(), "from another device")
+
+    def test_flash_border_is_removed_even_if_the_memo_is_hidden(self) -> None:
+        from PyQt6.QtTest import QTest
+        w = self.open_window("memo-0000")
+        before = w.bg.styleSheet()
+        self.ui._flash_memo_window(w)
+        self.assertNotEqual(w.bg.styleSheet(), before)
+        w.hide()
+        QTest.qWait(950)
+        self.assertEqual(w.bg.styleSheet(), before)
+        self.assertFalse(w._is_flashing)
+
+    def test_same_hotkey_failure_is_reported_once(self) -> None:
+        told = []
+        self.ui.tray_icon.showMessage = lambda *a, **k: told.append(a)
+        self.ui._hotkeys.register = lambda shortcut, callback: False
+        self.sm.settings["global_hotkeys"] = True
+        self.ui.register_global_hotkeys()
+        self.ui.register_global_hotkeys()
+        self.assertEqual(len(told), 1)
+        self.ui._hotkeys.register = lambda shortcut, callback: True               # 풀렸다가
+        self.ui.register_global_hotkeys()
+        self.ui._hotkeys.register = lambda shortcut, callback: False              # 다시 실패하면 다시 알림
+        self.ui.register_global_hotkeys()
+        self.assertEqual(len(told), 2)
 
 
 class SyncNoticeTest(support.UiTestCase):

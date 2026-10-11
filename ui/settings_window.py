@@ -550,7 +550,7 @@ class SettingsWindow(QWidget):
                     self.sm.ui_manager.explorer_window.apply_theme_style()
                 for w in self.sm.ui_manager.memo_windows.values():
                     if w.isVisible():
-                        w.apply_data()
+                        w.apply_look()
         self.dark_theme_box.currentIndexChanged.connect(lambda _: _on_theme_style_changed())
         self.light_theme_box.currentIndexChanged.connect(lambda _: _on_theme_style_changed())
 

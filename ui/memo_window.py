@@ -551,7 +551,7 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
         new_theme = "light" if cur == "dark" else "dark"
         self.memo_data['code_theme'] = new_theme
         self.memo_data['code_theme_user_set'] = True
-        self.apply_data()
+        self.apply_look()
         self.update()
         self.repaint()
         self.text_edit.viewport().update()
@@ -766,7 +766,16 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
         super().hideEvent(e)
 
 
-    def apply_data(self) -> None:
+    def apply_look(self) -> None:
+        """색·고정·테마·설정처럼 모양만 바뀌었을 때 부릅니다. 본문은 다시 채우지 않습니다.
+
+        본문을 다시 채우면 커서가 맨 앞으로 가고 스크롤과 실행 취소 기록이 사라지므로,
+        내용이 달라진 것이 아닐 때는 이쪽을 씁니다.
+        """
+        self.apply_data(refill=False)
+
+    def apply_data(self, refill: bool = True) -> None:
+        """memo_data 를 창에 반영합니다. refill 이 꺼져 있으면 본문은 그대로 두고 모양만 맞춥니다."""
         if getattr(self, '_is_applying_data', False):
             return
         self._is_applying_data = True
@@ -776,14 +785,15 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
                 and self.text_edit.document().isModified()
             if self._auto_save_timer.isActive() and hasattr(self, 'text_edit'):
                 self.memo_data['content'] = self.current_content()
-            self._apply_data_internal()
+            self._apply_data_internal(refill)
             modern_style.apply_memo(self)
             # 화면을 다시 채우는 것은 수정이 아닙니다. 저장을 기다리던 입력이 있었을 때만 '고침' 표시를 유지합니다.
-            self.text_edit.document().setModified(bool(was_modified))
+            if refill:
+                self.text_edit.document().setModified(bool(was_modified))
         finally:
             self._is_applying_data = False
 
-    def _apply_data_internal(self) -> None:
+    def _apply_data_internal(self, refill: bool = True) -> None:
         target_flags = Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
         is_pinned = self.memo_data.get('is_pinned', False)
         if is_pinned:
@@ -870,8 +880,9 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
         self.text_edit.refresh_check_marks()
 
         self._is_updating_from_explorer = True
-        cnt = str(self.memo_data.get('content',''))
-        self.text_edit.setHtml(cnt) if is_html_content(cnt) else self.text_edit.setPlainText(cnt)
+        if refill:
+            cnt = str(self.memo_data.get('content',''))
+            self.text_edit.setHtml(cnt) if is_html_content(cnt) else self.text_edit.setPlainText(cnt)
 
         # 📌 불투명도 100% 기본값 적용 (사용자가 변경한 opacity 설정 유지)
         target_opacity = float(self.memo_data.get('opacity', 1.0))
@@ -958,12 +969,12 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
 
     def toggle_pin(self) -> None:
         self.memo_data['is_pinned'] = not self.memo_data.get('is_pinned', False)
-        self.apply_data()
+        self.apply_look()
         self.save_callback(self.memo_data)
 
     def change_color(self, c: str) -> None:
         self.memo_data['bg_color'] = c
-        self.apply_data()
+        self.apply_look()
         self.show()
         if hasattr(self, 'bg'):
             self.bg.style().unpolish(self.bg)

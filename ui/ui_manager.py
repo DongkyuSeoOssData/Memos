@@ -220,7 +220,7 @@ class UIManager:
 
         rolled_h = max(36, int(settings.get('default_rolled_height', 53)))
         for w in list(self.memo_windows.values()):
-            w.apply_data()
+            w.apply_look()                      # 설정이 바뀐 것이지 내용이 바뀐 것이 아니므로 본문은 건드리지 않음
             w.rebind_shortcuts()
             if w._is_rolled_up:
                 # 접힌 메모의 높이 설정이 바뀌었으면 바로 맞춥니다.
@@ -381,7 +381,10 @@ class UIManager:
                 continue
             if not self._hotkeys.register(shortcut, callback):
                 failed.append(shortcut)
-        if failed:
+        # 설정을 저장할 때마다 다시 등록하므로, 실패한 조합이 지난번과 같으면 또 알리지 않습니다.
+        already_told = failed == getattr(self, '_failed_hotkeys', [])
+        self._failed_hotkeys = failed
+        if failed and not already_told:
             msg = f"전역 단축키 등록 실패: {', '.join(failed)} (다른 프로그램이 사용 중이거나 지원하지 않는 조합)"
             self.sync_manager.log_error(msg)
             if hasattr(self, 'tray_icon'):
@@ -819,8 +822,12 @@ class UIManager:
                     target_win.bg.setStyleSheet(flash_style)
 
             def _restore(is_final=False):
-                if target_win.isVisible():
-                    target_win.bg.setStyleSheet(original_style)
+                # 그사이 창을 숨겼더라도 되돌립니다. (안 그러면 다시 열었을 때 강조 테두리가 남아 있음)
+                try:
+                    if target_win.bg.styleSheet() == flash_style:
+                        target_win.bg.setStyleSheet(original_style)
+                except RuntimeError:            # 이미 지워진 창
+                    return
                 if is_final:
                     target_win._is_flashing = False
 

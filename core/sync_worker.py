@@ -134,7 +134,7 @@ class SyncWorker(QObject):
         return a.get("content") == b.get("content")
 
     def _keep_conflict_copy(self, local_memo: Dict[str, Any]) -> None:
-        """양쪽에서 모두 수정된 메모는 로컬본을 별도 메모로 남겨 덮어쓰기로 사라지지 않게 합니다."""
+        """양쪽에서 모두 수정된 메모는 밀려나는 쪽을 별도 메모로 남겨 덮어쓰기로 사라지지 않게 합니다."""
         copy_memo = dict(local_memo)
         copy_memo["id"] = str(uuid.uuid4())
         copy_memo["title"] = f"{local_memo.get('title', '')} (충돌 사본)"
@@ -154,7 +154,7 @@ class SyncWorker(QObject):
         if files is None:
             # 목록조차 받지 못했으면 올리기도 될 리 없습니다. 성공으로 알리지 않고, 올릴 것은 다음에 다시 시도합니다.
             self._save_state()
-            self.finished.emit(False, "드라이브에 연결하지 못했습니다. 인터넷 연결과 동기화 주소를 확인하세요.", SYNC_OFFLINE)
+            self.finished.emit(False, "드라이브에 연결하지 못했습니다. 인터넷 연결, 동기화 주소, 접근 암호를 확인하세요.", SYNC_OFFLINE)
             return
         pulled = self._pull(files)
         pushed = self._push()
@@ -281,6 +281,7 @@ class SyncWorker(QObject):
     def _pull(self, files: Optional[List[Dict[str, Any]]]) -> int:
         """원격 목록의 수정시각이 지난번과 달라진 파일만 받아, 로컬보다 최신이면 반영합니다."""
         pulled_ids: List[str] = []
+        kept_copies = 0
         if files is None:
             # 목록 조회 실패: 받을 것도, 삭제로 판단할 것도 없음
             return 0
@@ -326,6 +327,15 @@ class SyncWorker(QObject):
                             if remote_dt == local_dt and not entry.get("hash") and self._same_content(local_memo, data_json):
                                 # 같은 판본이 이미 원격에 있으므로 다시 올리지 않습니다.
                                 entry["hash"] = local_hash
+                            # 마지막 동기화 뒤로 양쪽에서 모두 고쳤고 이 PC의 것이 더 나중인 경우:
+                            # 곧 이 PC의 내용이 올라가 드라이브의 것을 덮으므로, 드라이브의 것을 사본으로 남깁니다.
+                            synced, remote_hash = entry.get("hash"), shared_hash(data_json)
+                            if (synced and local_hash != synced and remote_hash != synced
+                                    and entry.get("kept") != remote_hash
+                                    and not self._same_content(local_memo, data_json)):
+                                self._keep_conflict_copy(data_json)
+                                entry["kept"] = remote_hash      # 올리기에 실패해 다음에 또 보더라도 사본은 한 번만
+                                kept_copies += 1
                             continue
                         locally_changed = bool(entry.get("hash")) and entry["hash"] != local_hash
                         if locally_changed and not self._same_content(local_memo, data_json):
@@ -346,4 +356,4 @@ class SyncWorker(QObject):
 
         if pulled_ids:
             self.pulled.emit(pulled_ids)
-        return len(pulled_ids)
+        return len(pulled_ids) + kept_copies

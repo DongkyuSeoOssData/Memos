@@ -557,7 +557,7 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         # 열려있는 모든 메모 창에도 테마 변경 브로드캐스팅
         for w in self.ui_manager.memo_windows.values():
             if w.isVisible():
-                w.apply_data()
+                w.apply_look()
 
         if self.ui_manager.settings_window and self.ui_manager.settings_window.isVisible():
             self.ui_manager.settings_window.apply_theme_style()
@@ -921,7 +921,7 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         self._save_memo_meta(memo, bg_color=color_hex)
         memo_id = memo.get('id')
         if memo_id and memo_id in self.ui_manager.memo_windows:
-            self.ui_manager.memo_windows[memo_id].apply_data()
+            self.ui_manager.memo_windows[memo_id].apply_look()
         self.refresh()
 
     def copy_memo_text(self, memo: Dict[str, Any]) -> None:
