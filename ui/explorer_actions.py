@@ -224,6 +224,9 @@ class ExplorerActionsMixin:
         if memo.get('_locked') or memo.get('_unreadable'):
             self.show_toast("🔒 잠긴 메모는 복사할 수 없습니다.")
             return
+        if memo.get('is_locked'):
+            self.show_toast("🔒 암호 메모는 메모 창에서 복사하세요.")
+            return
         raw_cnt = memo.get('content', '')
         text = clean_plain_text(raw_cnt)
         QApplication.clipboard().setText(text)

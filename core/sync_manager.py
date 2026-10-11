@@ -193,10 +193,10 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, MemoIndex
 
         QTimer.singleShot(3000, self._startup_sync)
 
-        # 휴지통 보관 기간이 지난 메모 정리 (시작 직후 1회 + 6시간마다)
+        # 휴지통 보관 기간이 지난 메모 정리 (시작 직후 1회 + 하루에 한 번. 보관 기간이 날 단위라 더 자주 볼 필요가 없음)
         self._purge_timer = QTimer()
         self._purge_timer.timeout.connect(self.purge_trash)
-        self._purge_timer.start(6 * 60 * 60 * 1000)
+        self._purge_timer.start(24 * 60 * 60 * 1000)
         QTimer.singleShot(5000, self.purge_trash)
 
 

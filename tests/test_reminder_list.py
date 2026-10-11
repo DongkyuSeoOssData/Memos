@@ -138,6 +138,18 @@ class ReminderListTest(support.UiTestCase):
         self.assertNotIn("memo-0001", panel.rows)
         self.ui._reminder_popups[0].close()
 
+    def test_list_is_redrawn_only_when_reminders_change(self) -> None:
+        """남은 시간은 그릴 때 계산해 보여 줄 뿐입니다. 시간이 흐른다고 도는 타이머는 두지 않습니다."""
+        panel = self.panel()
+        self.assertEqual([t for t in panel.findChildren(QTimer) if t.isActive() and not t.isSingleShot()], [])
+        row = panel.rows["memo-0001"]
+        support.app.processEvents()
+        self.assertIs(panel.rows["memo-0001"], row)                         # 바뀐 것이 없으면 줄도 그대로
+        panel.rows["memo-0000"].buttons[10].click()                         # 여기서 한 일은 그 자리에서 한 번만 다시 그림
+        row = panel.rows["memo-0001"]
+        support.app.processEvents()                                         # 뒤늦게 오는 '바뀜' 신호로 또 그리지 않음
+        self.assertIs(panel.rows["memo-0001"], row)
+
     def test_empty_list_and_locked_memo(self) -> None:
         w = self.open_window("memo-0001")
         self.answers[:] = ["pw12", "pw12"]

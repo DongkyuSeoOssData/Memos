@@ -100,13 +100,19 @@ class ReminderListPanel(QWidget):
         foot.addWidget(self.close_button)
         layout.addLayout(foot)
 
-        # 열어 둔 사이에 알림이 울리거나 다른 곳에서 바뀌어도 목록이 따라갑니다.
-        ui_manager.sync_manager.reminders_changed.connect(self.reload, Qt.ConnectionType.QueuedConnection)
-        # 남은 시간('25분 뒤')은 열어 둔 동안에도 흘러가므로 가끔 다시 그립니다.
-        self._clock = QTimer(self)
-        self._clock.timeout.connect(self.reload)
-        self._clock.start(30 * 1000)
+        # 열어 둔 사이에 알림이 울리거나 다른 곳에서 바뀌면(= 알림 목록이 바뀌면) 그때 다시 그립니다.
+        # 남은 시간('25분 뒤')은 목록을 그릴 때 한 번 계산해 보여 줄 뿐, 시간이 흐른다고 주기적으로 고치지 않습니다.
+        ui_manager.sync_manager.reminders_changed.connect(self._reminders_changed, Qt.ConnectionType.QueuedConnection)
         self.reload()
+
+    def _reminders_changed(self) -> None:
+        """알림 목록이 바뀌었다는 신호. 이미 그 내용대로 그려 두었으면(여기서 한 일의 뒤늦은 신호) 다시 그리지 않습니다."""
+        if self._signature(self.ui_manager.reminder_entries()) != self._shown:
+            self.reload()
+
+    @staticmethod
+    def _signature(entries: list) -> list:
+        return [(e["id"], e["title"], e["locked"], sorted(e["reminder"].items(), key=str)) for e in entries]
 
     # ── 목록 ─────────────────────────────────────────────────────────────────
     def reload(self) -> None:
@@ -118,6 +124,8 @@ class ReminderListPanel(QWidget):
         self.rows = {}
         now = datetime.now()
         entries = self.ui_manager.reminder_entries()
+        self._shown = self._signature(entries)
+        self._titles = {e["id"]: e["title"] for e in entries}
         for entry in entries:
             row = self._make_row(entry, now)
             self.rows_box.addWidget(row)
@@ -223,7 +231,7 @@ class ReminderListPanel(QWidget):
 
     def _apply(self, memo_id: str, action: Any, done_text: str, can_undo: bool = True) -> None:
         before = self.ui_manager.sync_manager.reminders.get(memo_id)
-        title = next((e["title"] for e in self.ui_manager.reminder_entries() if e["id"] == memo_id), "")
+        title = self._titles.get(memo_id, "")
         saved = action()
         after = self.ui_manager.sync_manager.reminders.get(memo_id)
         self._undo = (memo_id, dict(before) if before else None) if can_undo and after != before else None

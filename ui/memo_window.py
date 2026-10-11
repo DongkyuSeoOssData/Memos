@@ -415,6 +415,9 @@ class MemoWindow(MemoLayoutMixin, MemoApplyMixin, MemoDragMixin, MemoCodeMixin, 
             sm = self._sync_manager()
             if sm and self.memo_data.get('is_locked'):
                 sm.relock_memo(self.memo_data.get('id', ''))
+                # 탐색기가 풀려 있을 때 받아 둔 이 메모(본문 포함)를 버리고, 잠긴 메모로 다시 읽게 합니다.
+                if not getattr(getattr(self, 'ui_manager', None), 'quitting', False):
+                    self._refresh_explorer()
         super().closeEvent(e)
 
 

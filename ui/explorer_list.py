@@ -118,6 +118,8 @@ class ExplorerListMixin:
             reusable = isinstance(content, str) and not m.get('is_locked')
             key = (content, is_code)
             found = remembered.get(key) if reusable else None
+            if m.get('is_locked') or m.get('_locked'):
+                found = ("", [])        # 암호 메모의 본문은 풀려 있어도 탐색기의 검색·태그에 쓰지 않습니다.
             if found is None:
                 plain = clean_plain_text(content)
                 found = (plain, [] if is_code else extract_hashtags(plain))

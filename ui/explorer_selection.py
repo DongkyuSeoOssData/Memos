@@ -96,7 +96,10 @@ class ExplorerSelectionMixin:
                 title = m.get('title', '')
                 if memo_id:
                     ex = next((x for x in self.ui_manager.sync_manager.load_local_memos() if x.get('id') == memo_id), None)
-                    if not ex or ConflictDialog(title, ex.get('content', ''), m.get('content', ''), self).exec() == QDialog.DialogCode.Accepted:
+                    # 암호 메모는 풀려 있더라도 견주는 창에 본문을 보이지 않습니다.
+                    shown = lambda memo: ("🔒 암호 메모" if memo.get('is_locked') or memo.get('_locked') or memo.get('_unreadable')
+                                          else memo.get('content', ''))
+                    if not ex or ConflictDialog(title, shown(ex), shown(m), self).exec() == QDialog.DialogCode.Accepted:
                         self.ui_manager.sync_manager.restore_memo_locally(memo_id)
         self.pv.clear()
         self.refresh()

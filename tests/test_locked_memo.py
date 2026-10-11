@@ -331,5 +331,101 @@ class LockedMemoSizeTest(support.UiTestCase):
         self.assertEqual(w.width(), 410)
 
 
+class LockedMemoInExplorerTest(support.UiTestCase):
+    """암호 메모의 본문은 풀려 있는 동안에도, 닫은 뒤에도 탐색기에 드러나지 않습니다."""
+
+    MESSAGE = "🔒 암호 메모입니다"
+
+    def unlocked(self):
+        w = self.open_window("memo-0001")
+        self.answers[:] = ["pw12", "pw12"]
+        w.set_memo_password()
+        w.text_edit.setPlainText("secret words #hidden")
+        w.text_edit.document().setModified(True)
+        w.flush_auto_save()
+        self.assertFalse(w.is_sealed())
+        return w
+
+    def show_preview(self, ex) -> None:
+        row = self.row_of(ex, "memo-0001")
+        ex.table.setCurrentCell(row, 2)
+        ex.on_cell_click(row, 2)
+
+    def test_preview_never_shows_the_body(self) -> None:
+        w = self.unlocked()
+        ex = self.explorer()
+        self.show_preview(ex)
+        self.assertIn(self.MESSAGE, ex.pv.toPlainText())                 # 풀려 있어도 보이지 않음
+        self.assertNotIn("secret", ex.pv.toPlainText())
+        self.assertTrue(ex.pv.isReadOnly())
+        w.close()                                                        # 열었다 닫은 뒤에도
+        ex.refresh()
+        self.show_preview(ex)
+        self.assertNotIn("secret", ex.pv.toPlainText())
+        self.assertIn(self.MESSAGE, ex.pv.toPlainText())
+        self.show_preview(ex)
+        ex._flush_preview_save()                                         # 안내 글이 본문으로 저장되는 일도 없음
+        self.assertNotIn(self.MESSAGE, self.raw("memo-0001"))
+
+    def test_closing_the_window_makes_the_explorer_forget_the_body(self) -> None:
+        w = self.unlocked()
+        ex = self.explorer()
+        ex.refresh()
+        held = ex.table.item(self.row_of(ex, "memo-0001"), 2).data(Qt.ItemDataRole.UserRole)
+        self.assertIn("secret", held["content"])                         # 풀려 있는 동안 탐색기가 받아 둔 것
+        w.close()
+        held = ex.table.item(self.row_of(ex, "memo-0001"), 2).data(Qt.ItemDataRole.UserRole)
+        self.assertTrue(held.get("_locked"))                             # 닫으면 잠긴 메모로 다시 읽음
+        self.assertNotIn("secret", str(held.get("content")))
+
+    def test_restore_conflict_does_not_show_the_body(self) -> None:
+        self.unlocked()
+        ex = self.explorer()
+        seen = []
+
+        class Spy:
+            def __init__(self, title, current, trashed, parent=None) -> None:
+                seen.extend([current, trashed])
+
+            def exec(self):
+                return 0
+
+        trashed = dict(next(m for m in self.sm.load_local_memos() if m["id"] == "memo-0001"))
+        item = ex.table.item(self.row_of(ex, "memo-0001"), 2)
+        item.setData(Qt.ItemDataRole.UserRole, trashed)
+        ex.table.item(self.row_of(ex, "memo-0001"), 0).setCheckState(Qt.CheckState.Checked)
+        with mock.patch("ui.explorer_selection.ConflictDialog", Spy):
+            ex.res_checked()
+        self.assertEqual(seen, ["🔒 암호 메모", "🔒 암호 메모"])
+
+    def test_body_is_not_searched_tagged_or_copied(self) -> None:
+        self.unlocked()
+        ex = self.explorer()
+        ex.refresh()
+        self.assertNotIn("#hidden", [ex.tag_combo.itemText(i) for i in range(ex.tag_combo.count())])
+        ex.s_type.setCurrentIndex(1)                                     # 본문 검색
+        ex.s_in.setText("secret")
+        ex.refresh()
+        self.assertEqual(ex.filtered_memos, [])
+        ex.s_in.setText("")
+        ex.s_type.setCurrentIndex(0)                                     # 제목으로는 찾음
+        ex.refresh()
+        memo = ex.table.item(self.row_of(ex, "memo-0001"), 2).data(Qt.ItemDataRole.UserRole)
+        support.app.clipboard().setText("untouched")
+        ex.copy_memo_text(memo)
+        self.assertEqual(support.app.clipboard().text(), "untouched")
+        self.show_preview(ex)
+        copy_all = next(a for a in ex.preview_menu_actions() if a[0] == "전체 내용 복사")
+        self.assertFalse(copy_all[2])
+
+    def test_ordinary_memos_are_previewed_as_before(self) -> None:
+        ex = self.explorer()
+        row = self.row_of(ex, "memo-0000")
+        ex.table.setCurrentCell(row, 2)
+        ex.on_cell_click(row, 2)
+        self.assertIn("body 0", ex.pv.toPlainText())
+        self.assertFalse(ex.pv.isReadOnly())
+
+
 if __name__ == "__main__":
     unittest.main()

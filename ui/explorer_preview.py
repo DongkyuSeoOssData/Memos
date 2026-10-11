@@ -25,7 +25,8 @@ class ExplorerPreviewMixin:
             if m:
                 self._flush_preview_save()
                 self._is_loading_preview = True
-                sealed = bool(m.get('_locked') or m.get('_unreadable'))
+                # 암호 메모는 풀려 있는 동안에도 미리보기에 본문을 보이지 않습니다. (메모 창에서만 봄)
+                sealed = bool(m.get('is_locked') or m.get('_locked') or m.get('_unreadable'))
                 # 창에 아직 저장되지 않은 입력이 있으면 먼저 저장하고 그 내용을 보여줍니다.
                 w = self.ui_manager.memo_windows.get(m.get('id', ''))
                 if w and not sealed and not w.is_sealed():
@@ -35,10 +36,10 @@ class ExplorerPreviewMixin:
                     m = self._reselect_memo(m)
                     m['content'] = w.memo_data.get('content', m.get('content', ''))
                 content = m.get('content', '')
-                if m.get('_locked'):
-                    clean_text = "🔒 암호 메모입니다. 메모를 열어 암호를 입력하면 볼 수 있습니다."
-                elif m.get('_unreadable'):
+                if m.get('_unreadable'):
                     clean_text = "⚠ 본문을 복호화할 수 없는 메모입니다."
+                elif m.get('is_locked') or m.get('_locked'):
+                    clean_text = "🔒 암호 메모입니다. 메모를 열어 암호를 입력하면 볼 수 있습니다."
                 else:
                     clean_text = clean_plain_text(content)
                 self.pv.setReadOnly(self.is_trash_mode or sealed)
@@ -58,7 +59,8 @@ class ExplorerPreviewMixin:
         pv = self.pv
         has_selection = pv.textCursor().hasSelection()
         copy_part = ("복사", pv.copy, has_selection)
-        copy_all = ("전체 내용 복사", lambda: self.copy_memo_text(m), not (m.get('_locked') or m.get('_unreadable')))
+        copy_all = ("전체 내용 복사", lambda: self.copy_memo_text(m),
+                    not (m.get('is_locked') or m.get('_locked') or m.get('_unreadable')))
         if self.is_trash_mode:
             return [copy_part, copy_all]
         if m.get('_locked'):
