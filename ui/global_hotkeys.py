@@ -1,3 +1,4 @@
+import sys
 import ctypes
 import ctypes.wintypes
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -93,11 +94,14 @@ class GlobalHotkeys(QAbstractNativeEventFilter):
     def nativeEventFilter(self, event_type: Any, message: Any) -> Tuple[bool, int]:
         try:
             msg = ctypes.wintypes.MSG.from_address(int(message))
-            if msg.message == WM_HOTKEY:
-                callback = self._callbacks.get(int(msg.wParam))
-                if callback:
-                    callback()
-                    return True, 0
+            callback = self._callbacks.get(int(msg.wParam)) if msg.message == WM_HOTKEY else None
         except Exception:
-            pass
-        return False, 0
+            return False, 0
+        if callback is None:
+            return False, 0
+        try:
+            callback()
+        except Exception:
+            # 단축키로 실행한 동작의 오류도 다른 오류와 같게 기록·보고되도록 넘깁니다. (여기서 삼키면 흔적이 남지 않음)
+            sys.excepthook(*sys.exc_info())
+        return True, 0

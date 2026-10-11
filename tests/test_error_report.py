@@ -130,6 +130,34 @@ class ErrorReportTest(SyncManagerTestCase):
         self.assertTrue(self.box.arrived.wait(2))
 
 
+class HotkeyErrorTest(unittest.TestCase):
+    def test_error_in_a_global_hotkey_action_reaches_the_error_hook(self) -> None:
+        import ctypes
+        import ctypes.wintypes
+        from ui.global_hotkeys import GlobalHotkeys, WM_HOTKEY
+        hotkeys = GlobalHotkeys()
+        hotkeys._callbacks[7] = boom
+        ran = []
+        hotkeys._callbacks[8] = lambda: ran.append(True)
+        seen = []
+        old_hook = sys.excepthook
+        self.addCleanup(setattr, sys, "excepthook", old_hook)
+        sys.excepthook = lambda *info: seen.append(info)
+
+        def press(hotkey_id: int):
+            msg = ctypes.wintypes.MSG()
+            msg.message, msg.wParam = WM_HOTKEY, hotkey_id
+            return hotkeys.nativeEventFilter(b"windows_generic_MSG", ctypes.addressof(msg))
+
+        self.assertEqual(press(7), (True, 0))                        # 오류가 나도 단축키는 처리한 것으로
+        self.assertEqual(len(seen), 1)
+        self.assertIs(seen[0][0], ValueError)
+        self.assertEqual(press(8), (True, 0))
+        self.assertEqual(ran, [True])
+        self.assertEqual(press(99), (False, 0))                      # 등록하지 않은 단축키
+        self.assertEqual(len(seen), 1)
+
+
 class ReportRequestTest(unittest.TestCase):
     def test_request_carries_no_recipient_and_checks_the_reply(self) -> None:
         api = DriveAPI()
