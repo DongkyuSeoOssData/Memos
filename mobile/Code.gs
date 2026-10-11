@@ -30,7 +30,9 @@ const TRASH_FOLDER = "trash_bin";
 const SAFE_NAME = /^[A-Za-z0-9_-]{1,80}\.json$/;
 const INDEX_FILE = "_index.json";
 const INDEX_VERSION = 1;
-const INDEX_BUDGET_MS = 20000;      // 색인을 고치느라 한 번의 요청에서 쓰는 시간의 한도 (넘으면 다음 요청에서 이어서)
+// 색인을 고치느라 한 번의 요청에서 쓰는 시간의 한도. (넘으면 다음 요청에서 이어서)
+// 그동안 잠금을 잡고 있으므로, 모바일 화면의 저장이 기다리다 포기하는 시간(20초)보다 넉넉히 짧게 둡니다.
+const INDEX_BUDGET_MS = 8000;
 const PREVIEW_CHARS = 300;          // 색인에 넣는 본문 앞부분의 길이
 
 // ── 공통 ─────────────────────────────────────────────────────────────────────
@@ -153,8 +155,12 @@ function buildIndex_(files, stored, readFile, budgetMs) {
   return {entries: entries, changed: changed, pending: pending};
 }
 
-/** 색인을 최신으로 맞춰 돌려줍니다. → {files, entries, pending} */
-function refreshIndex_(mainFolder) {
+/**
+ * 색인을 최신으로 맞춰 돌려줍니다. → {files, entries, pending}
+ * have 는 화면이 이미 가지고 있는 메모들({파일 이름: 수정시각})입니다. 그 수정시각이 지금과 같은 메모의 요약은
+ * 다시 보내지 않습니다. (메모가 많을 때, 화면을 열 때마다 색인 전체를 내려받지 않도록)
+ */
+function refreshIndex_(mainFolder, have) {
   const all = listFiles_(mainFolder).filter(function (f) { return SAFE_NAME.test(f.name); });
   const files = all.filter(function (f) { return f.name !== INDEX_FILE; });
   // 색인을 고쳐 쓰는 것은 한 번에 한 요청만. 다른 요청이 쓰는 중이면 지금 있는 색인을 읽기만 합니다.
@@ -177,7 +183,14 @@ function refreshIndex_(mainFolder) {
       const text = JSON.stringify({v: INDEX_VERSION, entries: built.entries});
       if (indexFile) indexFile.setContent(text); else mainFolder.createFile(INDEX_FILE, text);
     }
-    return {files: files, entries: built.entries, pending: built.pending};
+    let entries = built.entries;
+    if (have && typeof have === "object") {
+      entries = {};
+      Object.keys(built.entries).forEach(function (name) {
+        if (have[name] !== built.entries[name].updated) entries[name] = built.entries[name];
+      });
+    }
+    return {files: files, entries: entries, pending: built.pending};
   } finally {
     if (mine) lock.releaseLock();
   }
@@ -263,8 +276,9 @@ function doGet(e) {
 /**
  * 모바일 화면(Index.html)이 google.script.run 으로 부르는 단일 창구.
  *   {action: "list"}                                → {files: [{name, id, updated}]}
- *   {action: "index"}                               → {files, entries: {name: {updated, meta, locked, preview, tags}}, pending}
- *                                                     entries 는 색인(위 설명). pending 은 아직 색인에 넣지 못한 메모 수.
+ *   {action: "index", have?: {name: updated}}       → {files, entries: {name: {updated, meta, locked, preview, tags}}, pending}
+ *                                                     entries 는 색인(위 설명). have 에 적힌 수정시각이 그대로인 메모는 빼고 보냅니다.
+ *                                                     pending 은 아직 색인에 넣지 못한 메모 수.
  *   {action: "getMany", names: [...], ids?: {name: id}} → {items: [{name, updated, content}]}
  *                                                     ids 를 함께 주면 이름으로 찾지 않고 바로 엽니다.
  *   {action: "save", name, content, ifUpdated?}     → {ok, updated} 또는 {conflict: true, updated}
@@ -281,7 +295,7 @@ function api(req) {
   }
 
   if (req.action === "index") {
-    return refreshIndex_(mainFolder);
+    return refreshIndex_(mainFolder, req.have);
   }
 
   if (req.action === "getMany") {

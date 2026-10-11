@@ -38,6 +38,8 @@ class MemoPasswordMixin:
             return False
         # 암호를 걸기 전의 평문(방금 남긴 것 포함)과 예전 암호로 잠긴 기록을 새 암호로 잠급니다.
         self._seal_history(memo_id, previous[0] if previous else None)
+        # 로컬 색인에도 걸기 전의 내용이 들어 있으므로, 미루지 않고 지금 다시 씁니다.
+        self.save_index_now()
         return True
 
     def unlock_memo(self, memo_id: str, password: str) -> Optional[str]:

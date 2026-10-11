@@ -92,6 +92,14 @@ res = api({action: "index"});
 assert.deepStrictEqual(reads, ["_index.json"]);
 assert.strictEqual(main.files.find((f) => f.name === "_index.json").updated, indexUpdated);     // 고쳐 쓰지도 않음
 
+// 2-1. 화면이 가진 메모(이름 → 수정시각)를 알려 주면, 그 수정시각이 그대로인 메모의 요약은 다시 보내지 않는다.
+const haveAll = {};
+api({action: "index"}).files.forEach((f) => { haveAll[f.name] = f.updated; });
+assert.deepStrictEqual(Object.keys(api({action: "index", have: haveAll}).entries), []);
+assert.deepStrictEqual(Object.keys(api({action: "index", have: Object.assign({}, haveAll, {"a.json": 1})}).entries), ["a.json"]);
+assert.strictEqual(Object.keys(api({action: "index", have: {}}).entries).length, 4);
+assert.strictEqual(api({action: "index", have: haveAll}).files.length, 5);       // 파일 목록은 언제나 전부
+
 // 3. 메모 하나를 고치고, 하나를 지우고, 하나를 새로 만들면 그것만 반영한다.
 main.files.find((f) => f.name === "a.json").setContent(memo("a", "고친 메모", "changed"));
 main.files = main.files.filter((f) => f.name !== "b.json");

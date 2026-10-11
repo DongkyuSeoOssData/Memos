@@ -123,8 +123,11 @@ def summarize(text: str, updated: int) -> dict:
             "tags": [] if (meta.get("is_code_memo") or locked) else tags_of(plain)}
 
 
-def refresh_index(folder: Path) -> dict:
-    """색인을 파일 목록에 맞춰 고치고 돌려줍니다. 바뀐 메모만 다시 읽습니다."""
+def refresh_index(folder: Path, have=None) -> dict:
+    """색인을 파일 목록에 맞춰 고치고 돌려줍니다. 바뀐 메모만 다시 읽습니다.
+
+    have({파일 이름: 수정시각})에 적힌 수정시각이 그대로인 메모의 요약은 빼고 돌려줍니다.
+    """
     with LOCK:
         files = [{"name": p.name, "id": p.name, "updated": updated_of(p)} for p in sorted(folder.glob("*.json"))
                  if SAFE_NAME.fullmatch(p.name) and p.name != INDEX_FILE]
@@ -148,6 +151,8 @@ def refresh_index(folder: Path) -> dict:
             changed = True
         if changed or len(stored) != len(entries):
             index_path.write_text(json.dumps({"v": INDEX_VERSION, "entries": entries}, ensure_ascii=False), encoding="utf-8")
+        if isinstance(have, dict):
+            entries = {name: entry for name, entry in entries.items() if have.get(name) != entry.get("updated")}
         return {"files": files, "entries": entries, "pending": 0}
 
 
@@ -159,7 +164,7 @@ def handle_api(folder: Path, token: str, req: dict) -> dict:
         return {"files": [{"name": p.name, "id": p.name, "updated": updated_of(p)} for p in sorted(folder.glob("*.json"))
                           if SAFE_NAME.fullmatch(p.name) and p.name != INDEX_FILE]}
     if action == "index":
-        return refresh_index(folder)
+        return refresh_index(folder, req.get("have"))
     if action == "getMany":
         items = []
         for name in req.get("names") or []:

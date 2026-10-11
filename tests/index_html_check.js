@@ -8,6 +8,8 @@ const assert = require("assert");
 // ── 가짜 드라이브 + Code.gs ───────────────────────────────────────────────────
 let clock = 1000;
 const calls = [];            // 화면이 서버에 보낸 요청의 action
+const requests = [];         // 요청 전체 (무엇을 보냈는지 보려고)
+const replies = [];          // 돌려준 답
 function makeFile(folder, name, content) {
   return {
     id: "id-" + name, name, content, updated: ++clock, folder,
@@ -48,10 +50,12 @@ let oldScript = false;       // true 면 색인을 모르는 예전 스크립트
 let offline = false;
 function serve(req) {
   calls.push(req.action);
+  requests.push(req);
   if (offline) throw new Error("offline");
   if (oldScript && req.action === "index") return {error: "name"};
   const res = JSON.parse(JSON.stringify(vm.runInContext("api", server)(req)));
   if (oldScript && res.files) res.files.forEach((f) => { delete f.id; });
+  replies.push(res);
   return res;
 }
 
@@ -89,6 +93,8 @@ const html = fs.readFileSync(process.argv[2], "utf8");
 const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
 const get = (expr) => vm.runInContext(expr, page);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+/** 동기화와, 뒤에서 본문을 받는 일이 모두 끝날 때까지 기다립니다. */
+const idle = async () => { for (let i = 0; i < 100 && (get("syncing") || get("filling")); i++) await settle(); await settle(); };
 const memo = (id, title, content, extra) => JSON.stringify(Object.assign({id, title, content, updated_at: "2026-01-01T00:00:00"}, extra || {}));
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
@@ -101,9 +107,10 @@ const plain = (x) => JSON.parse(JSON.stringify(x));
   let seenPartial = 0;
   page.__spy = () => { seenPartial = Math.max(seenPartial, Object.values(get("cache")).filter((e) => e.partial).length); };
   vm.runInContext(script + "\n;const __render = renderList; renderList = function () { __spy(); return __render.apply(this, arguments); };", page);
-  for (let i = 0; i < 40 && get("syncing"); i++) await settle();
-  await settle();
+  await idle();
   assert.strictEqual(calls[0], "index");
+  assert.deepStrictEqual(requests[0].have, {});                 // 처음에는 가진 것이 없다고 알림
+  assert.strictEqual(Object.keys(replies[0].entries).length, 22);
   assert.strictEqual(seenPartial, 21);                           // 목록을 처음 그릴 때는 21개 모두 색인만으로
   let cache = plain(get("cache"));
   assert.strictEqual(Object.keys(cache).length, 21);             // 깨진 파일은 넣지 않음
@@ -112,16 +119,22 @@ const plain = (x) => JSON.parse(JSON.stringify(x));
   assert.strictEqual(calls.filter((a) => a === "getMany").length, 2);          // 21개를 15개씩
   assert.ok(JSON.parse(storage["memos.cache.v1"])["m3.json"].memo.content);    // 기기에도 저장해 둠
 
-  // 2. 바뀐 것이 없으면 다시 받지 않는다.
-  calls.length = 0;
+  // 2. 바뀐 것이 없으면 다시 받지 않는다. 가진 메모를 알려 주므로 색인도 빈 채로 온다. (열 때마다 전체를 받지 않음)
+  calls.length = 0; requests.length = 0; replies.length = 0;
   await get("sync")(false);
+  await idle();
   assert.deepStrictEqual(calls, ["index"]);
+  assert.strictEqual(Object.keys(requests[0].have).length, 21);
+  assert.deepStrictEqual(Object.keys(replies[0].entries), ["broken.json"]);      // 메모로 읽을 수 없어 가지고 있지 않은 파일뿐
 
   // 3. 메모 하나가 바뀌면 그것만 색인으로 갈아 끼우고, 본문도 그것만 받는다.
   main.files.find((f) => f.name === "m5.json").setContent(memo("m5", "고친 제목", "new body #fresh"));
   main.files = main.files.filter((f) => f.name !== "m6.json");
-  calls.length = 0;
+  calls.length = 0; replies.length = 0;
   await get("sync")(false);
+  assert.strictEqual(get('cache["m5.json"].memo.title'), "고친 제목");            // 동기화가 끝나면 목록은 이미 새 제목
+  assert.deepStrictEqual(Object.keys(replies[0].entries).sort(), ["broken.json", "m5.json"]);   // 달라진 메모의 요약만 옴
+  await idle();
   cache = plain(get("cache"));
   assert.deepStrictEqual(calls, ["index", "getMany"]);
   assert.strictEqual(cache["m5.json"].memo.title, "고친 제목");
@@ -156,11 +169,23 @@ const plain = (x) => JSON.parse(JSON.stringify(x));
   assert.strictEqual(get('cache["m9.json"].memo.content'), "newer here");
   assert.ok(!get('cache["m8.json"].partial'));
 
-  // 7. 색인을 모르는 예전 스크립트에서는 전처럼 목록을 받고 파일을 모두 받는다.
+  // 7. 본문을 뒤에서 받는 동안에도 새로고침(동기화)을 할 수 있다.
+  vm.runInContext("cache = {}; fileIds = {};", page);
+  calls.length = 0;
+  await get("sync")(false);                                      // 목록만 채우고 돌아옴
+  assert.strictEqual(get("syncing"), false);
+  assert.strictEqual(get("filling"), true);                      // 본문은 아직 받는 중
+  await get("sync")(false);                                      // 그 와중의 새로고침이 막히지 않음
+  assert.strictEqual(calls.filter((a) => a === "index").length, 2);
+  await idle();
+  assert.ok(Object.values(plain(get("cache"))).every((e) => !e.partial));
+
+  // 8. 색인을 모르는 예전 스크립트에서는 전처럼 목록을 받고 파일을 모두 받는다.
   oldScript = true;
   vm.runInContext("cache = {}; fileIds = {};", page);
   calls.length = 0;
   await get("sync")(false);
+  await idle();
   cache = plain(get("cache"));
   assert.deepStrictEqual(calls.slice(0, 2), ["index", "list"]);
   assert.strictEqual(Object.keys(cache).length, 20);

@@ -58,6 +58,7 @@ class MemoTrashMixin:
         with MEMO_IO_LOCK:
             self._delete_memo_locally(memo_id)
             self._stamp_deleted(self.trash_path / f"{memo_id}.json")
+            self.forget_cached_file(memo_id)            # 지운 메모의 내용이 로컬 색인에 남지 않게
 
     def forget_deleted(self, memo_id: str) -> None:
         """지운 메모의 암호 키와 알림을 메모리에서 뺍니다. (주 스레드에서만 부름)"""

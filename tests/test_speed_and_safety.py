@@ -160,6 +160,32 @@ class LocalIndexTest(FileCacheTest):
         self.assertNotIn("body 1", self.sm.index_path.read_text(encoding="utf-8"))
         self.assertTrue(self.sm.load_local_memos()[-1].get("_locked") or any(m.get("_locked") for m in self.sm.load_local_memos()))
 
+    def test_text_from_before_the_password_leaves_the_index_at_once(self) -> None:
+        memo = self._memo("memo-0000", "written before the lock")
+        self.sm.save_memo_locally(memo)
+        self.sm.load_local_memos()
+        self.sm.save_index_now()
+        self.assertIn("written before the lock", self.sm.index_path.read_text(encoding="utf-8"))
+        self.assertTrue(self.sm.set_memo_password(memo, "pw12"))                 # 탐색기를 다시 그리거나 앱을 끝내지 않아도
+        self.assertNotIn("written before the lock", self.sm.index_path.read_text(encoding="utf-8"))
+
+    def test_deleted_memo_is_dropped_from_the_index_by_the_time_the_app_quits(self) -> None:
+        self.fill(2)
+        self.sm.load_local_memos()
+        self.sm.save_index_now()
+        self.sm.delete_memo_locally("memo-0001")
+        self.assertTrue(self.sm._index_dirty)                                    # 다시 써야 함을 표시해 둠
+        self.sm.save_index_now()                                                 # 앱을 끝낼 때
+        self.assertNotIn("body 1", self.sm.index_path.read_text(encoding="utf-8"))
+        self.assertIn("body 0", self.sm.index_path.read_text(encoding="utf-8"))
+
+    def test_saving_a_memo_marks_the_index_for_rewriting(self) -> None:
+        self.fill(1)
+        self.sm.load_local_memos()
+        self.sm.save_index_now()
+        self.sm.save_memo_locally(self._memo("memo-0000", "edited"))
+        self.assertTrue(self.sm._index_dirty)
+
     def test_changing_the_memo_folder_starts_over(self) -> None:
         self.fill(2)
         self.sm.load_local_memos()

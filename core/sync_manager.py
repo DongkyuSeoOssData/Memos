@@ -442,8 +442,12 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, MemoIndex
         return {k: v if isinstance(v, (str, int, float, bool, type(None))) else copy.deepcopy(v) for k, v in raw.items()}
 
     def forget_cached_file(self, memo_id: str) -> None:
-        """이 메모의 파일을 방금 고쳐 썼으니, 읽어 둔 내용을 버리고 다음에 다시 읽게 합니다."""
-        self._file_cache.pop(f"{memo_id}.json", None)
+        """이 메모의 파일을 방금 고쳐 썼거나 치웠으니, 읽어 둔 내용을 버리고 다음에 다시 읽게 합니다.
+
+        색인 파일에도 예전 내용이 들어 있으므로 다시 쓰도록 표시합니다. (늦어도 앱을 끝낼 때는 쓰임)
+        """
+        if self._file_cache.pop(f"{memo_id}.json", None) is not None:
+            self._index_changed()
 
     # ── 알림 ─────────────────────────────────────────────────────────────────
     def _note_reminder(self, memo_id: str, reminder: Any, quiet: bool = False) -> None:

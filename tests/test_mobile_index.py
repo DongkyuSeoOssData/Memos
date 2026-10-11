@@ -109,6 +109,17 @@ class TestServerIndexTest(unittest.TestCase):
         self.assertEqual(sorted(second["entries"]), ["a.json", "e.json"])
         self.assertEqual(second["entries"]["a.json"]["meta"]["title"], "rich")
 
+    def test_only_summaries_the_page_lacks_are_sent(self) -> None:
+        self.put("a.json", SAMPLES[0])
+        self.put("e.json", SAMPLES[4])
+        full = self.call(action="index")
+        have = {f["name"]: f["updated"] for f in full["files"]}
+        self.assertEqual(self.call(action="index", have=have)["entries"], {})         # 다 가지고 있으면 빈 채로
+        self.assertEqual(len(self.call(action="index", have=have)["files"]), 2)       # 파일 목록은 언제나 전부
+        self.put("a.json", SAMPLES[1])
+        self.assertEqual(list(self.call(action="index", have=have)["entries"]), ["a.json"])
+        self.assertEqual(sorted(self.call(action="index", have={})["entries"]), ["a.json", "e.json"])
+
     def test_unchanged_memos_are_not_read_again(self) -> None:
         self.put("a.json", SAMPLES[0])
         self.call(action="index")
