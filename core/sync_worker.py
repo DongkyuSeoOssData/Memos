@@ -128,6 +128,7 @@ class SyncWorker(QObject):
         path = self.sm.local_path / f"{memo_id}.json"
         with MEMO_IO_LOCK:
             atomic_write_json(path, memo)
+            self.sm.forget_cached_file(memo_id)
         return shared_hash(memo)
 
     def _same_content(self, a: Dict[str, Any], b: Dict[str, Any]) -> bool:

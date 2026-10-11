@@ -24,6 +24,12 @@ def atomic_write_json(path: Path, obj: Any) -> None:
     with MEMO_IO_LOCK:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(obj, f, ensure_ascii=False, indent=2)
+            # 내용이 디스크에 실제로 쓰인 뒤에 바꿔치기합니다. (바꿔치기 직후 정전이 나도 빈 파일이 남지 않게)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass                            # 이 기능을 지원하지 않는 드라이브(일부 네트워크 폴더)
         for _ in range(5):
             try:
                 os.replace(tmp, path)

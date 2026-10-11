@@ -44,6 +44,7 @@ class MemoTrashMixin:
                 data['updated_at'] = datetime.now().isoformat()
                 data.pop('deleted_at', None)
                 atomic_write_json(dst, data)
+                self.forget_cached_file(memo_id)
                 src.unlink()
                 self.remove_pending_delete(memo_id)
             self.mark_dirty(memo_id)

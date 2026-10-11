@@ -1009,14 +1009,26 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         gen_cnt = 0
         code_cnt = 0
         digest: Dict[int, tuple] = {}
+        # 본문이 그대로인 메모는 지난번에 정리해 둔 것을 씁니다. (메모가 많을 때 목록을 다시 그리는 시간을 줄임)
+        # 암호 메모는 푼 내용을 여기에 남겨 두지 않도록 매번 새로 정리합니다.
+        remembered = getattr(self, '_digest_cache', {})
+        self._digest_cache = {}
         for m in all_m:
-            plain = clean_plain_text(m.get('content', ''))
-            if m.get('is_code_memo'):
+            content = m.get('content', '')
+            is_code = bool(m.get('is_code_memo'))
+            reusable = isinstance(content, str) and not m.get('is_locked')
+            key = (content, is_code)
+            found = remembered.get(key) if reusable else None
+            if found is None:
+                plain = clean_plain_text(content)
+                found = (plain, [] if is_code else extract_hashtags(plain))
+            if reusable:
+                self._digest_cache[key] = found
+            plain, tags = found
+            if is_code:
                 code_cnt += 1
-                tags: List[str] = []
             else:
                 gen_cnt += 1
-                tags = extract_hashtags(plain)
             digest[id(m)] = (plain, tags)
             hashtags.update(tags)
 

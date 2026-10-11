@@ -14,6 +14,8 @@ from core.master_public_key import MASTER_PUBLIC_KEY_PEM
 # 4: 본문은 임의의 DEK로 암호화하고, DEK를 [암호 키] + [관리자 공개키]로 각각 감싸 둠
 MEMO_LOCK_VERSIONS = (3, 4)
 MEMO_LOCK_ITERATIONS = 600000
+# 파일에 적힌 횟수를 그대로 믿지 않습니다. 누가 파일을 고쳐 터무니없이 큰 값을 넣으면 그 메모를 열 때 앱이 멈추기 때문입니다.
+MAX_LOCK_ITERATIONS = MEMO_LOCK_ITERATIONS * 10
 
 # ── 구버전(v2) 호환 전용 ──────────────────────────────────────────────────────
 # v2.0.x 까지는 모든 메모를 아래 상수에서 유도한 마스터키로도 암호화했습니다.
@@ -82,7 +84,13 @@ class CryptoManager:
         return base64.b64decode(payload["salt"])
 
     def key_for_payload(self, payload: Dict[str, Any], password: str) -> bytes:
-        return self.derive_key(password, self.payload_salt(payload), int(payload.get("iterations", MEMO_LOCK_ITERATIONS)))
+        try:
+            iterations = int(payload.get("iterations", MEMO_LOCK_ITERATIONS))
+        except (TypeError, ValueError) as e:
+            raise ValueError("암호문의 형식이 올바르지 않습니다.") from e
+        if not 1 <= iterations <= MAX_LOCK_ITERATIONS:
+            raise ValueError("암호문의 형식이 올바르지 않습니다.")
+        return self.derive_key(password, self.payload_salt(payload), iterations)
 
     def encrypt_locked(self, plain_text: str, key: bytes, salt: bytes) -> Dict[str, Any]:
         """본문을 새 DEK로 암호화하고, DEK를 암호 키(와 관리자 공개키)로 감쌉니다."""

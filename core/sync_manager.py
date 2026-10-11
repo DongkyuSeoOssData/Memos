@@ -148,6 +148,10 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         self._sending_ids: set = set()
         # 메모별 '공유하는 부분'의 해시. 창을 옮기는 것처럼 동기화와 무관한 저장을 가려내는 데 씁니다.
         self._shared_hashes: Dict[str, str] = {}
+        # 메모 파일을 읽어 둔 것. {파일 이름: ((수정시각, 크기), 파일 내용)}
+        # 메모 목록은 저장할 때마다, 탐색기를 다시 그릴 때마다 필요하므로, 바뀌지 않은 파일은 다시 열지 않습니다.
+        # 암호 메모는 파일에 든 암호문 그대로 들어 있습니다. (푼 내용은 여기에 두지 않음)
+        self._file_cache: Dict[str, Tuple[Tuple[int, int], Any]] = {}
         # 앱을 켠 뒤 첫 동기화와 수동 동기화는 모든 메모를 훑습니다. (꺼져 있는 동안 바뀐 것을 놓치지 않도록)
         self._full_scan_pending: bool = True
         self._current_worker: Optional[SyncWorker] = None
@@ -318,12 +322,32 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         if not self.local_path.exists():
             return memos
 
-        for f in list(self.local_path.glob("*.json")):
-            if "trash_bin" in str(f):
+        # 폴더를 한 번만 훑습니다. 훑으면서 얻은 수정시각·크기가 지난번과 같은 파일은 읽어 둔 내용을 씁니다.
+        try:
+            with os.scandir(self.local_path) as listing:
+                entries = [e for e in listing if e.name.endswith(".json") and e.is_file()]
+            in_trash = set(os.listdir(self.trash_path)) if self.trash_path.exists() else set()
+        except OSError as e:
+            self.log_error(f"메모 폴더를 읽지 못함: {e}", e)
+            return memos
+        listed = set()
+        for entry in entries:
+            # 메모가 많을 때 이 반복이 가장 자주 도는 곳이라, 경로 객체를 만들지 않고 이름(글자)만으로 다룹니다.
+            if "trash_bin" in entry.path:
                 continue
+            listed.add(entry.name)
             try:
-                with open(f, "r", encoding="utf-8") as file:
-                    m = json.load(file)
+                status = entry.stat()
+                stamp = (status.st_mtime_ns, status.st_size)
+                kept = self._file_cache.get(entry.name)
+                if kept is not None and kept[0] == stamp:
+                    raw = kept[1]
+                else:
+                    with open(entry.path, "r", encoding="utf-8") as file:
+                        raw = json.load(file)
+                    self._file_cache[entry.name] = (stamp, raw)
+                # 돌려주는 메모는 부르는 쪽이 고쳐 쓰므로, 읽어 둔 것과 따로인 사본을 줍니다.
+                m = self._own_copy(raw)
 
                 if isinstance(m, dict):
                     memo_id = m.get('id')
@@ -335,9 +359,10 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
                         continue
 
                     # 휴지통에 동일 ID나 파일명이 이미 존재하는 경우 (삭제 후 잔존한 껍데기 파일 자동 삭제)
-                    if (self.trash_path / f.name).exists() or (self.trash_path / f"{memo_id}.json").exists():
+                    if entry.name in in_trash or f"{memo_id}.json" in in_trash:
                         try:
-                            f.unlink()
+                            self._file_cache.pop(entry.name, None)
+                            os.unlink(entry.path)
                         except Exception:
                             pass
                         continue
@@ -351,7 +376,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
                     if (not sealed and not m.get('is_locked') and m.get('is_draft')
                             and not m.get('is_manually_saved') and not clean_plain_text(m['content'])):
                         try:
-                            f.unlink()
+                            os.unlink(entry.path)
                         except Exception:
                             pass
                         continue
@@ -359,20 +384,23 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
                     memos.append(m)
                     self._note_reminder(memo_id, m.get('reminder'), quiet=True)
 
-                    expected_file = self.local_path / f"{memo_id}.json"
-                    if f.name != expected_file.name:
+                    if entry.name != f"{memo_id}.json":
                         # 구버전 파일명: 원본 바이트를 그대로 옮겨 암호문이 훼손되지 않게 합니다.
+                        expected_file = self.local_path / f"{memo_id}.json"
                         try:
                             if not expected_file.exists():
-                                shutil.move(str(f), str(expected_file))
+                                shutil.move(entry.path, str(expected_file))
                             else:
-                                f.unlink()
+                                os.unlink(entry.path)
                         except Exception as e:
-                            self.log_error(f"구버전 레거시 메모 파일 정리 실패 ({f.name}): {e}", e)
+                            self.log_error(f"구버전 레거시 메모 파일 정리 실패 ({entry.name}): {e}", e)
                     if needs_rewrite:
                         self.save_memo_locally(m)
             except Exception as e:
-                self.log_error(f"로컬 메모 파일 읽기 에러 ({f.name}): {e}", e)
+                self.log_error(f"로컬 메모 파일 읽기 에러 ({entry.name}): {e}", e)
+
+        for name in [n for n in self._file_cache if n not in listed]:
+            self._file_cache.pop(name, None)                 # 없어진 파일은 읽어 둔 것도 버림
 
         # 사라진 메모(삭제·다른 기기에서 지움)의 알림은 목록에서 뺍니다.
         gone = set(self.reminders) - seen_ids
@@ -382,6 +410,17 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         if gone or first_load:
             self.reminders_changed.emit()
         return memos
+
+    @staticmethod
+    def _own_copy(raw: Any) -> Any:
+        """읽어 둔 파일 내용의 사본. (글자·숫자는 바뀌지 않는 값이라 그대로 두고, 그 밖의 것만 새로 만듦)"""
+        if not isinstance(raw, dict):
+            return raw
+        return {k: v if isinstance(v, (str, int, float, bool, type(None))) else copy.deepcopy(v) for k, v in raw.items()}
+
+    def forget_cached_file(self, memo_id: str) -> None:
+        """이 메모의 파일을 방금 고쳐 썼으니, 읽어 둔 내용을 버리고 다음에 다시 읽게 합니다."""
+        self._file_cache.pop(f"{memo_id}.json", None)
 
     # ── 알림 ─────────────────────────────────────────────────────────────────
     def _note_reminder(self, memo_id: str, reminder: Any, quiet: bool = False) -> None:
@@ -469,6 +508,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
                     if not sealed_same:
                         self._snapshot(memo_id, old)
                 atomic_write_json(f, memo_to_save)
+                self.forget_cached_file(memo_id)
         except Exception as e:
             self.log_error(f"로컬 메모 저장 실패 ({memo_id}): {e}", e)
             return False
