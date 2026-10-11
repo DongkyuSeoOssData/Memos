@@ -5,7 +5,7 @@ from ui.themes import LIGHT_THEMES, DARK_THEMES, app_palette
 from ui import modern_style
 from ui.wheel_guard import guard_wheel
 from ui import screen_bounds
-from ui.reminder_ui import DEFAULT_POPUP_CORNER, DEFAULT_QUICK_MINUTES, POPUP_CORNERS, quick_minutes
+from ui.reminder_ui import DEFAULT_POPUP_CORNER, DEFAULT_QUICK_MINUTES, POPUP_CORNERS, ReminderPopup, quick_minutes
 
 # 구글 드라이브 동기화를 준비하는 방법 (README 의 '설정 방법')
 SYNC_GUIDE_URL = "https://github.com/DongkyuSeoOssData/Memos#설정-방법"
@@ -342,12 +342,33 @@ class SettingsWindow(QWidget):
         for key, label in POPUP_CORNERS:
             self.popup_corner_box.addItem(label, key)
         place_row.addWidget(self.popup_corner_box, 1)
+        self.btn_popup_sample = QPushButton("자리 확인")
+        self.btn_popup_sample.setFixedHeight(40)
+        self.btn_popup_sample.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_popup_sample.setToolTip("지금 고른 모니터와 모서리에 알림 창을 한 번 띄워 봅니다 (저장하기 전에도 됨)")
+        self.btn_popup_sample.clicked.connect(self.show_popup_sample)
+        place_row.addWidget(self.btn_popup_sample)
         g_alarm_l.addLayout(place_row)
-        place_hint = QLabel("고른 모니터가 연결돼 있지 않으면 주 모니터에 띄웁니다. 알림이 여럿이면 그 모서리에서부터 쌓입니다.")
+        place_hint = QLabel("'자리 확인'을 누르면 지금 고른 자리에 알림 창을 띄워 봅니다. 고른 값은 '설정 저장'을 눌러야 적용됩니다. "
+                            "고른 모니터가 연결돼 있지 않으면 주 모니터에 띄웁니다. 알림이 여럿이면 그 모서리에서부터 쌓입니다.")
         place_hint.setProperty("role", "hint")
         place_hint.setWordWrap(True)
         g_alarm_l.addWidget(place_hint)
         return g_alarm
+
+    def show_popup_sample(self) -> None:
+        """지금 화면에서 고른 모니터와 모서리에 알림 창을 한 번 띄워 봅니다. (저장하지 않은 값으로도)"""
+        old = getattr(self, '_popup_sample', None)
+        if old is not None:
+            try:
+                old.close()
+            except RuntimeError:                # 이미 닫혀서 지워진 창
+                pass
+        settings = {**self.sm.settings, "reminder_popup_screen": self.popup_screen_box.currentData() or "",
+                    "reminder_popup_corner": self.popup_corner_box.currentData()}
+        self._popup_sample = ReminderPopup(settings, "", "알림 창 자리 확인", "알림이 울리면 여기에 뜹니다.",
+                                           lambda memo_id: None, lambda memo_id, minutes: None)
+        self._popup_sample.show()
 
     def _fill_popup_screens(self, saved: str) -> None:
         """알림 창을 띄울 모니터 목록을 지금 연결된 모니터로 채웁니다.
@@ -358,12 +379,16 @@ class SettingsWindow(QWidget):
         box = self.popup_screen_box
         box.blockSignals(True)
         box.clear()
-        box.addItem("주 모니터", "")
-        names = []
+        # 주 모니터는 한 줄로만 둡니다. (값은 빈 글자: 주 모니터가 바뀌면 바뀐 쪽을 따라감) 나머지 모니터만 따로 늘어놓습니다.
+        primary = QGuiApplication.primaryScreen()
+        size = primary.geometry() if primary else None
+        box.addItem(f"주 모니터 ({size.width()}×{size.height()})" if size else "주 모니터", "")
+        names = [primary.name()] if primary else []
         for n, screen in enumerate(QGuiApplication.screens(), start=1):
+            if screen is primary:
+                continue
             size = screen.geometry()
-            main = " · 주 모니터" if screen is QGuiApplication.primaryScreen() else ""
-            box.addItem(f"모니터 {n} ({size.width()}×{size.height()}{main})", screen.name())
+            box.addItem(f"모니터 {n} ({size.width()}×{size.height()})", screen.name())
             names.append(screen.name())
         if saved and saved not in names:
             box.addItem(f"연결되지 않은 모니터 ({saved})", saved)

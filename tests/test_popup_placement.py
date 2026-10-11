@@ -94,7 +94,7 @@ class PopupSettingTest(support.UiTestCase):
         win = self.window()
         got = win.collect()
         self.assertEqual((got["reminder_popup_screen"], got["reminder_popup_corner"]), ("", "bottom_right"))
-        self.assertEqual(win.popup_screen_box.itemText(0), "주 모니터")
+        self.assertTrue(win.popup_screen_box.itemText(0).startswith("주 모니터"))
         self.assertEqual(win.popup_corner_box.count(), 4)
         win.popup_corner_box.setCurrentIndex(win.popup_corner_box.findData("top_left"))
         self.assertTrue(win.is_dirty())
@@ -105,7 +105,39 @@ class PopupSettingTest(support.UiTestCase):
     def test_connected_monitors_are_listed_by_name(self) -> None:
         win = self.window()
         names = [win.popup_screen_box.itemData(i) for i in range(win.popup_screen_box.count())]
-        self.assertEqual(names, [""] + [s.name() for s in QGuiApplication.screens()])
+        main = QGuiApplication.primaryScreen()
+        self.assertEqual(names, [""] + [s.name() for s in QGuiApplication.screens() if s is not main])
+
+    def test_main_monitor_is_listed_once(self) -> None:
+        main = QGuiApplication.primaryScreen()
+        other = mock.Mock()
+        other.name.return_value = "SECOND"
+        other.geometry.return_value = AREA
+        with mock.patch.object(support.sw.QGuiApplication, "screens", return_value=[main, other]):
+            win = self.window(reminder_popup_screen=main.name())      # 예전에 주 모니터를 이름으로 골라 둔 경우
+            box = win.popup_screen_box
+            texts = [box.itemText(i) for i in range(box.count())]
+            self.assertEqual(len([t for t in texts if "주 모니터" in t]), 1)
+            self.assertEqual([box.itemData(i) for i in range(box.count())], ["", "SECOND"])
+            self.assertTrue(texts[1].startswith("모니터 2"))
+            self.assertEqual(box.currentIndex(), 0)                   # 주 모니터 한 줄로 합쳐짐
+            self.assertEqual(win.collect()["reminder_popup_screen"], "")
+
+    def test_sample_button_shows_a_popup_at_the_chosen_spot_before_saving(self) -> None:
+        win = self.window()
+        win.popup_corner_box.setCurrentIndex(win.popup_corner_box.findData("top_left"))
+        win.btn_popup_sample.click()
+        sample = win._popup_sample
+        self.addCleanup(sample.close)
+        area = QGuiApplication.primaryScreen().availableGeometry()
+        self.assertTrue(sample.isVisible())
+        self.assertEqual((sample.x(), sample.y()), (area.left() + POPUP_MARGIN, area.top() + POPUP_MARGIN))
+        self.assertEqual(self.sm.settings["reminder_popup_corner"], "bottom_right")     # 아직 저장한 것은 아님
+        win.popup_corner_box.setCurrentIndex(win.popup_corner_box.findData("bottom_left"))
+        win.btn_popup_sample.click()                                  # 다시 누르면 앞의 것은 닫고 새 자리에
+        self.assertIsNot(win._popup_sample, sample)
+        self.addCleanup(win._popup_sample.close)
+        self.assertEqual(win._popup_sample.x(), area.left() + POPUP_MARGIN)
 
     def test_unplugged_monitor_choice_is_kept(self) -> None:
         win = self.window(reminder_popup_screen="OLD-MONITOR")
