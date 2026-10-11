@@ -53,8 +53,15 @@ def _parse_dt(value: str) -> datetime:
         return datetime.min
 
 
+# 동기화 한 바퀴가 어떻게 끝났는지. (받는 쪽이 안내 문구를 뜯어보지 않고 이것으로 판단)
+SYNC_CHANGED = "changed"            # 가져오거나 올린 메모가 있음
+SYNC_UNCHANGED = "unchanged"        # 끝까지 돌았지만 바뀐 것이 없음
+SYNC_NOT_DONE = ""                  # 돌지 못했거나 오류로 끝남
+
+
 class SyncWorker(QObject):
-    finished = pyqtSignal(bool, str)
+    # (성공했는지, 사용자에게 보여 줄 문구, 위의 결과 값)
+    finished = pyqtSignal(bool, str, str)
     # 원격 내용으로 로컬 파일이 교체된 메모 id 목록 (열려 있는 창 갱신용)
     pulled = pyqtSignal(list)
     # 다른 기기에서 삭제되어 로컬 휴지통으로 옮긴 메모 id 목록
@@ -82,7 +89,7 @@ class SyncWorker(QObject):
         except Exception as e:
             error_msg = f"동기화 치명적 오류: {str(e)}"
             self.sm.log_error(error_msg, e)
-            self.finished.emit(False, error_msg)
+            self.finished.emit(False, error_msg, SYNC_NOT_DONE)
 
     # ── 동기화 상태 ──────────────────────────────────────────────────────────
     def _load_state(self) -> None:
@@ -145,13 +152,13 @@ class SyncWorker(QObject):
         self._sync_settings(files)
         self._save_state()
         if pulled or pushed:
-            self.finished.emit(True, f"동기화 완료 (가져오기 {pulled}개 / 업로드 {pushed}개)")
+            self.finished.emit(True, f"동기화 완료 (가져오기 {pulled}개 / 업로드 {pushed}개)", SYNC_CHANGED)
         else:
-            self.finished.emit(True, "동기화 완료 (변경사항 없음)")
+            self.finished.emit(True, "동기화 완료 (변경사항 없음)", SYNC_UNCHANGED)
 
     def _check_available(self) -> bool:
         if not self.sm.drive_api.is_available():
-            self.finished.emit(False, "환경설정에서 GAS URL을 먼저 입력해주세요.")
+            self.finished.emit(False, "환경설정에서 GAS URL을 먼저 입력해주세요.", SYNC_NOT_DONE)
             return False
         return True
 

@@ -1,6 +1,6 @@
 from utils.text_utils import clean_plain_text
 from utils.file_utils import MEMO_IO_LOCK, atomic_write_json, is_safe_memo_id
-from core.sync_worker import SyncWorker, shared_hash
+from core.sync_worker import SYNC_CHANGED, SYNC_NOT_DONE, SYNC_UNCHANGED, SyncWorker, shared_hash
 from core.defaults import DEFAULT_SHORTCUTS
 from core.folders import DEFAULT_FOLDERS
 from core import shared_settings
@@ -17,7 +17,6 @@ from datetime import datetime, timedelta
 from typing import Any, List, Dict, Optional, Tuple
 from pathlib import Path
 from PyQt6.QtCore import QTimer, QThread, QObject, pyqtSignal
-from PyQt6.QtWidgets import QSystemTrayIcon
 from utils.crypto_manager import CryptoManager
 
 
@@ -1073,23 +1072,14 @@ class SyncManager(QObject):
         self.active_threads.append(thread)
         thread.start()
 
-    def on_sync_finished(self, success: bool, message: str) -> None:
+    def on_sync_finished(self, success: bool, message: str, outcome: str = SYNC_NOT_DONE) -> None:
+        """동기화가 끝났음을 화면 쪽에 알립니다. 어떻게 보여 줄지(토스트·트레이 알림·목록 새로 고침)는 화면 쪽이 정합니다."""
         if not message:
             return
         print(f"[동기화 로그] 성공: {success}, 내용: {message}")
         # 뒤에서 조용히 돈 확인에서 바뀐 것이 없었다면 알리지 않습니다.
-        if success and "변경사항 없음" in message and getattr(self, "_last_sync_quiet", False):
+        if success and outcome == SYNC_UNCHANGED and getattr(self, "_last_sync_quiet", False):
             return
         if self.ui_manager:
-            if self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
-                self.ui_manager.explorer_window.show_toast(message)
-            else:
-                if not success:
-                    self.ui_manager.tray_icon.showMessage(
-                        "Memos 동기화 오류",
-                        message,
-                        QSystemTrayIcon.MessageIcon.Warning,
-                        3000
-                    )
-            if success and ("가져오기 완료" in message or "업로드 완료" in message or "동기화 완료" in message) and self.ui_manager.explorer_window:
-                self.ui_manager.explorer_window.refresh()
+            completed = success and outcome in (SYNC_CHANGED, SYNC_UNCHANGED)
+            self.ui_manager.show_sync_result(success, message, completed)

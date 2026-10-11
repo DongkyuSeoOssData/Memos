@@ -431,6 +431,19 @@ class UIManager:
         if self.explorer_window and self.explorer_window.isVisible():
             self.explorer_window.show_toast(text)
 
+    def show_sync_result(self, success: bool, message: str, completed: bool) -> None:
+        """동기화 결과를 알립니다. 탐색기가 보이면 그 토스트로, 아니면 실패했을 때만 트레이 알림으로.
+
+        completed: 동기화가 한 바퀴를 끝까지 돌았는지. 그랬다면 탐색기 목록을 새로 고칩니다.
+        """
+        explorer = self.explorer_window
+        if explorer and explorer.isVisible():
+            explorer.show_toast(message)
+        elif not success:
+            self.tray_icon.showMessage("Memos 동기화 오류", message, QSystemTrayIcon.MessageIcon.Warning, 3000)
+        if completed and explorer:
+            explorer.refresh()
+
     def arrange_rolled_up_memos(self) -> None:
         """접은 메모를 각자 놓여 있는 모니터의 아래쪽에 쌓습니다. (일반: 왼쪽, 코드: 오른쪽)"""
         rolled = [w for w in self.memo_windows.values() if w.isVisible() and w._is_rolled_up]
