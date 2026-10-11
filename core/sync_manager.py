@@ -600,10 +600,6 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, MemoIndex
         self._full_scan_pending = True
         self._start_sync()
 
-    def startup_sync_expected(self) -> bool:
-        """앱을 켠 직후의 동기화가 돌 예정인지. (동기화를 쓰고 주소도 넣어 둔 경우)"""
-        return bool(self.settings.get("use_sync", False)) and bool(self.drive_api.is_available())
-
     def _start_sync(self) -> None:
         if not self.settings.get("use_sync", False):
             return

@@ -113,6 +113,25 @@ class QuitKeepsMemosTest(support.UiTestCase):
         self.assertTrue(again.memo_windows["memo-0000"]._is_rolled_up)
         self.assertTrue(again.memo_windows["memo-0000"].isVisible())
 
+    def test_quit_held_back_by_a_failed_save_does_not_leave_the_flag_on(self) -> None:
+        typing = self.open_window("memo-0000")
+        other = self.open_window("memo-0001")
+        typing.text_edit.setPlainText("precious text")
+        typing.text_edit.document().setModified(True)
+        typing._schedule_auto_save()
+
+        def qt_quit() -> None:                                        # Qt 는 끝낼 때 창을 차례로 닫고, 하나라도 거부하면 그만둠
+            for w in (other, typing):
+                w.close()
+
+        with mock.patch.object(support.uim.QApplication, "quit", side_effect=qt_quit),                 mock.patch.object(self.sm, "save_memo_locally", return_value=False):
+            self.ui.quit_app()
+        self.assertTrue(typing.isVisible())                           # 저장하지 못해 닫히지 않음 → 끝내지 못함
+        self.assertFalse(self.ui.quitting)
+        self.assertTrue(self.ui.memo_windows["memo-0001"].isVisible())  # 끝내려다 닫힌 메모는 다시 뜸
+        self.ui.memo_windows["memo-0001"].close()                     # 그 뒤 직접 닫으면 숨김으로 기억
+        self.assertFalse(self.disk("memo-0001")["is_visible"])
+
     def test_quit_sets_the_flag_before_closing(self) -> None:
         with mock.patch.object(support.uim.QApplication, "quit") as quit_app:
             self.ui.quit_app()

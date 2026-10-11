@@ -54,12 +54,6 @@ class UIManager:
         self._reminder_timer.timeout.connect(self.check_reminders)
         # 동기화 작업 스레드에서 알림 목록이 바뀌어도, 타이머는 항상 화면 스레드에서 다룹니다.
         self.sync_manager.reminders_changed.connect(self.schedule_reminders, Qt.ConnectionType.QueuedConnection)
-        # 동기화를 쓰는 PC에서는 첫 알림 확인을 시작 직후의 동기화 뒤로 미룹니다. 이 PC가 꺼져 있는 동안 다른 기기에서
-        # 이미 울리고 지운 알림이, 그 사실을 받기도 전에 '지나간 알림'으로 다시 뜨지 않게 하려는 것입니다.
-        self._reminders_on_hold = self.sync_manager.startup_sync_expected()
-        if self._reminders_on_hold:
-            self.sync_manager.sync_cycle_finished.connect(self.release_reminders, Qt.ConnectionType.QueuedConnection)
-            QTimer.singleShot(self.REMINDER_HOLD_MS, self.release_reminders)     # 동기화가 늦어도 이만큼만 기다림
         self.schedule_reminders()               # 이미 읽어 둔 알림이 있으면 바로 예약
         self.sync_manager.set_ui_manager(self)
         self.setup_tray()
@@ -280,18 +274,9 @@ class UIManager:
 
     # ── 알림 ─────────────────────────────────────────────────────────────────
     MAX_REMINDER_WAIT_MS = 60 * 60 * 1000       # PC 절전·시계 변경에 대비해 길어도 1시간마다는 다시 계산
-    REMINDER_HOLD_MS = 20 * 1000                # 앱을 켠 뒤 시작 동기화를 기다려 주는 가장 긴 시간
-
-    def release_reminders(self) -> None:
-        """미뤄 둔 첫 알림 확인을 시작합니다. (시작 직후의 동기화가 끝났거나, 기다릴 만큼 기다렸을 때)"""
-        if self._reminders_on_hold:
-            self._reminders_on_hold = False
-            self.schedule_reminders()
 
     def schedule_reminders(self) -> None:
         """가장 가까운 알림 시각에 맞춰 타이머를 겁니다. 알림이 하나도 없으면 타이머를 끕니다."""
-        if getattr(self, '_reminders_on_hold', False):
-            return
         waiting = [r for memo_id, r in list(self.sync_manager.reminders.items()) if not self._already_rung(memo_id, r)]
         due = [d for d in (reminders.due_at(r) for r in waiting) if d is not None]
         if not due:
@@ -652,8 +637,17 @@ class UIManager:
             explorer.close_settings_panel()
         # 앱을 끝내면 Qt 가 떠 있는 창을 모두 닫습니다. 그 닫힘을 '사용자가 메모를 닫음'으로 받아들이면
         # 메모가 전부 숨김으로 저장돼, 다시 켰을 때 아무 메모도 뜨지 않습니다. 끝내는 중임을 알려 구분합니다.
+        was_open = [memo_id for memo_id, w in self.memo_windows.items() if w.isVisible()]
         self.quitting = True
         QApplication.quit()
+        # 저장하지 못한 메모가 닫히기를 거부하면 Qt 는 끝내기를 그만둡니다. 그때는 '끝내는 중' 표시를 풀고
+        # (안 그러면 그 뒤로 직접 닫는 메모가 숨김으로 기억되지 않음), 끝내려다 닫힌 메모를 다시 띄웁니다.
+        still_open = lambda memo_id: memo_id in self.memo_windows and self.memo_windows[memo_id].isVisible()
+        if any(still_open(memo_id) for memo_id in was_open):
+            self.quitting = False
+            for memo_id in was_open:
+                if not still_open(memo_id):
+                    self.show_specific_memo(memo_id)
 
     def show_all_memos(self) -> None:
         ms = self.sync_manager.load_local_memos()

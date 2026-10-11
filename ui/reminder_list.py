@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
-from PyQt6.QtCore import QEvent, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from core import reminders
@@ -102,10 +102,15 @@ class ReminderListPanel(QWidget):
 
         # 열어 둔 사이에 알림이 울리거나 다른 곳에서 바뀌어도 목록이 따라갑니다.
         ui_manager.sync_manager.reminders_changed.connect(self.reload, Qt.ConnectionType.QueuedConnection)
+        # 남은 시간('25분 뒤')은 열어 둔 동안에도 흘러가므로 가끔 다시 그립니다.
+        self._clock = QTimer(self)
+        self._clock.timeout.connect(self.reload)
+        self._clock.start(30 * 1000)
         self.reload()
 
     # ── 목록 ─────────────────────────────────────────────────────────────────
     def reload(self) -> None:
+        self._scroll_at = self.rows_scroll.verticalScrollBar().value()      # 다시 그려도 보던 자리를 지킴
         for row in self.rows.values():
             self.rows_box.removeWidget(row)
             row.hide()
@@ -122,6 +127,10 @@ class ReminderListPanel(QWidget):
         self.empty_label.setVisible(not entries)
         self.rows_scroll.setVisible(bool(entries))
         self._fit_rows()
+        QTimer.singleShot(0, self._restore_scroll)
+
+    def _restore_scroll(self) -> None:
+        self.rows_scroll.verticalScrollBar().setValue(self._scroll_at)
 
     def _fit_rows(self) -> None:
         """목록 칸을 줄들의 크기에 맞춥니다. 줄이 많으면 MAX_ROWS_HEIGHT 까지만 키우고 그 안에서 스크롤합니다."""

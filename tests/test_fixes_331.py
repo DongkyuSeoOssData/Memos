@@ -78,23 +78,15 @@ class ReminderRobustnessTest(support.UiTestCase):
         self.assertEqual(rung, ["memo-0001"])                         # 문제의 알림을 되풀이해 시도하지 않음
         self.assertIn("알림을 울리지 못함", self.sm.error_log_path.read_text(encoding="utf-8"))
 
-    def test_first_check_waits_for_the_startup_sync(self) -> None:
-        self.remind()
-        self.ui._reminders_on_hold = True                            # 동기화를 쓰는 PC에서 앱을 막 켠 상태
-        self.ui.schedule_reminders()
-        self.assertFalse(self.ui._reminder_timer.isActive())
-        self.ui.release_reminders()                                  # 시작 동기화가 끝남
-        self.assertTrue(self.ui._reminder_timer.isActive())
-        self.assertFalse(self.ui._reminders_on_hold)
-        self.ui._reminder_timer.stop()
-
-    def test_hold_is_only_used_when_sync_is_set_up(self) -> None:
-        self.assertFalse(self.ui._reminders_on_hold)                 # 이 시험 환경은 동기화를 쓰지 않음
-        self.assertFalse(self.sm.startup_sync_expected())
+    def test_reminders_are_checked_right_away_even_with_sync_on(self) -> None:
+        """알림은 이 PC만의 값이라, 시작 직후의 동기화를 기다리지 않고 바로 확인합니다."""
         self.sm.settings["use_sync"] = True
-        self.assertFalse(self.sm.startup_sync_expected())            # 주소가 없음
         self.sm.drive_api.set_web_app_url("https://example.invalid/exec")
-        self.assertTrue(self.sm.startup_sync_expected())
+        self.remind()
+        again = support.uim.UIManager(self.sm)
+        self.addCleanup(again.tray_icon.hide)
+        self.assertTrue(again._reminder_timer.isActive())
+        again._reminder_timer.stop()
         self.sm.settings["use_sync"] = False
         self.sm.drive_api.set_web_app_url("")
 
