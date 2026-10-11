@@ -1,5 +1,6 @@
 from ui.dialogs import HistoryDialog
 from ui.reminder_ui import ask_reminder
+from ui.reminder_list import ask_reminder_list
 from core import reminders
 from ui import checklist
 from ui.check_marks import CheckEdit
@@ -322,7 +323,7 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         self.btn_app_theme.clicked.connect(self.toggle_app_theme)
         center.addWidget(self.btn_app_theme)
 
-        # 알림(토스트)은 '미리보기' 제목 바로 옆에 표시합니다.
+        # 알림(토스트)은 미리보기 제목 줄의 환경설정 버튼 옆에 표시합니다.
         self.toast = QLabel("")
         self.toast.hide()
         self._toast_timer = QTimer(self)
@@ -486,21 +487,36 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         bg_l.addLayout(pg_l)
 
     def _build_preview(self, bg_l: Any) -> None:
-        """미리보기: 환경설정 버튼과 알림(토스트)이 놓이는 제목 줄, 그 아래 본문 칸."""
+        """미리보기: 제목 줄(왼쪽 환경설정 버튼과 알림(토스트) · 가운데 제목 · 오른쪽 예약된 알림 버튼), 그 아래 본문 칸."""
         pv_head = QHBoxLayout()
         pv_head.setSpacing(10)
+        # 양옆 묶음이 남는 너비를 똑같이 나눠 가져, 제목이 줄의 가운데에 옵니다.
+        pv_left, pv_right = QHBoxLayout(), QHBoxLayout()
+        pv_left.setSpacing(10)
         # 환경설정 버튼: 누르면 탐색기 옆에 열리고, 열려 있을 때 다시 누르면 닫힙니다.
         self.btn_settings = QPushButton("")
         self.btn_settings.setFixedSize(28, 24)
         self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_settings.setToolTip("환경설정 열기/닫기")
         self.btn_settings.clicked.connect(self.ui_manager.toggle_settings)
-        pv_head.addWidget(self.btn_settings)
+        pv_left.addWidget(self.btn_settings)
+        pv_left.addWidget(self.toast)
+        pv_left.addStretch()
         pv_title = QLabel("미리보기")
         pv_title.setMinimumHeight(24)
+        # 예약된 알림 버튼: 알림이 걸린 메모를 빨리 울리는 순으로 보여 주고, 거기서 미루거나 해제합니다. (옆의 숫자는 예약된 개수)
+        self.btn_reminders = QPushButton("")
+        self.btn_reminders.setFixedHeight(24)
+        self.btn_reminders.setMinimumWidth(28)
+        self.btn_reminders.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reminders.clicked.connect(self.show_reminder_list)
+        self.ui_manager.sync_manager.reminders_changed.connect(self.update_reminder_button, Qt.ConnectionType.QueuedConnection)
+        self.update_reminder_button()
+        pv_right.addStretch()
+        pv_right.addWidget(self.btn_reminders)
+        pv_head.addLayout(pv_left, 1)
         pv_head.addWidget(pv_title)
-        pv_head.addWidget(self.toast)
-        pv_head.addStretch()
+        pv_head.addLayout(pv_right, 1)
         bg_l.addLayout(pv_head)
         # 미리보기에서도 체크 상자를 네모로 그리고, 눌러서 체크할 수 있습니다.
         self.pv = CheckEdit(self._preview_check_colors)
@@ -622,6 +638,12 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         hover = "rgba(255,255,255,0.14)" if is_dark else "rgba(0,0,0,0.10)"
         self.btn_settings.setStyleSheet(f"QPushButton {{ border: none; background: transparent; border-radius: 0px; }} "
                                         f"QPushButton:hover {{ background: {hover}; }}")
+        ink = modern_style.app_palette(self.ui_manager.sync_manager.settings)[0]['text']
+        self.btn_reminders.setIcon(self.ui_manager.get_theme_icon("alarm.svg", is_dark))
+        self.btn_reminders.setStyleSheet(
+            f"QPushButton {{ border: none; background: transparent; border-radius: 0px; padding: 0 5px; color: {ink}; "
+            f"font-family: {modern_style.UI_FONT}; font-size: 9.5pt; font-weight: 700; }} "
+            f"QPushButton:hover {{ background: {hover}; }}")
         self.b_del.setIcon(self.ui_manager.get_theme_icon("minus.svg", is_dark))
         self.b_res.setIcon(self.ui_manager.get_theme_icon("restart-icon.svg", is_dark))
         self.b_empty_trash.setIcon(self.ui_manager.get_theme_icon("trashbucket.svg", is_dark))
@@ -878,6 +900,27 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
             w.refresh_reminder_badge()
         self.show_toast("⏰ " + reminders.describe(reminder) if reminder else "알림을 해제했습니다")
         self.refresh()
+
+    def update_reminder_button(self) -> None:
+        """예약된 알림 버튼 옆의 개수와 풍선 도움말을 지금의 알림 목록에 맞춥니다."""
+        count = len(self.ui_manager.sync_manager.reminders)
+        self.btn_reminders.setText(f" {count}" if count else "")
+        self.btn_reminders.setToolTip(f"예약된 알림 {count}개 보기" if count else "예약된 알림 보기 (지금은 없음)")
+
+    def show_reminder_list(self) -> None:
+        """예약된 알림 목록을 엽니다. 미루기·건너뛰기·해제는 목록 안에서 하고, 메모 열기와 알림 바꾸기는 여기서 이어받습니다."""
+        while self.isVisible():
+            action = ask_reminder_list(self, self.ui_manager)
+            if not action:
+                break
+            kind, memo_id = action
+            if kind == "open":
+                self.ui_manager.show_specific_memo(memo_id)
+                break
+            memo = self.ui_manager.memo_for(memo_id)
+            if memo is not None:
+                self.edit_reminder(memo)        # 바꾸고 나면 목록으로 돌아옴
+        self.update_reminder_button()
 
     def show_history(self, memo: Dict[str, Any]) -> None:
         """메모의 이전 내용을 보여 주고, 고른 내용으로 되돌립니다."""

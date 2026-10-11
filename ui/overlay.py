@@ -9,7 +9,7 @@
 """
 from typing import Any, Optional
 
-from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt
+from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import QFrame, QGraphicsBlurEffect, QScrollArea, QVBoxLayout, QWidget
 
@@ -98,6 +98,7 @@ class PanelOverlay(QWidget):
             scroll.setWidget(inner)
             scroll.setStyleSheet(modern_style.dialog_qss(live_settings.current()))
             self._card = shown = scroll
+            inner.installEventFilter(self)               # 내용의 크기가 바뀌면 카드도 따라 맞춤 (eventFilter)
             if hasattr(panel, "layout_changed"):
                 panel.layout_changed.connect(self._fit_card)
         self.holder.addWidget(shown, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -108,6 +109,8 @@ class PanelOverlay(QWidget):
         self.window().activateWindow()
         if hasattr(panel, "focus_first"):
             panel.focus_first()
+        # 글꼴·모양(스타일시트)은 화면에 뜬 뒤에야 다 입혀지므로, 그때의 크기로 카드를 한 번 더 맞춥니다.
+        QTimer.singleShot(0, self._fit_card)
 
         def done() -> None:
             self.panel = None
@@ -119,6 +122,13 @@ class PanelOverlay(QWidget):
             self.update()
 
         return run_panel(panel, done)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        # 카드 안 내용의 크기가 달라졌을 때(모양이 입혀진 뒤, 보이는 입력이 바뀐 뒤) 카드를 다시 맞춥니다.
+        # 이렇게 하지 않으면 처음 잰 작은 크기로 굳어 아래쪽 버튼이 잘립니다.
+        if self._card is not None and event.type() == QEvent.Type.LayoutRequest and obj is self._card.widget():
+            self._fit_card()
+        return False
 
     def cancel(self) -> None:
         """입력 중이면 취소합니다. (창을 숨기거나 닫을 때)"""
@@ -141,6 +151,7 @@ class WindowOverlay(PanelOverlay):
         painter.end()
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        super().eventFilter(obj, event)
         if self.panel is not None:
             if obj is self._frame and event.type() == QEvent.Type.Resize:
                 self.sync_geometry()

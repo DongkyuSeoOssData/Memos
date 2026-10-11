@@ -966,7 +966,10 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
             self.remember_geometry()
             self.memo_data['is_rolled_up'] = self._is_rolled_up
 
-            self.memo_data['is_visible'] = False
+            # 사용자가 닫은 메모는 숨긴 것으로 기억합니다. 앱을 끝내느라 닫히는 경우는 그대로 두어,
+            # 다시 켰을 때 떠 있던 메모가 제자리에 다시 뜨게 합니다.
+            if not getattr(getattr(self, 'ui_manager', None), 'quitting', False):
+                self.memo_data['is_visible'] = False
             self.save_callback(self.memo_data)
             self.close_callback(self)
             # 창을 닫으면 암호 메모의 키도 메모리에서 지웁니다.

@@ -36,6 +36,7 @@ class UIManager:
         self.sync_manager = sm
         self.memo_windows: Dict[str, MemoWindow] = {}
         self._all_visible: bool = True
+        self.quitting: bool = False             # 앱을 끝내는 중 (이때 닫히는 메모 창은 '숨김'으로 저장하지 않음)
         self.explorer_window: Optional[MemoExplorerWindow] = None
         self.settings_window: Optional['SettingsWindow'] = None
         self._cascade_count: int = 0
@@ -323,14 +324,14 @@ class UIManager:
         """이 시각의 알림을 이미 울렸는지."""
         return self._rung.get(memo_id) == str(reminder.get("at", ""))
 
-    def _memo_for(self, memo_id: str) -> Optional[Dict[str, Any]]:
+    def memo_for(self, memo_id: str) -> Optional[Dict[str, Any]]:
         """메모 데이터. 창이 열려 있으면 창이 들고 있는 것을 써서, 창이 나중에 예전 값으로 덮어쓰지 않게 합니다."""
         if memo_id in self.memo_windows:
             return self.memo_windows[memo_id].memo_data
         return next((m for m in self.sync_manager.load_local_memos() if m.get('id') == memo_id), None)
 
     def fire_reminder(self, memo_id: str, reminder: Dict[str, Any], now: datetime.datetime) -> None:
-        memo = self._memo_for(memo_id)
+        memo = self.memo_for(memo_id)
         if memo is None:
             self.sync_manager.reminders.pop(memo_id, None)
             return
@@ -364,14 +365,47 @@ class UIManager:
 
     def snooze_reminder(self, memo_id: str, minutes: int) -> None:
         """알림을 잠시 뒤로 미룹니다. 반복 알림의 원래 일정은 그대로 유지됩니다."""
-        memo = self._memo_for(memo_id)
+        memo = self.memo_for(memo_id)
+        if memo is not None:
+            self.change_reminder(memo_id, reminders.snoozed(memo.get('reminder'), minutes, datetime.datetime.now()))
+
+    def change_reminder(self, memo_id: str, reminder: Optional[Dict[str, Any]]) -> bool:
+        """메모의 알림을 바꾸거나(reminder) 풉니다(None). 열려 있는 메모 창과 탐색기에도 반영합니다. 저장했으면 True."""
+        memo = self.memo_for(memo_id)
         if memo is None:
-            return
-        self.sync_manager.set_reminder(memo, reminders.snoozed(memo.get('reminder'), minutes, datetime.datetime.now()))
+            return False
+        saved = self.sync_manager.set_reminder(memo, reminder)
         if memo_id in self.memo_windows:
             self.memo_windows[memo_id].refresh_reminder_badge()
         if self.explorer_window and self.explorer_window.isVisible():
             self.explorer_window.refresh()
+        return saved
+
+    def reminder_entries(self) -> List[Dict[str, Any]]:
+        """예약된 알림을 빨리 울리는 것부터 늘어놓습니다. [{id, title, reminder, due, locked}]"""
+        titles = {m.get('id'): m for m in self.sync_manager.load_local_memos()}
+        entries = []
+        for memo_id, reminder in list(self.sync_manager.reminders.items()):
+            due = reminders.due_at(reminder)
+            memo = self.memo_windows[memo_id].memo_data if memo_id in self.memo_windows else titles.get(memo_id)
+            if due is None or memo is None:
+                continue
+            entries.append({
+                "id": memo_id, "title": str(memo.get('title', '')) or "(제목 없음)", "reminder": reminder, "due": due,
+                "locked": bool(memo.get('is_locked') or memo.get('_locked') or memo.get('_unreadable'))})
+        return sorted(entries, key=lambda e: (e["due"], e["title"]))
+
+    def postpone_reminder(self, memo_id: str, minutes: int) -> bool:
+        """아직 울리지 않은 알림을 minutes 만큼 늦춥니다."""
+        memo = self.memo_for(memo_id)
+        later = reminders.postponed(memo.get('reminder'), minutes, datetime.datetime.now()) if memo else None
+        return later is not None and self.change_reminder(memo_id, later)
+
+    def skip_reminder(self, memo_id: str) -> bool:
+        """반복 알림의 이번 차례를 건너뜁니다."""
+        memo = self.memo_for(memo_id)
+        nxt = reminders.skipped(memo.get('reminder'), datetime.datetime.now()) if memo else None
+        return nxt is not None and self.change_reminder(memo_id, nxt)
 
     def register_global_hotkeys(self) -> None:
         """새 메모·탐색기 열기 같은 단축키를 (재)등록합니다.
@@ -616,6 +650,9 @@ class UIManager:
             if not explorer.settle_unsaved_settings():
                 return
             explorer.close_settings_panel()
+        # 앱을 끝내면 Qt 가 떠 있는 창을 모두 닫습니다. 그 닫힘을 '사용자가 메모를 닫음'으로 받아들이면
+        # 메모가 전부 숨김으로 저장돼, 다시 켰을 때 아무 메모도 뜨지 않습니다. 끝내는 중임을 알려 구분합니다.
+        self.quitting = True
         QApplication.quit()
 
     def show_all_memos(self) -> None:

@@ -479,6 +479,10 @@ class ReminderDialog(ThemedDialog):
         return getattr(self.form, name)
 
 
+INLINE_FORM_WIDTH = 660     # 알림 설정을 탐색기 안에 띄우는 데 필요한 탐색기 너비 (요일·날짜 단추 줄이 가장 넓음)
+INLINE_FORM_EXTRA = 120     # 화면에 뜨기 전에 잰 높이에 더하는 여유 (카드 여백, 모양이 입혀지며 늘어나는 높이)
+
+
 def ask_reminder(parent: Any, current: Optional[Dict[str, Any]], title: str = "") -> tuple:
     """알림을 정합니다. → (바꿨는지, 새 알림 또는 None)
 
@@ -490,11 +494,15 @@ def ask_reminder(parent: Any, current: Optional[Dict[str, Any]], title: str = ""
         result = window.side_panel().run(ReminderForm(current), "⏰ 알림 설정", min_width=350)
         return result if result else (False, None)
     overlay = getattr(window, "inline_overlay", None)
-    if overlay is not None and overlay.can_host(460, 420):
+    if overlay is not None:
         form = ReminderForm(current, title, heading="⏰ 알림 설정")
         form.setMinimumWidth(380)
-        result = overlay.run(form, card=True)
-        return result if result else (False, None)
+        # 탐색기 안에 온전히 들어갈 때만 안에 띄웁니다. 너비는 가장 넓은 화면(매주·매월)에, 높이는 지금 보일 화면에 맞춥니다.
+        # 들어가지 않으면 잘리지 않도록 대화상자로 띄웁니다.
+        if overlay.can_host(INLINE_FORM_WIDTH, max(420, form.sizeHint().height() + INLINE_FORM_EXTRA)):
+            result = overlay.run(form, card=True)
+            return result if result else (False, None)
+        form.deleteLater()
     dialog = ReminderDialog(parent, current, title)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return False, None

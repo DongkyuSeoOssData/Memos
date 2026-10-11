@@ -84,6 +84,42 @@ class EmptyMemoOnCloseTest(support.UiTestCase):
         self.assertFalse((self.memo_dir / f"{memo_id}.json").exists())
 
 
+class QuitKeepsMemosTest(support.UiTestCase):
+    """앱을 끝낼 때 닫히는 메모는 숨김으로 저장하지 않습니다. (다시 켜면 떠 있던 메모가 다시 뜸)"""
+
+    def test_memos_open_at_quit_come_back_after_restart(self) -> None:
+        rolled = self.open_window("memo-0000")
+        rolled.toggle_rollup()
+        rolled.move(10, 500)
+        opened = self.open_window("memo-0001")
+        closed = self.open_window("memo-0002")
+        closed.close()                                                # 사용자가 직접 닫은 메모
+        support.app.processEvents()
+        self.ui.quitting = True                                       # 트레이의 '종료'
+        for w in (rolled, opened):
+            w.close()                                                 # Qt 가 끝내면서 창을 닫음
+        self.assertTrue(self.disk("memo-0000")["is_visible"])
+        self.assertTrue(self.disk("memo-0001")["is_visible"])
+        self.assertFalse(self.disk("memo-0002")["is_visible"])        # 직접 닫은 것은 숨김 그대로
+        self.assertTrue(self.disk("memo-0000")["is_rolled_up"])       # 접힌 상태와 자리도 기억
+        self.assertEqual(self.disk("memo-0000")["rolled_position_x"], 10)
+
+        again = support.uim.UIManager(self.sm)                        # 다시 켬
+        self.addCleanup(lambda: [w.close() for w in list(again.memo_windows.values())])
+        again.show_all_memos()
+        self.assertIn("memo-0000", again.memo_windows)
+        self.assertIn("memo-0001", again.memo_windows)
+        self.assertNotIn("memo-0002", again.memo_windows)
+        self.assertTrue(again.memo_windows["memo-0000"]._is_rolled_up)
+        self.assertTrue(again.memo_windows["memo-0000"].isVisible())
+
+    def test_quit_sets_the_flag_before_closing(self) -> None:
+        with mock.patch.object(support.uim.QApplication, "quit") as quit_app:
+            self.ui.quit_app()
+        self.assertTrue(self.ui.quitting)
+        quit_app.assert_called_once()
+
+
 class CurrentPasswordTest(support.UiTestCase):
     def locked(self):
         w = self.open_window("memo-0000")

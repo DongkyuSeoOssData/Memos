@@ -260,6 +260,28 @@ def snoozed(reminder: Any, minutes: int, now: datetime) -> Dict[str, Any]:
     return {"at": at, "repeat": "none", "cron": ""}
 
 
+def postponed(reminder: Any, minutes: int, now: datetime) -> Optional[Dict[str, Any]]:
+    """아직 울리지 않은 알림을 minutes 만큼 늦춘 알림. (이미 지난 알림이면 지금부터 minutes 뒤)
+
+    반복 알림은 이번 차례만 늦추고, 그 뒤로는 원래 일정으로 돌아갑니다. ('resume' 에 원래 시각을 적어 둠)
+    """
+    normal = normalize(reminder)
+    if not normal:
+        return None
+    at = (max(_parse_at(normal["at"]), now) + timedelta(minutes=minutes)).replace(microsecond=0).isoformat()
+    if normal["repeat"] != "none":
+        return {**normal, "at": at, "resume": normal.get("resume") or normal["at"]}
+    return {**normal, "at": at}
+
+
+def skipped(reminder: Any, now: datetime) -> Optional[Dict[str, Any]]:
+    """반복 알림의 이번 차례를 건너뛴 알림. 한 번만 울리는 알림이면 None. (건너뛸 다음 차례가 없음)"""
+    normal = normalize(reminder)
+    if not normal or normal["repeat"] == "none":
+        return None
+    return following(normal, max(now, _parse_at(normal["at"])))
+
+
 # 시각을 오전/오후로 나눠 보여 줄지. (환경에 따라 화면 쪽에서 set_ampm 으로 정합니다. 저장되는 값과는 무관)
 USE_AMPM = False
 
