@@ -240,7 +240,11 @@ const LOCK_ITERATIONS = 600000;
 const COLORS = ["#FEF9C3", "#E0F2FE", "#DCFCE7", "#FCE7F3", "#FFFFFF", "#2E3440"];
 
 let token = lsGet(LS_TOKEN) || "";
-let cache = {};            // 파일 이름 → {updated: 원격 수정시각, memo: 메모 객체}
+// 파일 이름 → {updated: 원격 수정시각, memo: 메모 객체}
+// 색인만 받고 본문은 아직 받지 않은 메모는 {updated, memo: 본문 없는 메모, partial: true, locked, preview, tags} 입니다.
+// (목록은 이것만으로 그리고, 본문은 메모를 열 때나 뒤에서 마저 받습니다)
+let cache = {};
+let fileIds = {};          // 파일 이름 → 드라이브 파일 id (내려받을 때 이름으로 찾지 않고 바로 열도록 서버에 알려 줌)
 let filter = "all";
 let editing = null;        // 편집 중인 메모의 상태
 let lastSync = 0;
@@ -391,9 +395,14 @@ function displayText(content) {
 }
 function plainOf(name) {
   const entry = cache[name];
+  if (entry.partial) return String(entry.preview || "");      // 본문을 받기 전: 색인에 든 앞부분
   const key = name + ":" + entry.updated;
   if (!textMemo.has(key)) textMemo.set(key, displayText(entry.memo.content));
   return textMemo.get(key);
+}
+/** 암호 메모(또는 예전 암호화 형식)인지. 본문을 받기 전에는 색인에 적힌 표시로 압니다. */
+function isSealedEntry(entry) {
+  return entry.partial ? !!entry.locked : (isLockedPayload(entry.memo.content) || isLegacyPayload(entry.memo.content));
 }
 function tagsOf(text) {
   const out = [];
@@ -568,39 +577,110 @@ async function newLockContext(password) {
 }
 
 // ── 동기화 (바뀐 파일만 내려받음) ────────────────────────────────────────────
+const isMemoFile = (name) => !name.startsWith("_");
+
+/**
+ * names 의 파일을 본문까지 받아 cache 에 넣습니다. progress(받은 수, 전체) 로 진행을 알립니다.
+ * 그사이 이 화면에서 저장해 더 새로워진 메모는 덮어쓰지 않습니다.
+ */
+async function fetchBodies(names, progress) {
+  for (let i = 0; i < names.length; i += 15) {
+    const part = names.slice(i, i + 15);
+    const ids = {};
+    for (const name of part) if (fileIds[name]) ids[name] = fileIds[name];
+    const {items} = await api("getMany", {names: part, ids});
+    for (const it of items) {
+      let memo = null;
+      try { memo = JSON.parse(it.content); } catch (e) { /* 깨진 파일은 건너뜀 */ }
+      if (it.name === SETTINGS_FILE) {
+        if (memo && typeof memo === "object") { shared = {updated: it.updated, data: memo}; lsSet(LS_SETTINGS, JSON.stringify(shared)); }
+        continue;
+      }
+      if (!memo || typeof memo !== "object" || typeof memo.id !== "string") continue;
+      const have = cache[it.name];
+      if (!have || have.partial || have.updated < it.updated) cache[it.name] = {updated: it.updated, memo};
+    }
+    if (progress) progress(Math.min(i + 15, names.length), names.length);
+  }
+}
+
+/**
+ * 파일 목록과 색인을 받습니다. → {files, entries}
+ * 색인(entries)은 스크립트가 메모마다 만들어 둔 요약입니다. 이것이 있으면 메모 파일을 하나하나 받지 않고도 목록을 그릴 수 있습니다.
+ * 색인을 모르는 예전 스크립트에서는 entries 가 null 이고, 전처럼 파일을 모두 받습니다.
+ */
+async function fetchListing() {
+  let res;
+  try {
+    res = await api("index");
+  } catch (e) {
+    if (e instanceof AuthError) throw e;
+    return {files: (await api("list")).files, entries: null};
+  }
+  // 스크립트는 한 번에 정해진 시간만큼만 색인을 만듭니다. 메모가 많아 덜 만들어졌으면 몇 번 더 청합니다.
+  for (let round = 0, left = res.pending || 0; left > 0 && round < 6; round++) {
+    $("status").textContent = `목록 준비 중… (남은 메모 ${left}개)`;
+    const more = await api("index");
+    if (!((more.pending || 0) < left)) { res = more; break; }
+    res = more;
+    left = more.pending || 0;
+  }
+  return {files: res.files, entries: res.entries || {}};
+}
+
 async function sync(announce) {
   if (syncing) return;
   syncing = true;
   $("status").textContent = "불러오는 중…";
   try {
-    const {files} = await api("list");
+    const {files, entries} = await fetchListing();
+    fileIds = {};
+    for (const f of files) if (f.id) fileIds[f.name] = f.id;
     const remote = new Map(files.map((f) => [f.name, f.updated]));
     for (const name of Object.keys(cache)) if (!remote.has(name)) delete cache[name];
-    const isMemoFile = (name) => !name.startsWith("_");
-    const need = files.filter((f) => (isMemoFile(f.name) ? (!cache[f.name] || cache[f.name].updated !== f.updated)
-                                                          : (f.name === SETTINGS_FILE && shared.updated !== f.updated)))
-                      .map((f) => f.name);
-    if (!remote.has(SETTINGS_FILE)) shared = {updated: 0, data: shared.data};
-    for (let i = 0; i < need.length; i += 15) {
-      $("status").textContent = `불러오는 중… ${Math.min(i + 15, need.length)}/${need.length}`;
-      const {items} = await api("getMany", {names: need.slice(i, i + 15)});
-      for (const it of items) {
-        let memo = null;
-        try { memo = JSON.parse(it.content); } catch (e) { /* 깨진 파일은 건너뜀 */ }
-        if (it.name === SETTINGS_FILE) {
-          if (memo && typeof memo === "object") { shared = {updated: it.updated, data: memo}; lsSet(LS_SETTINGS, JSON.stringify(shared)); }
-          continue;
-        }
-        if (memo && typeof memo === "object" && typeof memo.id === "string") cache[it.name] = {updated: it.updated, memo};
+
+    // 바뀐 메모 가운데 색인에 요약이 있는 것은 그것으로 먼저 채우고, 없는 것만 지금 받습니다.
+    const stale = files.filter((f) => isMemoFile(f.name) && (!cache[f.name] || cache[f.name].updated !== f.updated));
+    const need = [];
+    for (const f of stale) {
+      const entry = entries && entries[f.name];
+      if (entry && entry.updated === f.updated) {
+        if (entry.bad || !entry.meta) { delete cache[f.name]; continue; }      // 메모로 읽을 수 없는 파일
+        cache[f.name] = {updated: f.updated, memo: entry.meta, partial: true, locked: !!entry.locked,
+                         preview: String(entry.preview || ""), tags: Array.isArray(entry.tags) ? entry.tags : []};
+      } else {
+        need.push(f.name);
       }
     }
+    if (remote.has(SETTINGS_FILE)) { if (shared.updated !== remote.get(SETTINGS_FILE)) need.push(SETTINGS_FILE); }
+    else shared = {updated: 0, data: shared.data};
+
+    if (entries && stale.length > need.length) {       // 색인만으로 목록을 먼저 보여 줍니다.
+      if (!editing) show("v-list");
+      renderList();
+    }
+    await fetchBodies(need, (done, total) => { $("status").textContent = `불러오는 중… ${done}/${total}`; });
     persistCache();
     lastSync = Date.now();
     $("status").textContent = "";
-    const newMemos = need.filter(isMemoFile).length;
-    if (announce) toast(newMemos ? `${newMemos}개 메모를 새로 받았습니다` : "최신 상태입니다");
+    if (announce) toast(stale.length ? `${stale.length}개 메모를 새로 받았습니다` : "최신 상태입니다");
     if (!editing) show("v-list");
     renderList();
+
+    // 본문을 아직 받지 않은 메모는 뒤에서 마저 받습니다. (본문 검색과, 연결이 끊겼을 때 열어 보기 위해)
+    // 목록은 이미 쓸 수 있고, 그사이 여는 메모는 그 메모부터 따로 받습니다.
+    const rest = Object.keys(cache).filter((name) => cache[name].partial);
+    if (rest.length) {
+      try {
+        await fetchBodies(rest, (done, total) => {
+          $("status").textContent = `본문 받는 중… ${done}/${total}`;
+          if (done % 60 === 0) persistCache();
+        });
+      } catch (e) { /* 도중에 끊겼으면 다음에 이어서 받습니다. 목록은 이미 떠 있으므로 따로 알리지 않습니다. */ }
+      persistCache();
+      $("status").textContent = "";
+      if (!editing) renderList();
+    }
   } catch (e) {
     $("status").textContent = "";
     if (e instanceof AuthError) { show("v-auth"); return; }
@@ -625,11 +705,13 @@ function renderList() {
   renderDrawer(folderNames);
 
   for (const name of Object.keys(cache)) {
-    const memo = cache[name].memo;
+    const entry = cache[name];
+    const memo = entry.memo;
     if (!folderContains(folderFilter, normFolder(memo.folder))) continue;
-    const locked = isLockedPayload(memo.content) || isLegacyPayload(memo.content);
+    const locked = isSealedEntry(entry);
     const text = locked ? "" : plainOf(name);
-    const tags = memo.is_code_memo || locked ? [] : tagsOf(text);
+    // 본문을 받기 전에는 색인에 든 태그를 씁니다. (앞부분만으로 찾으면 뒤쪽의 태그를 놓치므로)
+    const tags = memo.is_code_memo || locked ? [] : entry.partial ? (entry.tags || []) : tagsOf(text);
     tags.forEach((t) => allTags.add(t));
     if (filter === "general" && memo.is_code_memo) continue;
     if (filter === "code" && !memo.is_code_memo) continue;
@@ -734,6 +816,15 @@ async function newFolderFromDrawer() {
  *   dirty        : 저장할 것이 있는지
  */
 async function openMemo(name) {
+  if (cache[name] && cache[name].partial) {
+    // 목록은 색인으로 그렸고 본문은 아직 받지 않은 메모: 본문부터 받습니다. (본문 없이 열어 저장하면 내용이 지워짐)
+    toast("여는 중…");
+    try { await fetchBodies([name]); } catch (e) {
+      if (e instanceof AuthError) { show("v-auth"); return; }
+    }
+    if (!cache[name] || cache[name].partial) { toast("메모를 불러오지 못했습니다. 연결을 확인하세요."); return; }
+    persistCache();
+  }
   const entry = cache[name];
   if (!entry) return;
   const memo = JSON.parse(JSON.stringify(entry.memo));

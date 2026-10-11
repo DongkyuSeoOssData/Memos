@@ -21,6 +21,8 @@ from utils.crypto_manager import CryptoManager
 from core.memo_password import MemoPasswordMixin
 from core.memo_history import MemoHistoryMixin
 from core.memo_trash import MemoTrashMixin
+from core.memo_index import MemoIndexMixin
+import threading
 
 
 AUTO_START_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -60,9 +62,11 @@ def set_auto_start(enable: bool, key_path: str = AUTO_START_KEY_PATH, app_name: 
     return is_auto_start_enabled(key_path, app_name) == enable
 
 
-class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
+class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, MemoIndexMixin, QObject):
     # 동기화할 변경이 생겼음을 알립니다. (저장이 다른 스레드에서 일어나도 타이머는 주 스레드에서 걸리도록 신호로 전달)
     _changes_pending = pyqtSignal()
+    # 읽어 둔 메모 파일이 달라져 색인을 다시 써야 함을 알립니다. (동기화 스레드에서도 보내므로 신호로 전달)
+    _index_touched = pyqtSignal()
     # 이 PC에서 바뀐 것이 없을 때, 다른 기기의 변경을 확인하는 간격. 확인은 파일 목록 요청 한 번입니다.
     REMOTE_CHECK_SEC = 15 * 60
     # 변경 뒤 동기화까지 기다리는 시간 (환경설정의 sync_interval_index 로 고름)
@@ -151,7 +155,14 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         # 메모 파일을 읽어 둔 것. {파일 이름: ((수정시각, 크기), 파일 내용)}
         # 메모 목록은 저장할 때마다, 탐색기를 다시 그릴 때마다 필요하므로, 바뀌지 않은 파일은 다시 열지 않습니다.
         # 암호 메모는 파일에 든 암호문 그대로 들어 있습니다. (푼 내용은 여기에 두지 않음)
+        # 이것을 파일 하나(로컬 색인)로 간직해 두어, 앱을 켤 때도 바뀐 파일만 읽습니다. → core/memo_index.py
         self._file_cache: Dict[str, Tuple[Tuple[int, int], Any]] = {}
+        self._index_dirty = False
+        self._index_write_lock = threading.Lock()
+        self._index_timer = QTimer()
+        self._index_timer.setSingleShot(True)
+        self._index_timer.timeout.connect(self._save_index_in_background)
+        self._index_touched.connect(self._arm_index_timer)
         # 앱을 켠 뒤 첫 동기화와 수동 동기화는 모든 메모를 훑습니다. (꺼져 있는 동안 바뀐 것을 놓치지 않도록)
         self._full_scan_pending: bool = True
         self._current_worker: Optional[SyncWorker] = None
@@ -170,6 +181,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         self.local_path.mkdir(parents=True, exist_ok=True)
         self.trash_path = self.local_path / "trash_bin"
         self.trash_path.mkdir(parents=True, exist_ok=True)
+        self._load_index()
         # 메모 id → 알림. 알림 시각을 확인할 때마다 모든 메모 파일을 읽지 않도록 메모리에 모아 둡니다.
         self.reminders: Dict[str, Dict[str, Any]] = {}
         self._reminders_loaded = False
@@ -234,7 +246,13 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
                 self._changes_pending.emit()
         try:
             atomic_write_json(self.settings_path, self.settings)
+            previous_folder = self.local_path
             self.local_path = Path(self.settings.get("local_memo_path", str(self.base_path / "memos")))
+            if self.local_path != previous_folder:
+                # 메모 폴더를 바꿨으면, 예전 폴더의 파일을 읽어 둔 것은 쓸 수 없습니다.
+                with MEMO_IO_LOCK:
+                    self._file_cache.clear()
+                self._index_changed()
             self.local_path.mkdir(parents=True, exist_ok=True)
             self.trash_path = self.local_path / "trash_bin"
             self.trash_path.mkdir(parents=True, exist_ok=True)
@@ -331,6 +349,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
             self.log_error(f"메모 폴더를 읽지 못함: {e}", e)
             return memos
         listed = set()
+        cache_changed = False
         for entry in entries:
             # 메모가 많을 때 이 반복이 가장 자주 도는 곳이라, 경로 객체를 만들지 않고 이름(글자)만으로 다룹니다.
             if "trash_bin" in entry.path:
@@ -346,6 +365,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
                     with open(entry.path, "r", encoding="utf-8") as file:
                         raw = json.load(file)
                     self._file_cache[entry.name] = (stamp, raw)
+                    cache_changed = True
                 # 돌려주는 메모는 부르는 쪽이 고쳐 쓰므로, 읽어 둔 것과 따로인 사본을 줍니다.
                 m = self._own_copy(raw)
 
@@ -401,6 +421,9 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
 
         for name in [n for n in self._file_cache if n not in listed]:
             self._file_cache.pop(name, None)                 # 없어진 파일은 읽어 둔 것도 버림
+            cache_changed = True
+        if cache_changed:
+            self._index_changed()
 
         # 사라진 메모(삭제·다른 기기에서 지움)의 알림은 목록에서 뺍니다.
         gone = set(self.reminders) - seen_ids

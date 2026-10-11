@@ -75,23 +75,103 @@ def updated_of(path: Path) -> int:
     return path.stat().st_mtime_ns // 1_000_000
 
 
+# ── 색인 (mobile/Code.gs 의 summarize_ / buildIndex_ 와 같은 규칙) ───────────────
+INDEX_FILE = "_index.json"
+INDEX_VERSION = 1
+PREVIEW_CHARS = 300
+NL = chr(10)
+_TAG = re.compile(r"(?:^|\s)#([^\s#]+)")
+_HEX = re.compile(r"[0-9a-fA-F]{6}([0-9a-fA-F]{2})?")
+
+
+def is_rich_html(content: str) -> bool:
+    head = content.lstrip()[:400].lower()
+    return head.startswith("<!doctype html public") and "qrichtext" in head
+
+
+def to_plain(content) -> str:
+    if not isinstance(content, str):
+        return ""
+    if not is_rich_html(content):
+        return content
+    text = re.sub(r"<head[\s\S]*?</head>", "", content, flags=re.I)
+    text = re.sub(r"<style[^>]*>[\s\S]*?</style>", "", text, flags=re.I)
+    text = re.sub(r"<br\s*/?>", NL, text, flags=re.I)
+    text = re.sub(r"</(p|li|div|h[1-6]|tr)>", NL, text, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    for entity, char in (("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'"), ("&apos;", "'"), ("&amp;", "&")):
+        text = text.replace(entity, char)
+    return re.sub(NL + "{2,}", NL, text).strip()
+
+
+def tags_of(text: str) -> list:
+    return [t for t in _TAG.findall(text) if not _HEX.fullmatch(t)]
+
+
+def summarize(text: str, updated: int) -> dict:
+    try:
+        memo = json.loads(text)
+    except ValueError:
+        memo = None
+    if not isinstance(memo, dict) or not isinstance(memo.get("id"), str):
+        return {"updated": updated, "bad": True}
+    content = memo.get("content")
+    meta = {k: v for k, v in memo.items() if k != "content"}
+    locked = isinstance(content, dict) and bool(content.get("is_encrypted"))
+    plain = "" if locked else to_plain(content)
+    return {"updated": updated, "meta": meta, "locked": locked, "preview": plain[:PREVIEW_CHARS],
+            "tags": [] if (meta.get("is_code_memo") or locked) else tags_of(plain)}
+
+
+def refresh_index(folder: Path) -> dict:
+    """색인을 파일 목록에 맞춰 고치고 돌려줍니다. 바뀐 메모만 다시 읽습니다."""
+    with LOCK:
+        files = [{"name": p.name, "id": p.name, "updated": updated_of(p)} for p in sorted(folder.glob("*.json"))
+                 if SAFE_NAME.fullmatch(p.name) and p.name != INDEX_FILE]
+        index_path = folder / INDEX_FILE
+        stored = {}
+        try:
+            parsed = json.loads(index_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict) and parsed.get("v") == INDEX_VERSION and isinstance(parsed.get("entries"), dict):
+                stored = parsed["entries"]
+        except (OSError, ValueError):
+            pass
+        entries, changed = {}, False
+        for f in files:
+            if f["name"].startswith("_"):
+                continue
+            old = stored.get(f["name"])
+            if isinstance(old, dict) and old.get("updated") == f["updated"]:
+                entries[f["name"]] = old
+                continue
+            entries[f["name"]] = summarize((folder / f["name"]).read_text(encoding="utf-8"), f["updated"])
+            changed = True
+        if changed or len(stored) != len(entries):
+            index_path.write_text(json.dumps({"v": INDEX_VERSION, "entries": entries}, ensure_ascii=False), encoding="utf-8")
+        return {"files": files, "entries": entries, "pending": 0}
+
+
 def handle_api(folder: Path, token: str, req: dict) -> dict:
     if token and req.get("token") != token:
         return {"error": "auth"}
     action = req.get("action")
     if action == "list":
-        return {"files": [{"name": p.name, "updated": updated_of(p)} for p in sorted(folder.glob("*.json"))
-                          if SAFE_NAME.fullmatch(p.name)]}
+        return {"files": [{"name": p.name, "id": p.name, "updated": updated_of(p)} for p in sorted(folder.glob("*.json"))
+                          if SAFE_NAME.fullmatch(p.name) and p.name != INDEX_FILE]}
+    if action == "index":
+        return refresh_index(folder)
     if action == "getMany":
         items = []
         for name in req.get("names") or []:
             path = folder / str(name)
+            if name == INDEX_FILE:
+                continue
             if SAFE_NAME.fullmatch(str(name)) and path.exists():
                 items.append({"name": name, "updated": updated_of(path), "content": path.read_text(encoding="utf-8")})
         return {"items": items}
 
     name = str(req.get("name") or "")
-    if not SAFE_NAME.fullmatch(name):
+    if not SAFE_NAME.fullmatch(name) or name == INDEX_FILE:      # 색인은 서버만 씁니다
         return {"error": "name"}
     path = folder / name
     if action == "save":

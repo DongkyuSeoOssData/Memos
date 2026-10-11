@@ -103,6 +103,84 @@ class FileCacheTest(SyncManagerTestCase):
         self.assertEqual(self._contents(), ["from phone"])
 
 
+class LocalIndexTest(FileCacheTest):
+    """로컬 색인: 앱을 다시 켜도 바뀐 메모 파일만 읽습니다."""
+
+    def restart(self):
+        """앱을 껐다 켠 것처럼: 색인을 남기고, 같은 폴더로 SyncManager 를 새로 만듭니다."""
+        from core.sync_manager import SyncManager
+        self.sm.load_local_memos()
+        self.sm.save_index_now()
+        self.sm = SyncManager(self.drive)
+        return self.sm
+
+    def test_restart_reads_no_memo_files(self) -> None:
+        self.fill()
+        self.restart()
+        self.assertEqual(self.opens_during(self.sm.load_local_memos), 0)
+        self.assertEqual(self._contents(), [f"body {n}" for n in range(5)])
+
+    def test_memo_changed_while_the_app_was_off_is_read_again(self) -> None:
+        self.fill()
+        self.sm.load_local_memos()
+        self.sm.save_index_now()
+        path = self.memo_dir / "memo-0003.json"
+        path.write_text(json.dumps(dict(self._disk("memo-0003"), content="edited while off"), ensure_ascii=False), encoding="utf-8")
+        (self.memo_dir / "memo-0004.json").unlink()                                # 꺼져 있는 동안 지워진 메모
+        self.sm.save_memo_locally(self._memo("memo-0009", "made elsewhere"))        # 꺼져 있는 동안 생긴 메모 (색인에는 없음)
+        self.sm._index_dirty = False
+        from core.sync_manager import SyncManager
+        self.sm = SyncManager(self.drive)
+        self.assertEqual(self.opens_during(self.sm.load_local_memos), 2)           # 바뀐 것과 새 것만
+        self.assertEqual(self._contents(), ["body 0", "body 1", "body 2", "edited while off", "made elsewhere"])
+
+    def test_broken_or_foreign_index_is_ignored(self) -> None:
+        self.fill(3)
+        self.restart()
+        for bad in ("not json", "[]", json.dumps({"v": 999, "folder": str(self.memo_dir), "files": {}}),
+                    json.dumps({"v": 1, "folder": "C:/somewhere/else", "files": {"x.json": [[1, 2], {"id": "x"}]}}),
+                    json.dumps({"v": 1, "folder": str(self.memo_dir), "files": {"memo-0000.json": "garbage"}})):
+            self.sm.index_path.write_text(bad, encoding="utf-8")
+            from core.sync_manager import SyncManager
+            self.sm = SyncManager(self.drive)
+            self.assertEqual(self.sm._file_cache, {}, bad[:30])
+            self.assertEqual(self._contents(), ["body 0", "body 1", "body 2"], bad[:30])     # 메모 파일에서 다시 읽음
+
+    def test_index_never_holds_unlocked_text_and_drops_deleted_memos(self) -> None:
+        self.fill(2)
+        memo = self._memo("memo-0005", "top secret")
+        self.sm.save_memo_locally(memo)
+        self.sm.set_memo_password(memo, "pw12")
+        self.restart()
+        text = self.sm.index_path.read_text(encoding="utf-8")
+        self.assertNotIn("top secret", text)
+        self.assertIn("body 1", text)
+        self.sm.delete_memo_locally("memo-0001")
+        self.restart()
+        self.assertNotIn("body 1", self.sm.index_path.read_text(encoding="utf-8"))
+        self.assertTrue(self.sm.load_local_memos()[-1].get("_locked") or any(m.get("_locked") for m in self.sm.load_local_memos()))
+
+    def test_changing_the_memo_folder_starts_over(self) -> None:
+        self.fill(2)
+        self.sm.load_local_memos()
+        other = self.home / "other"
+        self.sm.save_settings({"local_memo_path": str(other)})
+        self.assertEqual(self.sm._file_cache, {})
+        self.assertEqual(self.sm.load_local_memos(), [])
+        self.sm.save_index_now()
+        self.assertEqual(json.loads(self.sm.index_path.read_text(encoding="utf-8"))["folder"], str(other))
+
+    def test_index_is_written_after_changes_and_on_quit(self) -> None:
+        self.fill(2)
+        self.sm.load_local_memos()
+        self.assertTrue(self.sm._index_dirty)
+        self.sm.save_index_now()
+        self.assertFalse(self.sm._index_dirty)
+        self.assertTrue(self.sm.index_path.exists())
+        self.sm.load_local_memos()                                                # 바뀐 것이 없으면 다시 쓰지 않음
+        self.assertFalse(self.sm._index_dirty)
+
+
 class ExplorerDigestTest(support.UiTestCase):
     def test_unchanged_memos_are_not_cleaned_again_on_refresh(self) -> None:
         ex = self.explorer()

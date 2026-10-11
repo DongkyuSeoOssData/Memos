@@ -76,6 +76,7 @@ class UIManager:
         if self.explorer_window:
             self.explorer_window._flush_preview_save()
         self._hotkeys.unregister_all()
+        self.sync_manager.save_index_now()      # 다음에 켤 때 메모 파일을 다시 읽지 않도록 색인을 남김
 
     def get_theme_icon(self, svg_name: str, is_dark: Optional[bool] = None, override_color: Optional[str] = None) -> QIcon:
         if getattr(sys, 'frozen', False):
