@@ -295,7 +295,7 @@ class LockedMemoSizeTest(support.UiTestCase):
         self.assertEqual((w.width(), w.minimumSizeHint().width(), w.memo_data["rolled_width"]), (narrowest, needed, narrowest))
         self.answers[:] = ["pw12"]
         w.prompt_unlock()
-        self.answers[:] = []
+        self.answers[:] = ["pw12"]                                   # 지금 암호
         w.remove_memo_password()                                     # 암호를 없애면 자물쇠도 사라지고 너비는 그대로
         support.app.processEvents()
         self.assertTrue(w.lbl_lock.isHidden())

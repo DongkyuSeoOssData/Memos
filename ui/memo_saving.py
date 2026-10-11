@@ -43,39 +43,47 @@ class MemoSavingMixin:
         delay = max(0.0, min(float(max(1, idle)), remaining_cap))
         self._auto_save_timer.start(int(delay * 1000))
 
-    def flush_auto_save(self) -> None:
-        """예약된 자동 저장이 남아 있으면 지금 바로 저장합니다. (닫기·숨기기·앱 종료 시)"""
+    def flush_auto_save(self) -> bool:
+        """예약된 자동 저장이 남아 있으면 지금 바로 저장합니다. (닫기·숨기기·앱 종료 시) 저장에 실패했으면 False."""
         if self._auto_save_timer.isActive():
             self._auto_save_timer.stop()
-            self.execute_auto_save()
+            return self.execute_auto_save()
+        return True
 
-    def execute_auto_save(self) -> None:
+    def execute_auto_save(self) -> bool:
+        """지금 내용을 저장합니다. 저장했거나 저장할 것이 없었으면 True, 저장에 실패했으면 False."""
         self._dirty_since = None
         if self.is_sealed():
             # 잠긴 상태의 빈 편집기를 본문으로 저장하면 안 됩니다.
-            return
+            return True
         self.memo_data['content'] = self.current_content()
         # 수정일시는 본문을 실제로 고쳤을 때만 바꿉니다. (고친 것 없이 저장만 한 경우에는 그대로)
         # 본문은 그대로이고 속성만 바뀐 경우에는 다른 기기에 전해지도록 '속성 수정 시각'만 갱신합니다.
         document = self.text_edit.document()
         now = datetime.datetime.now().isoformat()
-        if document.isModified():
+        was_modified, was_meta_dirty = document.isModified(), getattr(self, '_meta_dirty', False)
+        if was_modified:
             self.memo_data['updated_at'] = now
-        elif getattr(self, '_meta_dirty', False):
+        elif was_meta_dirty:
             self.memo_data['meta_updated_at'] = now
         document.setModified(False)
         self._meta_dirty = False
 
-        plain = clean_plain_text(self.memo_data['content'])
-
         if self.memo_data.get('is_draft'):
-            if plain:
-                self.memo_data['is_draft'] = False
-                self.save_callback(self.memo_data)
-                self.show_toast("✓ 저장됨")
-        else:
-            self.save_callback(self.memo_data)
-            self.show_toast("✓ 저장됨")
+            if not clean_plain_text(self.memo_data['content']):
+                return True                     # 아무것도 적지 않은 새 메모는 저장하지 않음
+            self.memo_data['is_draft'] = False
+
+        if self.save_callback(self.memo_data) is False:
+            # 저장하지 못했으면 '저장됨'이라고 하지 않습니다. 고친 표시를 되돌려 두고, 조금 뒤에 다시 시도합니다.
+            document.setModified(was_modified)
+            self._meta_dirty = was_meta_dirty
+            self.show_toast("저장하지 못했습니다 · 메모 폴더를 확인하세요", warn=True)
+            self._schedule_auto_save()
+            return False
+        self._close_warned = False
+        self.show_toast("✓ 저장됨")
+        return True
 
     def manual_save(self) -> None:
         plain = clean_plain_text(self.text_edit.toHtml())

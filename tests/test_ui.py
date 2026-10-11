@@ -1086,6 +1086,7 @@ class LockedMemoUiTest(UiTestCase):
         ex._lock_action_on_current("toggle_memo_lock")       # 단축키: 잠금 해제
         self.assertIn("body 1", memo()["content"])
 
+        self.answers[:] = ["pw"]                             # 지금 암호
         ex._lock_action(memo(), "remove_memo_password")
         self.assertFalse(self.disk("memo-0001")["is_locked"])
         self.assertIn("body 1", self.disk("memo-0001")["content"])

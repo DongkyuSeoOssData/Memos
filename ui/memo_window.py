@@ -917,6 +917,13 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
         self._apply_fold_state(is_rolled, x, y, target_w, target_h)
 
     def closeEvent(self, e: Any) -> None:
+        if (not getattr(self, '_is_deleting', False) and not getattr(self, '_close_warned', False)
+                and self.flush_auto_save() is False):
+            # 쓴 글을 저장하지 못한 채 닫히면 그대로 사라지므로, 한 번은 닫지 않고 알립니다.
+            self._close_warned = True
+            self.show_toast("저장하지 못해 닫지 않았습니다 · 한 번 더 닫으면 저장하지 않고 닫습니다", warn=True)
+            e.ignore()
+            return
         panel = getattr(self, '_side_panel', None)
         if panel is not None:                               # 옆에 붙여 연 패널(알림 설정·이전 내용)도 함께 정리
             self._side_panel = None
@@ -940,8 +947,10 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
         else:
             plain_text = clean_plain_text(self.text_edit.toHtml()).strip()
 
+        # 아무것도 적지 않고 닫는 새 메모만 치웁니다. 한 번이라도 저장된 메모는 글을 다 지우고 닫아도 남깁니다.
         is_empty_draft = (
             (not plain_text)
+            and bool(self.memo_data.get('is_draft'))
             and (not self.memo_data.get('is_manually_saved', False))
             and not self.memo_data.get('is_locked')
             and not self.is_sealed()

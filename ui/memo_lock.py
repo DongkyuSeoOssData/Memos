@@ -145,7 +145,11 @@ class MemoLockMixin:
         if not sm or not self.memo_data.get('is_locked') or self.is_sealed():
             return
         self._auto_save_timer.stop()
-        self.execute_auto_save()
+        if self.execute_auto_save() is False:
+            # 잠그면 본문을 메모리에서도 지우므로, 저장하지 못한 채로는 잠그지 않습니다.
+            self._warn("저장하지 못해 잠그지 않았습니다.")
+            self.restart_relock_timer()
+            return
         self._relock_timer.stop()
         sm.relock_memo(self.memo_data.get('id', ''))
         self.memo_data['content'] = ""
@@ -163,19 +167,27 @@ class MemoLockMixin:
             self.prompt_unlock()
             if self.is_sealed():
                 return
-        def check(values: list) -> Any:
-            if not values[0]:
-                return "암호를 입력하세요."
-            return None if values[0] == values[1] else "두 암호가 일치하지 않습니다."
-
         changing = bool(self.memo_data.get('is_locked'))
+        memo_id = self.memo_data.get('id', '')
+
+        def check(values: list) -> Any:
+            new, again = values[-2], values[-1]
+            # 암호를 바꿀 때는 지금 암호를 다시 확인합니다. (풀어 둔 채 자리를 비운 사이 남이 바꾸지 못하게)
+            if changing and not sm.check_memo_password(memo_id, values[0]):
+                return "지금 암호가 일치하지 않습니다."
+            if not new:
+                return "암호를 입력하세요."
+            return None if new == again else "두 암호가 일치하지 않습니다."
+
+        fields = [{"label": "새 암호", "password": True}, {"label": "새 암호 한 번 더", "password": True}]
+        if changing:
+            fields.insert(0, {"label": "지금 암호", "password": True})
         values = self._ask_form(
             "암호 변경" if changing else "🔒 암호 걸기", "암호를 잊으면 이 메모의 내용은 복구할 수 없습니다.",
-            [{"label": "새 암호", "password": True}, {"label": "새 암호 한 번 더", "password": True}],
-            "암호 변경" if changing else "암호 걸기", validate=check)
+            fields, "암호 변경" if changing else "암호 걸기", validate=check)
         if values is None:
             return
-        pwd = values[0]
+        pwd = values[-1]
         self._auto_save_timer.stop()
         self._dirty_since = None
         self.memo_data['content'] = self.current_content()
@@ -192,7 +204,11 @@ class MemoLockMixin:
         sm = self._sync_manager()
         if not sm or not self.memo_data.get('is_locked') or self.is_sealed():
             return
-        if self._ask_form("암호 제거", "이 메모의 암호를 없애고 일반 메모로 되돌릴까요?", [], "암호 제거", danger=True) is None:
+        memo_id = self.memo_data.get('id', '')
+        if self._ask_form("암호 제거", "이 메모의 암호를 없애고 일반 메모로 되돌릴까요? 지금 암호를 입력하세요.",
+                          [{"label": "지금 암호", "password": True}], "암호 제거", danger=True,
+                          validate=lambda values: None if sm.check_memo_password(memo_id, values[0])
+                          else "암호가 일치하지 않습니다.") is None:
             return
         self._auto_save_timer.stop()
         self._dirty_since = None
@@ -203,3 +219,5 @@ class MemoLockMixin:
             self.refresh_lock_badge()
             self.show_toast("🔓 암호 제거됨")
             self._refresh_explorer()
+        else:
+            self._warn("암호를 없애지 못했습니다.")

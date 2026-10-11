@@ -152,7 +152,7 @@ class LockedHistoryTest(support.UiTestCase):
     def test_changing_the_password_reseals_the_history(self) -> None:
         w = self.lock()
         self.edit(w, "second version")
-        self.answers[:] = ["new-pw", "new-pw"]
+        self.answers[:] = ["pw12", "new-pw", "new-pw"]               # 지금 암호, 새 암호 두 번
         w.set_memo_password()                                        # 암호 변경
         w.lock_now()
         for entry in self.sm.list_history("memo-0000"):
@@ -162,6 +162,7 @@ class LockedHistoryTest(support.UiTestCase):
     def test_removing_the_password_opens_the_history_again(self) -> None:
         w = self.lock()
         self.edit(w, "second version")
+        self.answers[:] = ["pw12"]                                   # 지금 암호
         w.remove_memo_password()
         entries = self.sm.list_history("memo-0000")
         self.assertTrue(entries and all(not e["locked"] for e in entries))

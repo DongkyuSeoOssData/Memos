@@ -828,10 +828,12 @@ class UIManager:
             w.memo_data = m
             w.apply_data()
 
-    def notify_save(self, m: Dict[str, Any]) -> None:
-        self.sync_manager.save_memo_locally(m)
+    def notify_save(self, m: Dict[str, Any]) -> bool:
+        """메모를 저장합니다. 저장하지 못했으면 False. (아직 파일로 남기지 않는 빈 새 메모는 실패가 아님)"""
+        saved = self.sync_manager.save_memo_locally(m) or self.sync_manager.is_blank_draft(m)
         if self.explorer_window and self.explorer_window.isVisible():
             self.explorer_window.refresh()
+        return bool(saved)
 
     def on_close(self, w: MemoWindow) -> None:
         memo_id = w.memo_data.get('id')

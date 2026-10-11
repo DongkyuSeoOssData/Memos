@@ -438,7 +438,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
             memo_to_save['content'] = self.crypto.encrypt_locked(plain_content, entry[0], entry[1])
         else:
             # 미작성 빈 초안 메모(is_draft == True, 내용 없음, 수동저장 안함)는 디스크 저장을 차단하며 기존 파일이 있으면 파기
-            if self._is_blank_draft(data):
+            if self.is_blank_draft(data):
                 if f.exists():
                     try:
                         f.unlink()
@@ -483,7 +483,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         data['title'] = nt
         try:
             # 아직 파일로 남기지 않는 빈 초안은 저장할 것이 없으므로 제목만 바꿔 둡니다.
-            if self.save_memo_locally(data) or self._is_blank_draft(data):
+            if self.save_memo_locally(data) or self.is_blank_draft(data):
                 return True
         except Exception as e:
             self.log_error(f"메모 제목 변경 실패 ({ot} -> {nt}): {e}", e)
@@ -491,7 +491,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         return False
 
     @staticmethod
-    def _is_blank_draft(data: Dict[str, Any]) -> bool:
+    def is_blank_draft(data: Dict[str, Any]) -> bool:
         """내용 없이 열어만 둔 새 메모인지. (이런 메모는 파일로 남기지 않음)"""
         if data.get('_locked') or data.get('_unreadable') or data.get('is_locked'):
             return False

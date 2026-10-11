@@ -55,6 +55,17 @@ class MemoPasswordMixin:
         self._seal_history(memo_id)
         return plain
 
+    def check_memo_password(self, memo_id: str, password: str) -> bool:
+        """password 가 이 메모의 지금 암호인지. (잠금 상태나 보관 중인 키는 바꾸지 않음)"""
+        payload = self._read_raw_content(memo_id)
+        if not password or not self.crypto.is_locked_payload(payload):
+            return False
+        try:
+            self.crypto.decrypt_locked(payload, self.crypto.key_for_payload(payload, password))
+            return True
+        except ValueError:
+            return False
+
     def memo_has_master_recovery(self, memo_id: str) -> bool:
         """이 메모가 관리자 개인키로 복구할 수 있는 형태로 잠겨 있는지 여부."""
         return self.crypto.has_master_recovery(self._read_raw_content(memo_id))

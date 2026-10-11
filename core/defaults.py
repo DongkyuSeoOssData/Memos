@@ -1,7 +1,7 @@
 from typing import Dict
 
 # 앱 버전. (오류 보고 메일의 제목에 들어갑니다. README 의 제목과 같이 올립니다)
-APP_VERSION = "3.3.1"
+APP_VERSION = "3.3.2"
 
 # 단축키 기본값의 단일 출처. SyncManager(신규 설치 기본값)와 SettingsWindow(초기화 버튼/표시)가 함께 사용합니다.
 DEFAULT_SHORTCUTS: Dict[str, str] = {
