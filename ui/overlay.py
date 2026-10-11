@@ -4,15 +4,20 @@
  - LockOverlay    : 메모 창. 본문을 흐리게 가리고 그 위에서 묻습니다. 잠긴 메모는 평소에도 이 가림막이 본문 자리를
                     덮고 있으며, 그 위의 암호 칸에 바로 암호를 넣어 엽니다.
  - WindowOverlay  : 탐색기. 창 전체를 어둡게 가리고 가운데의 카드에서 묻습니다.
-자리가 모자라면 메모는 옆에 붙는 패널(SidePanel)로, 그 밖에는 대화상자로 대신 묻습니다.
+입력 화면(input_panels)을 어디에 띄울지는 host_panel 이 정합니다. 자리가 모자라면 메모는 옆에 붙는 패널(SidePanel)로
+보내고, 그럴 수도 없으면 NO_HOST 를 돌려줘 부른 쪽(themed_dialog)이 대화상자로 대신 묻게 합니다.
 """
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Optional
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QRect, Qt
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import QFrame, QGraphicsBlurEffect, QScrollArea, QVBoxLayout, QWidget
 
-from ui import modern_style, themed_dialog
+from ui import live_settings, modern_style
+from ui.input_panels import FormPanel, run_panel
+
+# 창 안에 띄울 곳이 없다는 표시. (이때는 부른 쪽이 대화상자로 묻습니다)
+NO_HOST = object()
 
 
 class PanelOverlay(QWidget):
@@ -91,7 +96,7 @@ class PanelOverlay(QWidget):
             scroll.setWidgetResizable(True)
             scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
             scroll.setWidget(inner)
-            scroll.setStyleSheet(modern_style.dialog_qss(themed_dialog.current_settings()))
+            scroll.setStyleSheet(modern_style.dialog_qss(live_settings.current()))
             self._card = shown = scroll
             if hasattr(panel, "layout_changed"):
                 panel.layout_changed.connect(self._fit_card)
@@ -113,7 +118,7 @@ class PanelOverlay(QWidget):
             self.after_run()
             self.update()
 
-        return themed_dialog.run_panel(panel, done)
+        return run_panel(panel, done)
 
     def cancel(self) -> None:
         """입력 중이면 취소합니다. (창을 숨기거나 닫을 때)"""
@@ -155,7 +160,7 @@ class LockOverlay(PanelOverlay):
     def __init__(self, window: Any) -> None:
         super().__init__(window.bg)
         self.memo_window = window
-        self.unlock_panel: Optional[themed_dialog.FormPanel] = None      # 잠긴 메모에 늘 보이는 암호 칸
+        self.unlock_panel: Optional[FormPanel] = None      # 잠긴 메모에 늘 보이는 암호 칸
         self._blur: Optional[QGraphicsBlurEffect] = None
 
     # ── 모양 ─────────────────────────────────────────────────────────────────
@@ -228,8 +233,8 @@ class LockOverlay(PanelOverlay):
             self.hide()
             return
         if self.unlock_panel is None:
-            panel = themed_dialog.FormPanel("🔒 암호 메모", "", [{"label": "암호를 입력하세요", "password": True}], "열기",
-                                            cancel_text=None, validate=lambda values: w.try_unlock(values[0]))
+            panel = FormPanel("🔒 암호 메모", "", [{"label": "암호를 입력하세요", "password": True}], "열기",
+                              cancel_text=None, validate=lambda values: w.try_unlock(values[0]))
             panel.submitted.connect(lambda values: w.finish_unlock())
             self.unlock_panel = panel
             self.holder.addWidget(panel, 0, Qt.AlignmentFlag.AlignHCenter)
@@ -275,7 +280,7 @@ class LockOverlay(PanelOverlay):
 
 
 def host_panel(parent: Any, panel: QWidget, title: str, need_width: int, need_height: int) -> Any:
-    """panel 을 parent 가 속한 창 안에서 띄워 답을 받습니다. 띄울 곳이 없으면 themed_dialog.NO_HOST 를 돌려줍니다.
+    """panel 을 parent 가 속한 창 안에서 띄워 답을 받습니다. 띄울 곳이 없으면 NO_HOST 를 돌려줍니다.
 
     - 메모 창: 본문 위(자리가 있을 때) → 없으면 메모 옆에 붙는 패널
     - 탐색기: 창 가운데의 카드
@@ -288,14 +293,8 @@ def host_panel(parent: Any, panel: QWidget, title: str, need_width: int, need_he
         side = window.side_panel()
         if window.isVisible() and not side.is_busy():
             return side.run(panel, title)
-        return themed_dialog.NO_HOST
+        return NO_HOST
     overlay = getattr(window, 'inline_overlay', None)
     if overlay is not None and overlay.can_host(need_width + 40, need_height + 40):      # 탐색기
         return overlay.run(panel, card=True)
-    return themed_dialog.NO_HOST
-
-
-def ask(window: Any, title: str, text: str, fields: Sequence[Dict[str, Any]], ok_text: str = "확인",
-        validate: Optional[Callable[[List[str]], Optional[str]]] = None, danger: bool = False) -> Optional[List[str]]:
-    """암호 등을 창 안에서 입력받습니다. (메모에서 불렀으면 그 메모 안에서, 탐색기에서 불렀으면 탐색기 안에서)"""
-    return themed_dialog.ask_form(window._dlg_parent(), title, text, fields, ok_text, validate, danger)
+    return NO_HOST

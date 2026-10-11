@@ -10,7 +10,8 @@ from typing import Any, Optional
 from PyQt6.QtCore import QEvent, QObject, QPoint, Qt
 from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from ui import modern_style, screen_bounds, themed_dialog
+from ui import modern_style, screen_bounds
+from ui.input_panels import run_panel
 
 
 class SidePanel(QWidget):
@@ -117,7 +118,7 @@ class SidePanel(QWidget):
             panel.deleteLater()
             self.hide()
 
-        return themed_dialog.run_panel(panel, done)
+        return run_panel(panel, done)
 
     def _refit(self) -> None:
         """보이는 입력이 바뀌면 그 내용이 다 보이는 크기로 맞춥니다."""

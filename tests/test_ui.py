@@ -27,7 +27,7 @@ import core.sync_manager as smm
 import ui.settings_window as sw
 import ui.screen_bounds as screen_bounds
 import ui.ui_manager as uim
-import ui.lock_overlay as lock_overlay
+import ui.overlay as overlay
 import ui.themed_dialog as themed_dialog
 import utils.crypto_manager as cm
 from drive_api import DriveAPI
@@ -78,7 +78,7 @@ class UiTestCase(unittest.TestCase):
             self.choices_asked.append(title)
             return self.choice_answer
 
-        self.real_form_ask = lock_overlay.ask
+        self.real_form_ask = themed_dialog.ask_form
         self.real = {"confirm": themed_dialog.confirm, "ask_form": themed_dialog.ask_form}
         real_toast = themed_dialog.toast
 
@@ -87,7 +87,7 @@ class UiTestCase(unittest.TestCase):
                 self.warnings.append(text)
             real_toast(widget, text, warn)
 
-        def fake_form(window, title, text, fields, ok_text="확인", validate=None, danger=False):
+        def fake_form(parent, title, text, fields, ok_text="확인", validate=None, danger=False):
             if len(self.answers) < len(fields):
                 return None                                  # 답이 없으면 취소한 것으로
             values = [self.answers.pop(0) for _ in fields]
@@ -114,9 +114,9 @@ class UiTestCase(unittest.TestCase):
             # 버튼 여러 개 중 고르기(저장하고 닫기 / 저장 안 함 / 취소)는 choice_answer 로 답하고, 물은 횟수를 셉니다.
             mock.patch.object(themed_dialog, "choose", fake_choose),
             mock.patch.object(themed_dialog, "toast", spy_toast),
-            mock.patch.object(lock_overlay, "ask", fake_form),
+            mock.patch.object(themed_dialog, "ask_form", fake_form),
             # 잠긴 메모의 암호 칸에 커서를 두는 대신, 위의 대역으로 암호를 묻게 합니다.
-            mock.patch.object(lock_overlay.LockOverlay, "focus_inline", lambda overlay: False),
+            mock.patch.object(overlay.LockOverlay, "focus_inline", lambda overlay: False),
         ]
         for p in patches:
             p.start()

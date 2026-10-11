@@ -3,7 +3,7 @@ from ui.reminder_ui import ask_reminder
 from core import reminders
 from ui import checklist
 from ui.check_marks import CheckEdit
-from ui.lock_overlay import WindowOverlay
+from ui.overlay import WindowOverlay
 from ui.settings_window import SettingsWindow
 from ui import modern_style
 from core import folders

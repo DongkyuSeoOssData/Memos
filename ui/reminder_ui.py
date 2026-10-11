@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core import reminders
-from ui import modern_style, themed_dialog
+from ui import live_settings, modern_style
 from ui.themed_dialog import ThemedDialog
 
 
@@ -187,7 +187,7 @@ class ReminderForm(QWidget):
         current = reminders.normalize(current)
         repeating = bool(current) and current["repeat"] != "none"
         now = datetime.now()
-        use_24h = bool(themed_dialog.current_settings().get("time_24h", False))
+        use_24h = bool(live_settings.current().get("time_24h", False))
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -216,7 +216,7 @@ class ReminderForm(QWidget):
         once.addLayout(date_row)
         quick = QGridLayout()
         quick.setSpacing(6)
-        for n, (label, moment) in enumerate(quick_choices(now, quick_minutes(themed_dialog.current_settings()))):
+        for n, (label, moment) in enumerate(quick_choices(now, quick_minutes(live_settings.current()))):
             btn = QPushButton(label)
             btn.setAutoDefault(False)
             btn.setProperty("role", "quick")
@@ -364,7 +364,7 @@ class ReminderForm(QWidget):
     @staticmethod
     def _save_time_format(use_24h: bool) -> None:
         """12시간제/24시간제 선택을 기억하고, 알림 시각을 보여 주는 곳들도 같은 방식으로 맞춥니다."""
-        themed_dialog.save_settings({"time_24h": use_24h})
+        live_settings.save({"time_24h": use_24h})
 
     def repeat_key(self) -> str:
         """지금 고른 반복 방식. 반복을 껐으면 'none'."""

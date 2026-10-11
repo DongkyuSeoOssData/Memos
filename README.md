@@ -570,6 +570,7 @@ python tools/mobile_dev_server.py
 - **색을 정하는 곳을 한곳으로.** 체크 상자, 암호 입력 가림막, 메모 옆 패널, 미리보기가 저마다 색을 계산하던 것을 `modern_style`의 색 묶음에서 받아 쓰도록 바꿨습니다.
 - **메모 창의 위치·크기 규칙을 따로.** 접고 펼 때의 자리 계산을 `memo_geometry.py`로 옮겨, 창을 띄우지 않고 숫자만으로 테스트할 수 있게 했습니다.
 - **메모 탐색기를 역할별로 나눔.** 2천 줄 가까이 되던 `memo_explorer.py`에서 폴더, 창 크기·옆 패널, 미리보기, 여러 메모 고르기를 각각 `explorer_folders.py`, `explorer_panels.py`, `explorer_preview.py`, `explorer_selection.py`로 옮겼습니다. 폴더 사이드바와 환경설정 패널을 열 때 창을 옆으로 늘리던 같은 코드 두 벌도 하나로 합쳤습니다.
+- **창 안 입력 쪽 모듈의 경계 정리.** 대화상자와 가림막이 서로를 불러 쓰던 것을 한 방향(`live_settings` → `input_panels` → `overlay` → `themed_dialog`)으로 풀었습니다. 입력 화면(여러 칸 입력·버튼 고르기·색 고르기)은 `input_panels.py`로, 설정을 읽는 통로는 `live_settings.py`로 옮기고, 탐색기의 가림막까지 담고 있어 이름이 맞지 않던 `lock_overlay.py`는 `overlay.py`로 바꿨습니다.
 
 ### 올릴 때 할 일
 
@@ -780,8 +781,10 @@ python tools/mobile_dev_server.py
  ┃ ┣ 📜 explorer_selection.py  # 탐색기에서 여러 메모 고르기, 삭제·복원, 휴지통 보기
  ┃ ┣ 📜 settings_window.py     # 환경설정
  ┃ ┣ 📜 dialogs.py             # 복원 중복 확인 창, 여러 폴더 삭제 창, 이전 내용 창
- ┃ ┣ 📜 themed_dialog.py       # 자체 제목 줄 대화상자 (확인·입력·색 고르기), 토스트 알림
- ┃ ┣ 📜 lock_overlay.py        # 창 안에서 입력을 받는 가림막 (메모의 암호 입력, 탐색기의 확인·입력)
+ ┃ ┣ 📜 themed_dialog.py       # 자체 제목 줄 대화상자와 묻는 함수들 (확인·고르기·입력·색 고르기), 토스트 알림
+ ┃ ┣ 📜 overlay.py             # 창 안에서 입력을 받는 가림막 (메모의 암호 입력, 탐색기의 확인·입력), 띄울 자리 정하기
+ ┃ ┣ 📜 input_panels.py        # 입력 화면 묶음 (여러 칸 입력, 버튼 고르기, 색 고르기)
+ ┃ ┣ 📜 live_settings.py       # 화면 부품이 지금 설정(색 테마 등)을 읽고 기억하는 통로
  ┃ ┣ 📜 side_panel.py          # 메모 옆에 붙어 열리는 패널 (알림 설정, 이전 내용)
  ┃ ┣ 📜 check_marks.py         # 체크 상자 그리기와 조작 (메모 편집기·탐색기 미리보기 공용)
  ┃ ┣ 📜 checklist.py           # 체크리스트 규칙 (☐ / ☑)

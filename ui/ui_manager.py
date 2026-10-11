@@ -24,7 +24,7 @@ from ui import modern_style
 from core.defaults import DEFAULT_SHORTCUTS
 from core import folders, guide, reminders
 from ui.quick_search import QuickSearch
-from ui import themed_dialog
+from ui import live_settings
 from ui.reminder_ui import ReminderPopup
 from utils.text_utils import clean_plain_text
 
@@ -43,7 +43,7 @@ class UIManager:
         self._hotkeys = GlobalHotkeys()
         # (아이콘 파일, 색, 화면 배율) → 그려 둔 아이콘. 같은 아이콘을 쓸 때마다 SVG를 다시 읽고 그리지 않습니다.
         self._icon_cache: Dict[tuple, QIcon] = {}
-        themed_dialog.use_settings(lambda: self.sync_manager.settings, self._save_dialog_settings)
+        live_settings.use(lambda: self.sync_manager.settings, self._save_dialog_settings)
         reminders.set_ampm(not self.sync_manager.settings.get("time_24h", False))
         self.quick_search: Optional[QuickSearch] = None
         # 알림: 가장 가까운 알림 시각에 맞춰 한 번만 깨어나는 타이머 (주기적으로 훑지 않음)

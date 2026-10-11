@@ -4,7 +4,7 @@ from typing import Any
 
 from PyQt6.QtWidgets import QFileDialog
 
-from ui import lock_overlay, themed_dialog
+from ui import themed_dialog
 
 
 class MemoLockMixin:
@@ -42,7 +42,7 @@ class MemoLockMixin:
 
         확인하면 입력한 값들을, 취소하면 None 을 돌려줍니다. validate 가 오류 문구를 돌려주면 닫지 않고 다시 묻습니다.
         """
-        return lock_overlay.ask(self, title, text, fields, ok_text, validate, danger)
+        return themed_dialog.ask_form(self._dlg_parent(), title, text, fields, ok_text, validate, danger)
 
     def _warn(self, text: str) -> None:
         themed_dialog.toast(self._dlg_parent(), text, warn=True)

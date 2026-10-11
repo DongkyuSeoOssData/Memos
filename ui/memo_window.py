@@ -8,7 +8,7 @@ from ui import checklist, memo_geometry
 from ui.reminder_ui import ask_reminder
 from ui.dialogs import pick_history
 from ui.side_panel import SidePanel
-from ui.lock_overlay import LockOverlay
+from ui.overlay import LockOverlay
 from ui.memo_lock import MemoLockMixin
 from ui.memo_format import MemoFormatMixin
 import re

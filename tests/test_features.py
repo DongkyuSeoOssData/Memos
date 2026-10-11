@@ -558,7 +558,7 @@ class ThemedWindowTest(test_ui.UiTestCase):
                 self.assertNotIn(name, source, path.name)
 
     def test_form_panel_keeps_asking_until_valid(self) -> None:
-        from ui.themed_dialog import FormPanel
+        from ui.input_panels import FormPanel
         got = []
         panel = FormPanel("t", "", [{"label": "a", "password": True}, {"label": "b", "password": True}],
                           validate=lambda v: None if v[0] == v[1] else "다릅니다")
@@ -618,8 +618,6 @@ class LockOverlayTest(test_ui.UiTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        from ui import lock_overlay
-        self.lock_overlay = lock_overlay
         self.real_ask = self.real_form_ask
         self.w = self.open_window("memo-0000")
         self.w.resize(360, 380)
@@ -645,7 +643,7 @@ class LockOverlayTest(test_ui.UiTestCase):
             panel.submit()
 
         self.drive(steps)
-        with mock.patch.object(self.lock_overlay, "ask", self.real_ask):
+        with mock.patch.object(test_ui.themed_dialog, "ask_form", self.real_ask):
             self.w.set_memo_password()
         self.assertEqual(seen, {"overlay": True, "blurred": True, "parent": True, "error": "⚠ 두 암호가 일치하지 않습니다."})
         self.assertTrue(self.disk("memo-0000")["is_locked"])
@@ -681,7 +679,7 @@ class LockOverlayTest(test_ui.UiTestCase):
         self.w.set_memo_password()
         self.w.lock_now()
         asked = []
-        with mock.patch.object(self.lock_overlay, "ask", lambda *a, **k: asked.append(a)):
+        with mock.patch.object(test_ui.themed_dialog, "ask_form", lambda *a, **k: asked.append(a)):
             # 펼친 메모: 암호 칸이 있는 화면으로 열림
             self.w.hide()
             self.ui.show_specific_memo("memo-0000")
@@ -701,7 +699,7 @@ class LockOverlayTest(test_ui.UiTestCase):
 
     def test_cancel_leaves_everything_as_it_was(self) -> None:
         self.drive(lambda panel: panel.cancel_button.click())
-        with mock.patch.object(self.lock_overlay, "ask", self.real_ask):
+        with mock.patch.object(test_ui.themed_dialog, "ask_form", self.real_ask):
             self.w.set_memo_password()
         self.assertFalse(self.disk("memo-0000").get("is_locked"))
         self.assertTrue(self.w.lock_overlay.isHidden())
@@ -721,7 +719,7 @@ class LockOverlayTest(test_ui.UiTestCase):
             side.panel.submit()
 
         QTimer.singleShot(0, steps)
-        with mock.patch.object(self.lock_overlay, "ask", self.real_ask):
+        with mock.patch.object(test_ui.themed_dialog, "ask_form", self.real_ask):
             self.w.set_memo_password()
         self.assertEqual(seen, {"beside": True})
         self.assertTrue(self.disk("memo-0000")["is_locked"])
@@ -737,7 +735,7 @@ class LockOverlayTest(test_ui.UiTestCase):
             panel.cancel_button.click()
 
         self.drive(steps)
-        with mock.patch.object(self.lock_overlay, "ask", self.real_ask):
+        with mock.patch.object(test_ui.themed_dialog, "ask_form", self.real_ask):
             self.w.set_memo_password()
         self.assertEqual(seen, {"dx": True, "dy": True})
 
@@ -790,7 +788,7 @@ class InlineAndFixesTest(test_ui.UiTestCase):
 
         QTimer.singleShot(0, type_name)
         self.assertEqual(self.real["ask_form"](ex, "새 폴더", "", [{"label": "폴더 이름"}]), ["업무/새폴더"])
-        self.assertIsNotNone(themed_dialog.NO_HOST)
+        self.assertIsNotNone(test_ui.overlay.NO_HOST)
 
     def test_color_is_picked_inside_the_memo(self) -> None:
         from PyQt6.QtCore import QTimer
