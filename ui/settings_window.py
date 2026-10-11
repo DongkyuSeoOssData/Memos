@@ -112,6 +112,48 @@ class SettingsWindow(QWidget):
         main_layout.setSpacing(10)
 
         # 제목 줄: 가운데에 제목, 오른쪽 끝에 최소화·닫기
+        self._build_title_bar(main_layout)
+
+        # 저장 버튼 — 탭 위 상단에 배치
+        self.sb = QPushButton("  설정 저장")
+        self.sb.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sb.setFixedHeight(40)
+        self.sb.clicked.connect(self.save)
+        main_layout.addWidget(self.sb)
+
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        # --- TAB 1: 일반 설정 ---
+        self._build_general_tab()
+
+        # --- TAB 2: 구글 동기화 ---
+        self._build_sync_tab()
+
+        # --- TAB 3: 테마 & 서식 ---
+        self._build_theme_tab()
+
+        # --- TAB 4:  단축키 설정 (전체 커스텀) ---
+        self._build_shortcut_tab()
+
+
+        # 화면을 스크롤하다 마우스 아래에 걸린 옵션이 바뀌지 않도록, 값은 클릭으로만 바꾸게 합니다.
+        for kind in (QComboBox, QAbstractSpinBox, QSlider):
+            guard_wheel(self, self.findChildren(kind))
+
+        if self._embedded:
+            # 탐색기 안의 패널: 바깥 여백·최소화 버튼·크기 조절 손잡이가 필요 없고, 닫기는 패널만 닫습니다.
+            main_layout.setContentsMargins(0, 0, 0, 0)
+            self.btn_win_min.hide()
+            self.grip.hide()
+            self.btn_win_close.clicked.disconnect()
+            self.btn_win_close.clicked.connect(self.request_close)
+            self.btn_win_close.setToolTip("환경설정 닫기")
+        else:
+            self._apply_initial_window_size()
+
+    def _build_title_bar(self, main_layout: Any) -> None:
+        """제목 줄: 가운데에 제목, 왼쪽에 알림(토스트), 오른쪽 끝에 최소화·닫기."""
         title_bar = QGridLayout()
         title_bar.setContentsMargins(0, 0, 0, 0)
         title_buttons = QHBoxLayout()
@@ -140,22 +182,42 @@ class SettingsWindow(QWidget):
         main_layout.addLayout(title_bar)
         self.grip = QSizeGrip(self)
 
-        # 저장 버튼 — 탭 위 상단에 배치
-        self.sb = QPushButton("  설정 저장")
-        self.sb.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.sb.setFixedHeight(40)
-        self.sb.clicked.connect(self.save)
-        main_layout.addWidget(self.sb)
-
-        self.tabs = QTabWidget()
-        main_layout.addWidget(self.tabs)
-
-        # --- TAB 1: 일반 설정 ---
+    def _build_general_tab(self) -> None:
+        """'일반 설정' 탭: 폴더 표시 방식, 암호 메모, 시스템·편의 옵션, 알림 빠른 선택, 사용 안내."""
         tab_general = QWidget()
         l_gen = QVBoxLayout(tab_general)
         l_gen.setContentsMargins(15, 15, 15, 15)
         l_gen.setSpacing(15)
 
+        g_folder = self._build_folder_ui_group()
+        l_gen.addWidget(g_folder)
+
+        g2 = self._build_locked_memo_group()
+        l_gen.addWidget(g2)
+
+        g4 = self._build_system_group()
+        l_gen.addWidget(g4)
+
+        g_alarm = self._build_reminder_group()
+        l_gen.addWidget(g_alarm)
+
+
+        g_guide = self._build_guide_group()
+        l_gen.addWidget(g_guide)
+
+        l_gen.addStretch()
+
+        # QScrollArea로 감싸서 창이 작아져도 스크롤로 접근 가능하게 처리
+        scroll_gen = QScrollArea()
+        scroll_gen.setWidget(tab_general)
+        scroll_gen.setWidgetResizable(True)
+        scroll_gen.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_gen.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_gen.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tabs.addTab(scroll_gen, "일반 설정")
+
+    def _build_folder_ui_group(self) -> Any:
+        """폴더 표시 방식."""
         g_folder = QGroupBox("폴더 표시 방식")
         g_folder_l = QVBoxLayout(g_folder)
         g_folder_l.setContentsMargins(18, 24, 18, 18)
@@ -171,8 +233,10 @@ class SettingsWindow(QWidget):
         folder_hint.setProperty("role", "hint")
         folder_hint.setWordWrap(True)
         g_folder_l.addWidget(folder_hint)
-        l_gen.addWidget(g_folder)
+        return g_folder
 
+    def _build_locked_memo_group(self) -> Any:
+        """암호 메모를 다시 잠그는 시간."""
         g2 = QGroupBox("암호 메모")
         g2_l = QVBoxLayout(g2)
         g2_l.setContentsMargins(18, 24, 18, 18)
@@ -191,8 +255,10 @@ class SettingsWindow(QWidget):
         relock_hint.setProperty("role", "hint")
         relock_hint.setWordWrap(True)
         g2_l.addWidget(relock_hint)
-        l_gen.addWidget(g2)
+        return g2
 
+    def _build_system_group(self) -> Any:
+        """자동 실행, 자동 저장, 휴지통, 새 메모의 기본 옵션."""
         g4 = QGroupBox("시스템 편의 및 실행 옵션")
         g4_l = QVBoxLayout(g4)
         g4_l.setContentsMargins(18, 24, 18, 18)
@@ -226,8 +292,10 @@ class SettingsWindow(QWidget):
         self.trash_auto_delete_box.addItems(["없음 (수동 비우기)", "즉시 삭제 (0일)", "15일 경과 시 자동 삭제", "30일 경과 시 자동 삭제"])
         self.trash_auto_delete_box.setFixedHeight(40)
         g4_l.addWidget(self.trash_auto_delete_box)
-        l_gen.addWidget(g4)
+        return g4
 
+    def _build_reminder_group(self) -> Any:
+        """알림 설정의 빠른 선택 세 가지."""
         g_alarm = QGroupBox("알림 설정의 빠른 선택")
         g_alarm_l = QVBoxLayout(g_alarm)
         g_alarm_l.setContentsMargins(18, 24, 18, 18)
@@ -250,9 +318,10 @@ class SettingsWindow(QWidget):
         alarm_hint.setProperty("role", "hint")
         alarm_hint.setWordWrap(True)
         g_alarm_l.addWidget(alarm_hint)
-        l_gen.addWidget(g_alarm)
+        return g_alarm
 
-
+    def _build_guide_group(self) -> Any:
+        """사용 안내 메모 다시 만들기."""
         g_guide = QGroupBox("사용 안내")
         g_guide_l = QVBoxLayout(g_guide)
         g_guide_l.setContentsMargins(18, 24, 18, 18)
@@ -270,25 +339,32 @@ class SettingsWindow(QWidget):
         guide_hint.setProperty("role", "hint")
         guide_hint.setWordWrap(True)
         g_guide_l.addWidget(guide_hint)
-        l_gen.addWidget(g_guide)
+        return g_guide
 
-        l_gen.addStretch()
-
-        # QScrollArea로 감싸서 창이 작아져도 스크롤로 접근 가능하게 처리
-        scroll_gen = QScrollArea()
-        scroll_gen.setWidget(tab_general)
-        scroll_gen.setWidgetResizable(True)
-        scroll_gen.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_gen.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_gen.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.tabs.addTab(scroll_gen, "일반 설정")
-
-        # --- TAB 2: 구글 동기화 ---
+    def _build_sync_tab(self) -> None:
+        """'구글 동기화' 탭: 메모 폴더, 동기화 주소와 토큰, 동기화 주기, 준비 방법 안내."""
         tab_sync = QWidget()
         l_sync = QVBoxLayout(tab_sync)
         l_sync.setContentsMargins(15, 15, 15, 15)
         l_sync.setSpacing(15)
 
+        g1 = self._build_sync_group()
+        l_sync.addWidget(g1)
+        g_help = self._build_sync_help_group()
+        l_sync.addWidget(g_help)
+
+        l_sync.addStretch()
+
+        scroll_sync = QScrollArea()
+        scroll_sync.setWidget(tab_sync)
+        scroll_sync.setWidgetResizable(True)
+        scroll_sync.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_sync.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_sync.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tabs.addTab(scroll_sync, "구글 동기화")
+
+    def _build_sync_group(self) -> Any:
+        """메모 폴더, 동기화 주소와 토큰, 동기화 주기."""
         g1 = QGroupBox("구글 드라이브 백업 및 동기화 설정")
         g1_l = QVBoxLayout(g1)
         g1_l.setContentsMargins(18, 24, 18, 18)
@@ -349,7 +425,10 @@ class SettingsWindow(QWidget):
         sync_hint.setProperty("role", "hint")
         sync_hint.setWordWrap(True)
         g1_l.addWidget(sync_hint)
-        l_sync.addWidget(g1)
+        return g1
+
+    def _build_sync_help_group(self) -> Any:
+        """동기화 준비 방법 안내."""
         g_help = QGroupBox("동기화 설정 방법")
         g_help_l = QVBoxLayout(g_help)
         g_help_l.setContentsMargins(18, 24, 18, 18)
@@ -368,24 +447,51 @@ class SettingsWindow(QWidget):
         help_row.addWidget(self.btn_sync_guide)
         help_row.addStretch()
         g_help_l.addLayout(help_row)
-        l_sync.addWidget(g_help)
+        return g_help
 
-        l_sync.addStretch()
-
-        scroll_sync = QScrollArea()
-        scroll_sync.setWidget(tab_sync)
-        scroll_sync.setWidgetResizable(True)
-        scroll_sync.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_sync.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_sync.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.tabs.addTab(scroll_sync, "구글 동기화")
-
-        # --- TAB 3: 테마 & 서식 ---
+    def _build_theme_tab(self) -> None:
+        """'테마 & 서식' 탭: 기본 글꼴·색·코드 테마, 투명도, 메모와 탐색기의 기본 크기, 화면 스타일."""
         tab_font = QWidget()
         l_font = QVBoxLayout(tab_font)
         l_font.setContentsMargins(12, 12, 12, 12)
         l_font.setSpacing(12)
 
+        g3 = self._build_format_group()
+
+        # 기본 투명도 설정 그룹
+        g_opacity = self._build_opacity_group()
+
+        # 메모 기본 실행 크기 설정 그룹 — 2열 그리드
+        g_size = self._build_memo_size_group()
+
+        # 접힌 메모 크기 설정 그룹
+        g_rolled = self._build_rolled_height_group()
+
+        # 디자인 스타일 (Modern ↔ Neo 전환)
+        g_style = self._build_style_group()
+        l_font.addWidget(g_style)
+
+        l_font.addWidget(g3)
+        l_font.addWidget(g_opacity)
+        l_font.addWidget(g_size)
+        l_font.addWidget(g_rolled)
+
+        # 메모 탐색기 크기 설정 그룹
+        g_explorer = self._build_explorer_size_group()
+        l_font.addWidget(g_explorer)
+
+        l_font.addStretch()
+
+        scroll_font = QScrollArea()
+        scroll_font.setWidget(tab_font)
+        scroll_font.setWidgetResizable(True)
+        scroll_font.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_font.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_font.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tabs.addTab(scroll_font, "테마 & 서식")
+
+    def _build_format_group(self) -> Any:
+        """기본 글꼴·색·코드 테마와 앱 색 테마."""
         g3 = QGroupBox("기본 서식 / 폰트 / 코드 테마")
         g3_l = QVBoxLayout(g3)
         g3_l.setContentsMargins(14, 22, 14, 14)
@@ -456,8 +562,10 @@ class SettingsWindow(QWidget):
             if color_hex != "random":
                 self.default_color_combo.setItemData(idx, QColor(color_hex), Qt.ItemDataRole.BackgroundRole)
         g3_l.addWidget(self.default_color_combo)
+        return g3
 
-        # 기본 투명도 설정 그룹
+    def _build_opacity_group(self) -> Any:
+        """새 메모의 기본 투명도."""
         g_opacity = QGroupBox("새 메모 기본 투명도 (불투명 100% 기본)")
         g_opacity_l = QVBoxLayout(g_opacity)
         g_opacity_l.setContentsMargins(14, 22, 14, 14)
@@ -490,8 +598,10 @@ class SettingsWindow(QWidget):
         opa_hint.setProperty("role", "hint")
         opa_hint.setWordWrap(True)
         g_opacity_l.addWidget(opa_hint)
+        return g_opacity
 
-        # 메모 기본 실행 크기 설정 그룹 — 2열 그리드
+    def _build_memo_size_group(self) -> Any:
+        """일반 메모와 코드 메모의 기본 크기."""
         g_size = QGroupBox("메모 기본 실행 크기 (일반 & 코드)")
         g_size_l = QGridLayout(g_size)
         g_size_l.setContentsMargins(14, 22, 14, 14)
@@ -527,8 +637,10 @@ class SettingsWindow(QWidget):
         g_size_l.addWidget(QLabel("코드 세로:"), 3, 0)
         g_size_l.addWidget(self.spin_code_memo_height, 3, 1)
         g_size_l.setColumnStretch(1, 1)
+        return g_size
 
-        # 접힌 메모 크기 설정 그룹
+    def _build_rolled_height_group(self) -> Any:
+        """접은 메모의 높이."""
         g_rolled = QGroupBox("메모 접힌(—) 상태 높이 설정")
         g_rolled_l = QVBoxLayout(g_rolled)
         g_rolled_l.setContentsMargins(14, 22, 14, 14)
@@ -550,8 +662,10 @@ class SettingsWindow(QWidget):
         rolled_hint.setProperty("role", "hint")
         rolled_hint.setWordWrap(True)
         g_rolled_l.addWidget(rolled_hint)
+        return g_rolled
 
-        # 디자인 스타일 (Modern ↔ Neo 전환)
+    def _build_style_group(self) -> Any:
+        """디자인 스타일 (Modern / Neo)."""
         g_style = QGroupBox("디자인 스타일")
         g_style_l = QVBoxLayout(g_style)
         g_style_l.setContentsMargins(14, 22, 14, 14)
@@ -577,14 +691,10 @@ class SettingsWindow(QWidget):
         style_hint.setProperty("role", "hint")
         style_hint.setWordWrap(True)
         g_style_l.addWidget(style_hint)
-        l_font.addWidget(g_style)
+        return g_style
 
-        l_font.addWidget(g3)
-        l_font.addWidget(g_opacity)
-        l_font.addWidget(g_size)
-        l_font.addWidget(g_rolled)
-
-        # 메모 탐색기 크기 설정 그룹
+    def _build_explorer_size_group(self) -> Any:
+        """메모 탐색기의 크기."""
         g_explorer = QGroupBox("메모 탐색기 크기")
         g_explorer_l = QGridLayout(g_explorer)
         g_explorer_l.setContentsMargins(14, 22, 14, 14)
@@ -608,19 +718,10 @@ class SettingsWindow(QWidget):
         g_explorer_l.addWidget(self.spin_explorer_height, 1, 1)
         g_explorer_l.addWidget(self.cb_explorer_fixed, 2, 0, 1, 2)
         g_explorer_l.setColumnStretch(1, 1)
-        l_font.addWidget(g_explorer)
+        return g_explorer
 
-        l_font.addStretch()
-
-        scroll_font = QScrollArea()
-        scroll_font.setWidget(tab_font)
-        scroll_font.setWidgetResizable(True)
-        scroll_font.setFrameShape(QFrame.Shape.NoFrame)
-        scroll_font.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_font.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.tabs.addTab(scroll_font, "테마 & 서식")
-
-        # --- TAB 4:  단축키 설정 (전체 커스텀) ---
+    def _build_shortcut_tab(self) -> None:
+        """'단축키 설정' 탭: 전역 단축키 범위와 단축키 표."""
         tab_shortcuts = QWidget()
         l_sc = QVBoxLayout(tab_shortcuts)
         l_sc.setContentsMargins(15, 15, 15, 15)
@@ -672,22 +773,6 @@ class SettingsWindow(QWidget):
 
         # 단축키 탭은 테이블 자체가 스크롤을 지원하므로 탭 위젯에 직접 추가
         self.tabs.addTab(tab_shortcuts, "단축키 설정")
-
-
-        # 화면을 스크롤하다 마우스 아래에 걸린 옵션이 바뀌지 않도록, 값은 클릭으로만 바꾸게 합니다.
-        for kind in (QComboBox, QAbstractSpinBox, QSlider):
-            guard_wheel(self, self.findChildren(kind))
-
-        if self._embedded:
-            # 탐색기 안의 패널: 바깥 여백·최소화 버튼·크기 조절 손잡이가 필요 없고, 닫기는 패널만 닫습니다.
-            main_layout.setContentsMargins(0, 0, 0, 0)
-            self.btn_win_min.hide()
-            self.grip.hide()
-            self.btn_win_close.clicked.disconnect()
-            self.btn_win_close.clicked.connect(self.request_close)
-            self.btn_win_close.setToolTip("환경설정 닫기")
-        else:
-            self._apply_initial_window_size()
 
     def request_close(self) -> None:
         """닫기 버튼. 탐색기 안의 패널이면 패널만 닫고, 따로 뜬 창이면 창을 닫습니다."""

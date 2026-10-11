@@ -252,6 +252,41 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         main_l.addWidget(self.bg)
 
         # 📌 제목 줄: 왼쪽에 [폴더][라이트/다크], 정가운데에 Memos, 오른쪽 끝에 창 버튼(고정 / ─ / □ / ✕)
+        self._build_header(bg_l)
+
+        # 탭 줄 방식일 때: 윗줄은 최상위 폴더, 아랫줄은 고른 폴더의 하위 폴더(있을 때만)
+        # 자리가 모자라면 < > 로 넘겨 보고, 탭을 끌어서 순서를 바꿉니다.
+        self._build_folder_tabs(bg_l)
+
+        self._build_filter_row(bg_l)
+
+        self._build_search_row(bg_l)
+
+        self._build_table(bg_l)
+
+        self._build_pager(bg_l)
+
+        self._build_preview(bg_l)
+        # 확인·이름 입력·알림 설정·암호 입력을 따로 창을 띄우지 않고 탐색기 안에서 받는 가림막
+        self.inline_overlay = WindowOverlay(self, self.bg)
+
+        # 총 n개 메모 알림 + total.svg 아이콘 적용
+        self._build_status_row(bg_l)
+
+        self.btn_box = QWidget()
+        self.btn_l = QHBoxLayout(self.btn_box)
+        self.btn_l.setContentsMargins(0, 10, 0, 0)
+        bg_l.addWidget(self.btn_box)
+
+        self.setup_btns()
+        self.refresh()
+
+        self.grip = QSizeGrip(self)
+        self._apply_font_scale()
+        self.apply_size_settings()
+
+    def _build_header(self, bg_l: Any) -> None:
+        """제목 줄: 왼쪽에 폴더·색 테마 버튼, 가운데에 Memos, 오른쪽 끝에 창 버튼."""
         header = QGridLayout()
         header.setContentsMargins(0, 0, 0, 0)
         row = QHBoxLayout()
@@ -319,8 +354,8 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         self._header_left, self._header_right = center, ctrl
         bg_l.addLayout(header)
 
-        # 탭 줄 방식일 때: 윗줄은 최상위 폴더, 아랫줄은 고른 폴더의 하위 폴더(있을 때만)
-        # 자리가 모자라면 < > 로 넘겨 보고, 탭을 끌어서 순서를 바꿉니다.
+    def _build_folder_tabs(self, bg_l: Any) -> None:
+        """폴더 탭 줄 (탭 줄 방식일 때): 윗줄은 최상위 폴더, 아랫줄은 하위 폴더."""
         self.folder_tabs = QWidget()
         tabs_l = QVBoxLayout(self.folder_tabs)
         tabs_l.setContentsMargins(0, 0, 0, 0)
@@ -333,6 +368,8 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         self.folder_tab_buttons: List[QPushButton] = []
         bg_l.addWidget(self.folder_tabs)
 
+    def _build_filter_row(self, bg_l: Any) -> None:
+        """종류 고르기 줄: 전체 / 일반 / 코드 / 즐겨찾기 등."""
         filter_layout = QHBoxLayout()
         self.btn_filter_all  = QPushButton(" 전체")
         self.btn_filter_gen  = QPushButton(" 일반")
@@ -364,6 +401,8 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
 
         bg_l.addLayout(filter_layout)
 
+    def _build_search_row(self, bg_l: Any) -> None:
+        """검색 줄: 검색 종류, 태그, 검색어, 휴지통."""
         sh_l = QHBoxLayout()
         self.s_type = QComboBox()
         self.s_type.addItems(["제목 검색", "본문 검색"])
@@ -393,6 +432,8 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         sh_l.addWidget(self.t_btn)
         bg_l.addLayout(sh_l)
 
+    def _build_table(self, bg_l: Any) -> None:
+        """메모 목록 표."""
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["선택", "★", "구분 / 제목", "수정일시", "잠금"])
         self.table.horizontalHeaderItem(1).setToolTip("즐겨찾기")
@@ -424,6 +465,8 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         h.sectionClicked.connect(self.on_header_click)
         bg_l.addWidget(self.table)
 
+    def _build_pager(self, bg_l: Any) -> None:
+        """쪽 넘기기 줄."""
         pg_l = QHBoxLayout()
         self.p_b = QPushButton("‹")
         self.p_b.setFixedSize(30, 30)
@@ -442,6 +485,8 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         pg_l.addStretch()
         bg_l.addLayout(pg_l)
 
+    def _build_preview(self, bg_l: Any) -> None:
+        """미리보기: 환경설정 버튼과 알림(토스트)이 놓이는 제목 줄, 그 아래 본문 칸."""
         pv_head = QHBoxLayout()
         pv_head.setSpacing(10)
         # 환경설정 버튼: 누르면 탐색기 옆에 열리고, 열려 있을 때 다시 누르면 닫힙니다.
@@ -466,10 +511,9 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         self.pv.check_marks.intercept = self._toggle_preview_box_keeping_format
         self.pv.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.pv.customContextMenuRequested.connect(self.show_preview_menu)
-        # 확인·이름 입력·알림 설정·암호 입력을 따로 창을 띄우지 않고 탐색기 안에서 받는 가림막
-        self.inline_overlay = WindowOverlay(self, self.bg)
 
-        # 총 n개 메모 알림 + total.svg 아이콘 적용
+    def _build_status_row(self, bg_l: Any) -> None:
+        """메모 개수를 보여 주는 줄."""
         self.stat_box = QWidget()
         stat_layout = QHBoxLayout(self.stat_box)
         stat_layout.setContentsMargins(0, 4, 0, 0)
@@ -485,18 +529,6 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         stat_layout.addWidget(self.stat_label)
         stat_layout.addStretch()
         bg_l.addWidget(self.stat_box)
-
-        self.btn_box = QWidget()
-        self.btn_l = QHBoxLayout(self.btn_box)
-        self.btn_l.setContentsMargins(0, 10, 0, 0)
-        bg_l.addWidget(self.btn_box)
-
-        self.setup_btns()
-        self.refresh()
-
-        self.grip = QSizeGrip(self)
-        self._apply_font_scale()
-        self.apply_size_settings()
 
 
     def toggle_maximize(self) -> None:

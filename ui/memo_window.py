@@ -189,6 +189,44 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.bg_layout.setContentsMargins(14, 10, 14, 14)
         self.window_layout.addWidget(self.bg)
 
+        self._build_title_row(bg_l)
+
+        self.content_container = QWidget()
+        cc_layout = QVBoxLayout(self.content_container)
+        cc_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.text_edit = MemoTextEdit(self)
+        self.text_edit.setStyleSheet("border:none; background:transparent;")
+        self.text_edit.textChanged.connect(self.update_content)
+        # 암호를 물을 때 본문을 가리고 그 위에 입력 칸을 보여 주는 가림막 (잠긴 메모는 평소에도 덮여 있음)
+        self.lock_overlay = LockOverlay(self)
+        self.text_edit.textChanged.connect(self.refresh_progress)
+        self.text_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.text_edit.customContextMenuRequested.connect(self.show_menu)
+        self.text_edit.installEventFilter(self)
+
+        self.toast = QLabel("")
+        self.toast.setStyleSheet("color: #0A84FF; font-weight: bold; font-size: 10pt;")
+        self.toast.hide()
+
+        cc_layout.addWidget(self.toast, alignment=Qt.AlignmentFlag.AlignCenter)
+        cc_layout.addWidget(self.text_edit)
+
+        self._build_search_bar(cc_layout)
+
+        self._build_format_bar()
+
+        self._build_font_bar()
+
+        cc_layout.addLayout(self.fmt_bar)
+        cc_layout.addWidget(self.sub_fmt_widget)
+
+        self.update_toolbar_button_states()
+        bg_l.addWidget(self.content_container)
+        self.grip = QSizeGrip(self)
+
+    def _build_title_row(self, bg_l: Any) -> None:
+        """제목 줄: 제목 칸과 자물쇠, 코드 언어, 체크리스트 진행, 고정·접기·닫기 버튼."""
         ctrl = QHBoxLayout()
         ctrl.setSpacing(6)
 
@@ -267,27 +305,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
         bg_l.addLayout(ctrl)
 
-        self.content_container = QWidget()
-        cc_layout = QVBoxLayout(self.content_container)
-        cc_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.text_edit = MemoTextEdit(self)
-        self.text_edit.setStyleSheet("border:none; background:transparent;")
-        self.text_edit.textChanged.connect(self.update_content)
-        # 암호를 물을 때 본문을 가리고 그 위에 입력 칸을 보여 주는 가림막 (잠긴 메모는 평소에도 덮여 있음)
-        self.lock_overlay = LockOverlay(self)
-        self.text_edit.textChanged.connect(self.refresh_progress)
-        self.text_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.text_edit.customContextMenuRequested.connect(self.show_menu)
-        self.text_edit.installEventFilter(self)
-
-        self.toast = QLabel("")
-        self.toast.setStyleSheet("color: #0A84FF; font-weight: bold; font-size: 10pt;")
-        self.toast.hide()
-
-        cc_layout.addWidget(self.toast, alignment=Qt.AlignmentFlag.AlignCenter)
-        cc_layout.addWidget(self.text_edit)
-
+    def _build_search_bar(self, cc_layout: Any) -> None:
+        """찾기·바꾸기 줄."""
         self.search_bar = QWidget()
         sl = QHBoxLayout(self.search_bar)
         sl.setContentsMargins(0, 4, 0, 4)
@@ -326,6 +345,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.search_bar.hide()
         cc_layout.addWidget(self.search_bar)
 
+    def _build_format_bar(self) -> None:
+        """서식 줄: 굵게·기울임·취소선, 목록·체크리스트, 코드 정렬, 알림 표시."""
         self.fmt_bar = QHBoxLayout()
         self.fmt_bar.setContentsMargins(0, 4, 0, 0)
         self.fmt_bar.setSpacing(4)
@@ -386,6 +407,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.btn_reminder.hide()
         self.fmt_bar.addWidget(self.btn_reminder)
 
+    def _build_font_bar(self) -> None:
+        """글꼴 줄: 글꼴, 글자 크기, 글자색, 형광펜."""
         self.sub_fmt_widget = QWidget()
         sub_l = QHBoxLayout(self.sub_fmt_widget)
         sub_l.setContentsMargins(0, 2, 0, 0)
@@ -445,13 +468,6 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         sub_l.addStretch()
 
         self.sub_fmt_widget.hide()
-
-        cc_layout.addLayout(self.fmt_bar)
-        cc_layout.addWidget(self.sub_fmt_widget)
-
-        self.update_toolbar_button_states()
-        bg_l.addWidget(self.content_container)
-        self.grip = QSizeGrip(self)
 
     def _drop_button(self, box: Any, tip: str) -> QPushButton:
         """글꼴·크기 칸 옆의 '목록 열기' 버튼. 칸에는 적어서 찾고, 이 버튼으로는 목록을 펼칩니다."""

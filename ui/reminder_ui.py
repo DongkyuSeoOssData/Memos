@@ -200,6 +200,36 @@ class ReminderForm(QWidget):
             layout.addWidget(QLabel(f"<b>{title}</b>"))
 
         # ── 한 번만 울리는 알림: 날짜(달력) + 빠른 선택 ──
+        self._build_once_box(layout, now)
+
+        # ── 반복 ──
+        self._build_repeat_row(current, layout, repeating)
+
+        # 요일 (매주)
+        self._build_weekday_box(current, layout, now, repeating)
+
+        # 날짜 (매월)
+        self._build_day_box(current, layout, now, repeating)
+
+        # 시간 (크론식이 아닌 모든 경우)
+        self._build_time_box(current, layout, now, repeating, use_24h)
+
+        # 크론식
+        self._build_cron_box(current, layout, repeating)
+
+        self.preview = QLabel("")
+        self.preview.setWordWrap(True)
+        layout.addWidget(self.preview)
+
+        self._build_buttons(current, layout)
+
+        for signal in (self.repeat_check.toggled, self.repeat.currentIndexChanged, self.cron.textChanged,
+                       self.date.dateChanged, self.time.changed):
+            signal.connect(self._refresh)
+        self._refresh()
+
+    def _build_once_box(self, layout: Any, now: Any) -> None:
+        """한 번 울리는 알림: 날짜와 빠른 선택 버튼."""
         self.once_box = QWidget()
         once = QVBoxLayout(self.once_box)
         once.setContentsMargins(0, 0, 0, 0)
@@ -225,7 +255,8 @@ class ReminderForm(QWidget):
         once.addLayout(quick)
         layout.addWidget(self.once_box)
 
-        # ── 반복 ──
+    def _build_repeat_row(self, current: Any, layout: Any, repeating: Any) -> None:
+        """반복 체크와 반복 종류."""
         repeat_row = QHBoxLayout()
         repeat_row.setSpacing(10)
         self.repeat_check = QCheckBox("반복")
@@ -238,7 +269,8 @@ class ReminderForm(QWidget):
         repeat_row.addWidget(self.repeat, 1)
         layout.addLayout(repeat_row)
 
-        # 요일 (매주)
+    def _build_weekday_box(self, current: Any, layout: Any, now: Any, repeating: Any) -> None:
+        """매주: 요일 고르기."""
         self.weekday_box = QWidget()
         week = QHBoxLayout(self.weekday_box)
         week.setContentsMargins(0, 0, 0, 0)
@@ -251,7 +283,8 @@ class ReminderForm(QWidget):
             self.weekday_buttons.append(btn)
         layout.addWidget(self.weekday_box)
 
-        # 날짜 (매월)
+    def _build_day_box(self, current: Any, layout: Any, now: Any, repeating: Any) -> None:
+        """매월: 날짜 고르기 (여러 개)."""
         self.day_box = QWidget()
         month = QVBoxLayout(self.day_box)
         month.setContentsMargins(0, 0, 0, 0)
@@ -268,7 +301,8 @@ class ReminderForm(QWidget):
         month.addWidget(self._hint("날짜를 여러 개 고를 수 있습니다. 29~31일처럼 그 달에 없는 날짜는 그 달의 마지막 날에 울립니다."))
         layout.addWidget(self.day_box)
 
-        # 시간 (크론식이 아닌 모든 경우)
+    def _build_time_box(self, current: Any, layout: Any, now: Any, repeating: Any, use_24h: Any) -> None:
+        """시각 입력. 고치는 알림이면 그 시각을, 새 알림이면 지금에서 가까운 시각을 채워 둡니다."""
         self.time_box = QWidget()
         time_row = QHBoxLayout(self.time_box)
         time_row.setContentsMargins(0, 0, 0, 0)
@@ -285,7 +319,8 @@ class ReminderForm(QWidget):
         layout.addWidget(self.time_box)
         self.date.setDate(QDate(base.year, base.month, base.day) if not repeating else QDate(now.year, now.month, now.day))
 
-        # 크론식
+    def _build_cron_box(self, current: Any, layout: Any, repeating: Any) -> None:
+        """크론식: 입력 칸, 설명, 누르면 채워지는 예시."""
         self.cron_box = QWidget()
         cron = QVBoxLayout(self.cron_box)
         cron.setContentsMargins(0, 0, 0, 0)
@@ -306,10 +341,8 @@ class ReminderForm(QWidget):
             self.example_buttons.append(btn)
         layout.addWidget(self.cron_box)
 
-        self.preview = QLabel("")
-        self.preview.setWordWrap(True)
-        layout.addWidget(self.preview)
-
+    def _build_buttons(self, current: Any, layout: Any) -> None:
+        """아래 버튼 줄: 알림 끄기(걸려 있을 때), 알림 걸기, 취소."""
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
         self.clear_button = None
@@ -328,11 +361,6 @@ class ReminderForm(QWidget):
         self.cancel_button.clicked.connect(self.cancelled.emit)
         buttons.addWidget(self.cancel_button)
         layout.addLayout(buttons)
-
-        for signal in (self.repeat_check.toggled, self.repeat.currentIndexChanged, self.cron.textChanged,
-                       self.date.dateChanged, self.time.changed):
-            signal.connect(self._refresh)
-        self._refresh()
 
     def _toggle(self, text: str, on: bool) -> QPushButton:
         """요일·날짜를 고르는 누름 단추. (여러 개를 켤 수 있음)"""
