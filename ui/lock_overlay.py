@@ -161,25 +161,20 @@ class LockOverlay(PanelOverlay):
     # ── 모양 ─────────────────────────────────────────────────────────────────
     def apply_style(self) -> None:
         """메모 바탕 밝기에 맞춘 색. (앱 색 테마가 아니라 메모 자신의 색을 따름)"""
-        w = self.memo_window
-        pal = w._memo_theme_palette()
-        ink = pal['text']
-        sm = w._sync_manager()
-        neo = modern_style.is_neo(sm.settings) if sm else False
-        on_bg = ink if neo else pal['accent']
-        on_text = ("#1C1C1E" if w.is_dark_bg() else "#FFFFFF") if neo else "#FFFFFF"
-        field = "rgba(0,0,0,0.28)" if w.is_dark_bg() else "rgba(255,255,255,0.78)"
+        colors = modern_style.memo_colors(self.memo_window)
+        ink, on_bg, on_text, field = colors["ink"], colors["strong"], colors["on_strong"], colors["field"]
+        pal = {"accent": colors["accent"]}
         self.setStyleSheet(f"""
             QLabel {{ color: {ink}; background: transparent; font-family: {modern_style.UI_FONT}; font-size: 9.5pt; }}
             QLabel[role="title"] {{ font-size: 11pt; font-weight: 700; }}
             QLabel[role="error"] {{ color: {modern_style.DANGER}; font-weight: 600; }}
             QLineEdit {{
-                padding: 7px 9px; border: 1px solid {modern_style._rgba(ink, 0.35)}; border-radius: 0px; background: {field};
+                padding: 7px 9px; border: 1px solid {modern_style.rgba(ink, 0.35)}; border-radius: 0px; background: {field};
                 color: {ink}; font-family: {modern_style.UI_FONT}; font-size: 10pt; selection-background-color: {pal['accent']};
             }}
             QLineEdit:focus {{ border-color: {on_bg}; }}
             QPushButton {{
-                padding: 6px 14px; border: 1px solid {modern_style._rgba(ink, 0.35)}; border-radius: 0px; background: transparent;
+                padding: 6px 14px; border: 1px solid {modern_style.rgba(ink, 0.35)}; border-radius: 0px; background: transparent;
                 color: {ink}; font-family: {modern_style.UI_FONT}; font-size: 9.5pt; font-weight: 600;
             }}
             QPushButton:hover {{ border-color: {on_bg}; }}

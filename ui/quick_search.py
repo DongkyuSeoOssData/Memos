@@ -67,7 +67,8 @@ class QuickSearch(QWidget):
     def _text_of(self, memo: Dict[str, Any]) -> str:
         memo_id = memo.get("id", "")
         if memo_id not in self._texts:
-            sealed = memo.get("_locked") or memo.get("_unreadable")
+            # 암호 메모는 지금 열려 있더라도 내용으로 찾거나 보여 주지 않습니다. (알림 창·탐색기 진행 표시와 같은 기준)
+            sealed = memo.get("is_locked") or memo.get("_locked") or memo.get("_unreadable")
             self._texts[memo_id] = "" if sealed else clean_plain_text(memo.get("content", ""))
         return self._texts[memo_id]
 
@@ -89,7 +90,7 @@ class QuickSearch(QWidget):
         return (in_title + in_body)[:self.MAX_RESULTS]
 
     def _snippet(self, memo: Dict[str, Any], query: str) -> str:
-        if memo.get("_locked"):
+        if memo.get("is_locked") or memo.get("_locked"):
             return "🔒 암호 메모"
         text = " ".join(self._text_of(memo).split())
         words = [w for w in query.lower().split() if w]

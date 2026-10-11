@@ -101,14 +101,8 @@ class MemoTextEdit(QTextEdit):
 
     # ── 체크리스트 (줄 앞의 ☐ / ☑). 그리기와 조작은 CheckMarks 가 맡습니다. ─────────────
     def _check_colors(self) -> dict:
-        """체크 상자에 쓸 색. 메모 바탕 밝기와 디자인 스타일(Modern 은 강조색, Neo 는 흑백)을 따릅니다."""
-        w = self.memo_window
-        pal = w._memo_theme_palette()
-        sm = w._sync_manager()
-        neo = modern_style.is_neo(sm.settings) if sm else False
-        dark = w.is_dark_bg()
-        return {"ink": pal['text'], "fill": pal['text'] if neo else pal['accent'],
-                "tick": "#1C1C1E" if neo and dark else "#FFFFFF", "dark": dark}
+        """체크 상자에 쓸 색. 메모 바탕 밝기와 디자인 스타일을 따릅니다. (색은 modern_style 이 정함)"""
+        return modern_style.check_colors(modern_style.memo_colors(self.memo_window))
 
     def toggle_check_at(self, pos: Any) -> bool:
         return self.check_marks.toggle_at(pos)

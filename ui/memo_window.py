@@ -4,7 +4,7 @@ from ui import modern_style
 from ui.wheel_guard import guard_wheel
 from ui import screen_bounds
 from core import reminders
-from ui import checklist
+from ui import checklist, memo_geometry
 from ui.reminder_ui import ask_reminder
 from ui.dialogs import pick_history
 from ui.side_panel import SidePanel
@@ -502,11 +502,11 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
     # ── 체크리스트 진행 표시 ──────────────────────────────────────────────────
     def refresh_progress(self) -> None:
         """제목 줄의 진행 표시('☐ 3/5', 다 끝내면 '☑ 5/5')를 지금 본문에 맞춥니다. 체크리스트가 없거나 잠긴 메모면 숨깁니다."""
-        text = "" if self.is_sealed() else checklist.progress_label(self.text_edit.toPlainText())
+        text = "" if self.is_sealed() else self.text_edit.check_marks.progress_label()
         if text != self.lbl_progress.text() or self.lbl_progress.isHidden() == bool(text):
             ink = self._memo_theme_palette()['text']
             self.lbl_progress.setStyleSheet(
-                f"color: {ink}; background: {modern_style._rgba(ink, 0.10)}; padding: 1px 6px; font-size: 8.5pt; "
+                f"color: {ink}; background: {modern_style.rgba(ink, 0.10)}; padding: 1px 6px; font-size: 8.5pt; "
                 f"font-weight: 700; font-family: {modern_style.UI_FONT};")
             self.lbl_progress.setText(text)
             self.lbl_progress.setVisible(bool(text))
@@ -553,8 +553,9 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             return
         self.flush_auto_save()                  # 지금 치던 내용도 기록에 남도록 먼저 저장
         chosen = pick_history(self._dlg_parent(), str(self.memo_data.get('title', '')), sm.list_history(memo_id),
-                              reveal=lambda index, password: sm.read_history_text(memo_id, index, password))
-        if chosen is not None and sm.restore_history(memo_id, chosen):
+                              reveal=lambda index, password: sm.read_history_text(memo_id, index, password),
+                              check=lambda index, password: sm.restore_problem(memo_id, index, password))
+        if chosen is not None and sm.restore_history(memo_id, chosen[0], chosen[1]):
             self.ui_manager.reload_pulled_memos([memo_id])
             self._refresh_explorer()
             self.show_toast("이전 내용으로 되돌렸습니다")
@@ -1027,11 +1028,17 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
     @staticmethod
     def _clamp_to_screen(scr_geom: Any, x: int, y: int, w: int, h: int) -> tuple:
         """창이 화면 작업 영역 밖으로 나가지 않도록 좌표를 당깁니다."""
-        if x + w > scr_geom.right(): x = scr_geom.right() - w
-        if x < scr_geom.left(): x = scr_geom.left()
-        if y + h > scr_geom.bottom(): y = scr_geom.bottom() - h
-        if y < scr_geom.top(): y = scr_geom.top()
-        return x, y
+        return memo_geometry.clamp(scr_geom, x, y, w, h)
+
+    def _screen_area_for(self, x: int, y: int, w: int, h: int) -> Any:
+        """(x, y, w, h) 자리에 놓을 창이 속할 모니터의 작업 영역.
+
+        그 자리가 어느 모니터에도 없으면(모니터를 뗀 경우 등) 지금 창이 있는 모니터, 그것도 없으면 주 모니터입니다.
+        기억해 둔 자리가 다른 모니터에 있어도 지금 모니터 안으로 끌려오지 않게 하려고 씁니다.
+        """
+        screen = (QApplication.screenAt(QRect(x, y, w, h).center()) or QApplication.screenAt(self.geometry().center())
+                  or QApplication.primaryScreen())
+        return screen.availableGeometry()
 
     def _apply_fold_state(self, rolled: bool, x: int, y: int, w: int, h: int) -> None:
         """접힘/펼침 상태로 바꾸고 창 크기·내용 영역·제목 줄 버튼을 그 상태에 맞춥니다."""
@@ -1075,37 +1082,28 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             self.refresh_reminder_badge()
 
     # ── 위치와 크기 기억 ─────────────────────────────────────────────────────
-    # 접힌 상태와 펼친 상태는 위치와 크기를 서로 따로 기억합니다.
-    #   접힘: rolled_position_x / rolled_position_y / rolled_width
-    #   펼침: position_x / position_y / unrolled_width / unrolled_height (width / height 도 같은 값)
-    # 한쪽 상태에서 옮기거나 크기를 바꿔도 다른 쪽 상태의 값은 달라지지 않습니다.
-    LOCKED_SIZE = (340, 290)        # 잠긴 암호 메모를 펼쳤을 때의 크기. 암호 칸이 가운데에 넉넉히 들어가는 크기입니다.
+    # 어디에 어떤 크기로 놓을지의 규칙은 ui/memo_geometry.py 에 있습니다. (창 없이 숫자만으로 따질 수 있게 따로 둠)
+    # 여기서는 지금 창의 상태를 넘겨주고, 돌려받은 자리에 창을 놓습니다.
+    LOCKED_SIZE = memo_geometry.LOCKED_SIZE
+
+    def _box(self) -> tuple:
+        return self.x(), self.y(), self.width(), self.height()
 
     def is_locked_compact(self) -> bool:
         """잠겨 있어서 암호 입력용 작은 크기로 떠 있는지. (이때의 크기는 메모의 크기로 기억하지 않음)"""
-        return bool(self.memo_data.get('_locked')) and not self._is_rolled_up
+        return memo_geometry.is_locked_compact(self.memo_data, self._is_rolled_up)
 
     def remember_geometry(self) -> None:
         """지금 상태(접힘/펼침)의 위치와 크기를 그 상태의 것으로 기억합니다."""
-        data = self.memo_data
-        if self._is_rolled_up:
-            data['rolled_position_x'], data['rolled_position_y'] = self.x(), self.y()
-            data['rolled_width'], data['rolled_height'] = self.width(), self.height()
-            return
-        data['position_x'], data['position_y'] = self.x(), self.y()
-        if not self.is_locked_compact():
-            data['unrolled_width'] = data['width'] = self.width()
-            data['unrolled_height'] = data['height'] = self.height()
+        memo_geometry.remember(self.memo_data, self._is_rolled_up, self._box())
 
     def _saved_unrolled_size(self) -> tuple:
         """기억해 둔 펼친 크기. (잠겨 있든 아니든 메모 본래의 크기)"""
-        width = self.memo_data.get('unrolled_width', self.memo_data.get('width', 500))
-        height = self.memo_data.get('unrolled_height', self.memo_data.get('height', getattr(self, '_normal_height', 300)))
-        return (width if width >= 200 else 300), (height if height >= 150 else 300)
+        return memo_geometry.saved_unrolled_size(self.memo_data, getattr(self, '_normal_height', 300))
 
     def _unrolled_size(self) -> tuple:
         """펼쳤을 때의 크기. 잠긴 메모는 암호를 풀기 전까지 암호 입력용 작은 크기로 뜹니다."""
-        return self.LOCKED_SIZE if self.memo_data.get('_locked') else self._saved_unrolled_size()
+        return memo_geometry.unrolled_size(self.memo_data, getattr(self, '_normal_height', 300))
 
     def _covers_rolled_memo(self, rect: QRect) -> bool:
         """rect 에 펼치면 다른 접은 메모를 가리게 되는지."""
@@ -1134,43 +1132,23 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         scr_geom = screen.availableGeometry()
         data = self.memo_data
+        default_height = getattr(self, '_normal_height', 300)
         self.remember_geometry()                      # 떠나는 상태의 위치·크기를 먼저 기억
 
-        # 기준이 되는 지금 창의 크기. 잠겨서 암호 입력용 크기로 떠 있는 메모는 그 크기가 아니라 메모 본래의 크기로 따집니다.
-        # (그러지 않으면 잠긴 메모를 처음 접을 때 암호 입력용 너비가 접은 메모의 너비로 굳어 버림)
-        own_w, own_h = (self._saved_unrolled_size() if self.is_locked_compact() else (self.width(), self.height()))
-        center_x = self.x() + own_w / 2
-        center_y = self.y() + own_h / 2
-        is_near_top = (center_y < scr_geom.top() + scr_geom.height() / 3)
-        is_near_right = (center_x > scr_geom.left() + scr_geom.width() / 2)
-        anchor_x = self.x() + own_w if is_near_right else self.x()
-        anchor_y = self.y() if is_near_top else self.y() + own_h
-
         if not self._is_rolled_up:
-            # 접기: 접힌 상태로 기억해 둔 자리와 너비로. 처음 접는 메모는 화면 가장자리에 가까운 모서리를 고정점으로 삼습니다.
-            self._normal_height = own_h
-            target_h = self._get_rolled_height()
-            data['rolled_height'] = target_h
-            if 'rolled_position_x' in data and 'rolled_position_y' in data:
-                target_w = data.get('rolled_width', own_w)
-                new_left_x, new_top_y = data['rolled_position_x'], data['rolled_position_y']
-            else:
-                target_w = data.get('rolled_width', own_w)
-                new_left_x = anchor_x - target_w if is_near_right else anchor_x
-                new_top_y = anchor_y if is_near_top else anchor_y - target_h
+            self._normal_height = memo_geometry.own_size(data, False, self._box(), default_height)[1]
+            data['rolled_height'] = self._get_rolled_height()
+            new_left_x, new_top_y, target_w, target_h = memo_geometry.fold_target(
+                data, self._box(), data['rolled_height'], scr_geom, default_height)
         else:
-            # 펴기: 펼친 상태로 기억해 둔 자리와 크기로.
-            target_w, target_h = self._unrolled_size()
-            new_left_x, new_top_y = data.get('position_x', self.x()), data.get('position_y', self.y())
-            new_left_x, new_top_y = self._clamp_to_screen(scr_geom, new_left_x, new_top_y, target_w, target_h)
-            # 다만 그 자리가 쌓아 둔 다른 접은 메모를 가리면, 쌓인 줄의 바깥쪽(왼쪽에 쌓였으면 오른쪽, 오른쪽이면 왼쪽)에 폅니다.
-            stack = self._rolled_stack_span()
-            if stack is not None and self._covers_rolled_memo(QRect(new_left_x, new_top_y, target_w, target_h)):
-                beside = stack[0] - target_w if is_near_right else stack[1]
-                if scr_geom.left() <= beside and beside + target_w <= scr_geom.left() + scr_geom.width():
-                    new_left_x = beside
-                    new_top_y = anchor_y if is_near_top else anchor_y - target_h
-        new_left_x, new_top_y = self._clamp_to_screen(scr_geom, new_left_x, new_top_y, target_w, target_h)
+            new_left_x, new_top_y, target_w, target_h = memo_geometry.unfold_target(
+                data, self._box(), scr_geom,
+                area_for=lambda box: self._screen_area_for(*box),
+                stack=self._rolled_stack_span(),
+                covers=lambda box: self._covers_rolled_memo(QRect(*box)),
+                default_height=default_height)
+        new_left_x, new_top_y = self._clamp_to_screen(
+            self._screen_area_for(new_left_x, new_top_y, target_w, target_h), new_left_x, new_top_y, target_w, target_h)
         self._apply_fold_state(not self._is_rolled_up, new_left_x, new_top_y, target_w, target_h)
 
         if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
@@ -1396,26 +1374,24 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
         self._is_updating_from_explorer = False
         is_rolled = getattr(self, '_is_rolled_up', False) or self.memo_data.get('is_rolled_up', False)
-        screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
-        scr_geom = screen.availableGeometry()
-
         was_rolled = getattr(self, '_is_rolled_up', False)
+        rolled_h = self._get_rolled_height()            # settings의 default_rolled_height를 우선 적용
         if is_rolled:
-            target_w = self.memo_data.get('rolled_width', self._saved_unrolled_size()[0])
-            # settings의 default_rolled_height를 우선 적용
-            target_h = self._get_rolled_height()
-            self.memo_data['rolled_height'] = target_h
-            x = self.x() if self.isVisible() else self.memo_data.get('rolled_position_x', self.memo_data.get('position_x', 100))
-            y = self.y() if self.isVisible() else self.memo_data.get('rolled_position_y', 100)
-        else:
-            # 잠긴 메모는 암호 입력용 작은 크기로, 암호를 풀면 원래 크기로 뜹니다.
-            target_w, target_h = self._unrolled_size()
-            x = self.x() if self.isVisible() else self.memo_data.get('position_x', 100)
-            y = self.y() if (self.isVisible() and not was_rolled) else self.memo_data.get('position_y', 100)
-        x, y = self._clamp_to_screen(scr_geom, x, y, target_w, target_h)
+            self.memo_data['rolled_height'] = rolled_h
+        # 이미 보이는 창은 지금 자리를 지키고, 숨어 있던 창은 기억해 둔 자리로 갑니다. (잠긴 메모는 암호 입력용 크기로)
+        x, y, target_w, target_h = memo_geometry.show_target(
+            self.memo_data, is_rolled, was_rolled, self.isVisible(), (self.x(), self.y()), rolled_h,
+            getattr(self, '_normal_height', 300))
+        x, y = self._clamp_to_screen(self._screen_area_for(x, y, target_w, target_h), x, y, target_w, target_h)
         self._apply_fold_state(is_rolled, x, y, target_w, target_h)
 
     def closeEvent(self, e: Any) -> None:
+        panel = getattr(self, '_side_panel', None)
+        if panel is not None:                               # 옆에 붙여 연 패널(알림 설정·이전 내용)도 함께 정리
+            self._side_panel = None
+            panel.cancel()
+            panel.hide()
+            panel.deleteLater()
         if getattr(self, '_is_deleting', False):
             self._auto_save_timer.stop()
         else:

@@ -183,11 +183,15 @@ class SyncManager(QObject):
         memo_id = memo.get('id')
         if not memo_id or not password or memo.get('_locked') or memo.get('_unreadable'):
             return False
+        previous = self._memo_keys.get(memo_id)             # 암호를 바꾸는 경우: 지금까지 쓰던 키
         salt = self.crypto.new_salt()
         self._memo_keys[memo_id] = (self.crypto.derive_key(password, salt), salt)
         memo['is_locked'] = True
         memo['is_draft'] = False
-        return self.save_memo_locally(memo)
+        saved = self.save_memo_locally(memo)
+        # 암호를 걸기 전의 평문(방금 남긴 것 포함)과 예전 암호로 잠긴 기록을 새 암호로 잠급니다.
+        self._seal_history(memo_id, previous[0] if previous else None)
+        return saved
 
     def unlock_memo(self, memo_id: str, password: str) -> Optional[str]:
         """암호가 맞으면 본문을 돌려주고 키를 메모리에 보관합니다. 틀리면 None."""
@@ -200,6 +204,8 @@ class SyncManager(QObject):
         except ValueError:
             return None
         self._memo_keys[memo_id] = (key, self.crypto.payload_salt(payload))
+        # 예전 버전이 남긴 평문 기록이나, 다른 기기가 암호를 걸기 전에 이 PC에 남은 평문 기록을 이때 잠급니다.
+        self._seal_history(memo_id)
         return plain
 
     def memo_has_master_recovery(self, memo_id: str) -> bool:
@@ -225,6 +231,7 @@ class SyncManager(QObject):
             memo['is_locked'] = True
             if not self.save_memo_locally(memo):
                 raise ValueError("복구한 메모를 저장하지 못했습니다.")
+            self._seal_history(memo_id)
         return plain
 
     def relock_memo(self, memo_id: str) -> None:
@@ -235,9 +242,13 @@ class SyncManager(QObject):
         memo_id = memo.get('id')
         if not memo_id or memo.get('_locked') or memo_id not in self._memo_keys:
             return False
+        key = self._memo_keys[memo_id][0]
         memo['is_locked'] = False
         self._memo_keys.pop(memo_id, None)
-        return self.save_memo_locally(memo)
+        saved = self.save_memo_locally(memo)
+        if saved:
+            self._unseal_history(memo_id, key)              # 이제 비밀이 아니므로, 이 암호로 잠겨 있던 기록도 풉니다.
+        return saved
 
     def _read_raw_content(self, memo_id: str) -> Any:
         try:
@@ -568,37 +579,129 @@ class SyncManager(QObject):
             })
         return out
 
-    def read_history_text(self, memo_id: str, index: int, password: str) -> Optional[str]:
-        """암호 메모의 기록(index 번째)을 password 로 풀어 본문 글자를 돌려줍니다. 암호가 틀리면 None.
+    def _rewrite_history(self, memo_id: str, convert: Any) -> None:
+        """기록의 항목마다 convert(본문) 을 불러, 돌려준 값이 있으면(None 이 아니면) 그 값으로 바꿔 씁니다."""
+        try:
+            with MEMO_IO_LOCK:
+                entries = self._read_history(memo_id)
+                changed = False
+                for entry in entries:
+                    new_content = convert(entry.get("content", ""))
+                    if new_content is not None:
+                        entry["content"] = new_content
+                        entry["is_locked"] = isinstance(new_content, dict)
+                        changed = True
+                if changed:
+                    atomic_write_json(self._history_file(memo_id), entries)
+        except Exception as e:
+            self.log_error(f"변경 기록 다시 쓰기 실패 ({memo_id}): {e}", e)
 
-        되돌리기 전에 내용을 확인하는 용도이며, 푼 내용이나 키를 어디에도 남기지 않습니다.
+    def _seal_history(self, memo_id: str, previous_key: Optional[bytes] = None) -> None:
+        """이 메모의 기록을 지금 암호로 잠급니다. (암호 메모의 내용이 기록에 평문으로 남지 않도록)
+
+        평문 기록은 모두 잠그고, previous_key(바꾸기 전의 암호 키)로 열리는 기록은 새 암호로 다시 잠급니다.
+        다른 암호로 잠긴 더 오래된 기록은 풀 수 없으므로 그대로 둡니다.
+        """
+        holder = self._memo_keys.get(memo_id)
+        if not holder:
+            return
+        key, salt = holder
+
+        def convert(content: Any) -> Any:
+            if isinstance(content, str):
+                return self.crypto.encrypt_locked(content, key, salt)
+            if previous_key is not None and self.crypto.is_locked_payload(content):
+                try:
+                    return self.crypto.encrypt_locked(self.crypto.decrypt_locked(content, previous_key), key, salt)
+                except ValueError:
+                    return None
+            return None
+
+        self._rewrite_history(memo_id, convert)
+
+    def _unseal_history(self, memo_id: str, key: bytes) -> None:
+        """암호를 없앤 메모: key 로 열리는 기록을 평문으로 되돌립니다."""
+        def convert(content: Any) -> Any:
+            if self.crypto.is_locked_payload(content):
+                try:
+                    return self.crypto.decrypt_locked(content, key)
+                except ValueError:
+                    return None
+            return None
+
+        self._rewrite_history(memo_id, convert)
+
+    def _history_plain(self, memo_id: str, content: Any, password: str = "") -> Optional[str]:
+        """기록의 본문을 평문으로. 암호문이면 이 메모를 열 때 쓴 키, 그다음 password 로 풀어 봅니다. 못 풀면 None."""
+        if isinstance(content, str):
+            return content
+        if not self.crypto.is_locked_payload(content):
+            return None
+        holder = self._memo_keys.get(memo_id)
+        keys = [holder[0]] if holder else []
+        if password:
+            try:
+                keys.append(self.crypto.key_for_payload(content, password))
+            except Exception:
+                pass
+        for key in keys:
+            try:
+                return self.crypto.decrypt_locked(content, key)
+            except ValueError:
+                continue
+        return None
+
+    def read_history_text(self, memo_id: str, index: int, password: str = "") -> Optional[str]:
+        """기록(index 번째)의 본문 글자. 암호 메모의 기록은 메모가 열려 있으면 그 키로, 아니면 password 로 풉니다.
+
+        풀 수 없으면 None. 되돌리기 전에 내용을 확인하는 용도이며, 푼 내용이나 키를 어디에도 남기지 않습니다.
         """
         entries = self._read_history(memo_id)
         if not (0 <= index < len(entries)):
             return None
-        payload = entries[index].get("content")
-        if not self.crypto.is_locked_payload(payload):
-            return clean_plain_text(payload) if isinstance(payload, str) else None
-        try:
-            return clean_plain_text(self.crypto.decrypt_locked(payload, self.crypto.key_for_payload(payload, password)))
-        except ValueError:
-            return None
+        plain = self._history_plain(memo_id, entries[index].get("content"), password)
+        return None if plain is None else clean_plain_text(plain)
 
-    def restore_history(self, memo_id: str, index: int) -> bool:
-        """index 번째 기록의 제목·본문으로 되돌립니다. 지금 내용은 먼저 기록에 남깁니다."""
+    def restore_problem(self, memo_id: str, index: int, password: str = "") -> str:
+        """이 기록으로 되돌릴 수 없는 이유. 되돌릴 수 있으면 빈 글자."""
         entries = self._read_history(memo_id)
         if not (0 <= index < len(entries)):
+            return "기록을 찾을 수 없습니다."
+        current = self._read_raw_content(memo_id)
+        if current is None:
+            return "메모를 찾을 수 없습니다."
+        if self.crypto.is_locked_payload(current) and memo_id not in self._memo_keys:
+            return "먼저 메모의 잠금을 푸세요."
+        if self._history_plain(memo_id, entries[index].get("content"), password) is None:
+            return "이 기록은 다른 암호로 잠겨 있습니다. 그때 쓰던 암호를 넣으세요." if not password else "암호가 일치하지 않습니다."
+        return ""
+
+    def restore_history(self, memo_id: str, index: int, password: str = "") -> bool:
+        """index 번째 기록의 제목·본문으로 되돌립니다. 지금 내용은 먼저 기록에 남깁니다.
+
+        되돌려도 메모의 잠금 상태와 암호는 지금 그대로입니다. 암호 메모는 되돌린 내용을 지금 암호로 다시 잠가 저장하고,
+        일반 메모는 평문으로 저장합니다. (그래서 암호 메모는 잠금을 푼 상태에서만, 다른 암호로 잠긴 기록은 그 암호를 넣어야 되돌릴 수 있음)
+        """
+        if self.restore_problem(memo_id, index, password):
             return False
-        entry = entries[index]
+        entry = self._read_history(memo_id)[index]
         path = self.local_path / f"{memo_id}.json"
         try:
             with MEMO_IO_LOCK:
                 with open(path, "r", encoding="utf-8") as f:
                     current = json.load(f)
+                plain = self._history_plain(memo_id, entry.get("content"), password)
+                if plain is None:
+                    return False
                 self._snapshot(memo_id, current, reason="되돌리기 전", force=True)
                 current["title"] = entry.get("title", current.get("title", ""))
-                current["content"] = entry.get("content", "")
-                current["is_locked"] = isinstance(entry.get("content"), dict)
+                if self.crypto.is_locked_payload(current.get("content")):
+                    key, salt = self._memo_keys[memo_id]
+                    current["content"] = self.crypto.encrypt_locked(plain, key, salt)
+                    current["is_locked"] = True
+                else:
+                    current["content"] = plain
+                    current["is_locked"] = False
                 current["updated_at"] = datetime.now().isoformat()
                 atomic_write_json(path, current)
         except Exception as e:

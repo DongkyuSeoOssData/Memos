@@ -50,10 +50,8 @@ class SidePanel(QWidget):
     def apply_style(self) -> None:
         """메모와 같은 바탕색. 메모와 맞닿는 쪽에는 테두리를 두지 않습니다."""
         w = self.memo_window
-        pal, is_dark, bg_color = modern_style.memo_tone(w)
-        sm = w._sync_manager()
-        neo = modern_style.is_neo(sm.settings) if sm else False
-        edge = modern_style._rgba(pal['text'], 0.22) if neo else modern_style._tint(is_dark, 0.16 if is_dark else 0.10)
+        colors = modern_style.memo_colors(w)
+        bg_color, edge = colors["bg"], colors["edge"]
         joined = "right" if self._on_left else "left"
         self.setStyleSheet(
             f"QWidget#MemoSidePanel {{ background-color: {bg_color}; border: 1px solid {edge}; border-{joined}: none; }}"
@@ -98,6 +96,10 @@ class SidePanel(QWidget):
         self.setMinimumSize(0, 0)
         self.apply_style()
         self._min_size = (min_width, min_height)
+        # 패널을 만든 뒤에 메모의 '항상 위'를 바꿨을 수 있으므로 열 때마다 맞춥니다.
+        on_top = bool(self.memo_window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        if on_top != bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint):
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, on_top)
         self._refit()
         if hasattr(panel, "layout_changed"):
             panel.layout_changed.connect(self._refit)

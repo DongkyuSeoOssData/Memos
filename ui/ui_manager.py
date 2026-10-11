@@ -51,7 +51,8 @@ class UIManager:
         self._reminder_timer = QTimer()
         self._reminder_timer.setSingleShot(True)
         self._reminder_timer.timeout.connect(self.check_reminders)
-        self.sync_manager.reminders_changed.connect(self.schedule_reminders)
+        # 동기화 작업 스레드에서 알림 목록이 바뀌어도, 타이머는 항상 화면 스레드에서 다룹니다.
+        self.sync_manager.reminders_changed.connect(self.schedule_reminders, Qt.ConnectionType.QueuedConnection)
         self.schedule_reminders()               # 이미 읽어 둔 알림이 있으면 바로 예약
         self.sync_manager.set_ui_manager(self)
         self.setup_tray()
@@ -204,7 +205,10 @@ class UIManager:
         self.update_tray_menu()                 # 트레이 메뉴의 단축키 표시와 전역 단축키 재등록
 
         if self.settings_window and self.settings_window.isVisible():
-            if reload_settings_window:
+            if reload_settings_window and self.settings_window.is_dirty():
+                # 고치던 값이 있으면 덮어쓰지 않고 알리기만 합니다. (저장하면 이 화면의 값이 적용됨)
+                self.settings_window.show_toast("다른 기기에서 설정이 바뀌었습니다 · 저장하면 이 화면의 값으로 덮어씁니다", warn=True)
+            elif reload_settings_window:
                 self.settings_window.load()     # 화면의 값이 예전 것이면 저장할 때 되돌려 버리므로 새 값으로 채움
             self.settings_window.apply_theme_style()
 
@@ -561,7 +565,11 @@ class UIManager:
 
     def show_all_memos(self) -> None:
         ms = self.sync_manager.load_local_memos()
-        if not ms and not self.sync_manager.settings.get("guide_memos_made"):
+        settings = self.sync_manager.settings
+        # 동기화가 이미 설정된 PC(다른 기기에서 쓰던 메모를 받아 올 PC)에서는 자동으로 만들지 않습니다.
+        # 안내 메모는 id 가 정해져 있어서, 새로 만들면 다른 기기에서 고치거나 지운 안내 메모를 덮거나 되살리기 때문입니다.
+        joins_existing_sync = bool(settings.get("use_sync")) and bool(str(settings.get("drive_folder_id", "")).strip())
+        if not ms and not settings.get("guide_memos_made") and not joins_existing_sync:
             # 처음 실행: 빈 메모 대신 사용 안내 메모를 만들어 둡니다. (읽고 지우면 됨)
             self.make_guide_memos()
             ms = self.sync_manager.load_local_memos()

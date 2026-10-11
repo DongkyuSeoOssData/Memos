@@ -121,11 +121,13 @@ class HistoryView(QWidget):
     LIST_WIDTH = 230
     DETAIL_WIDTH = 340
 
-    def __init__(self, title: str, entries: List[dict], wide: bool = False, reveal=None) -> None:
+    def __init__(self, title: str, entries: List[dict], wide: bool = False, reveal=None, check=None) -> None:
         super().__init__()
         self.chosen_index = None
+        self.chosen_password = ""           # 되돌릴 기록을 푸는 데 쓴 암호 (메모가 열려 있어 그 키로 풀리면 빈 글자)
         self._entries = entries
         self._reveal = reveal               # (기록 번호, 암호) → 본문 글자 또는 None. 암호 메모의 기록을 열어 볼 때 씁니다.
+        self._check = check                 # (기록 번호, 암호) → 되돌릴 수 없는 이유 (되돌릴 수 있으면 빈 글자)
         self._password = ""                 # 한 번 맞은 암호는 이 화면이 떠 있는 동안 다른 기록에도 써 봅니다.
 
         row = QHBoxLayout(self)
@@ -215,8 +217,9 @@ class HistoryView(QWidget):
         self.detail_title.setText((str(entry.get("title", "")) or "(제목 없음)") + chr(10) + when + reason)
         self.unlock_error.hide()
         opened = None
-        if entry.get("locked") and self._reveal and self._password:
-            opened = self._reveal(entry.get("index"), self._password)       # 앞서 맞은 암호로 먼저 열어 봄
+        if entry.get("locked") and self._reveal:
+            # 메모가 열려 있으면 그 키로, 아니면 앞서 맞은 암호로 먼저 열어 봅니다.
+            opened = self._reveal(entry.get("index"), self._password)
         self.unlock_row.setVisible(bool(entry.get("locked")) and opened is None and self._reveal is not None)
         if not entry.get("locked"):
             self.preview.setPlainText(entry.get("text", ""))
@@ -224,7 +227,7 @@ class HistoryView(QWidget):
             self.preview.setPlainText(opened)
         else:
             self.preview.setPlainText("암호 메모의 기록입니다. 위에 그때 쓰던 암호를 넣으면 내용을 볼 수 있습니다.\n"
-                                      "내용을 보지 않고도 되돌릴 수 있으며, 되돌린 뒤에는 그때 쓰던 암호로 엽니다.")
+                                      "되돌릴 때도 그 암호가 필요합니다. 되돌린 뒤에도 메모의 암호는 지금 그대로입니다.")
         self.restore_button.setEnabled(True)
         if self.detail.isHidden():
             self.detail.show()
@@ -251,17 +254,28 @@ class HistoryView(QWidget):
 
     def _restore(self) -> None:
         item = self.list.currentItem()
-        if item is not None and item.data(Qt.ItemDataRole.UserRole) is not None:
-            self.chosen_index = item.data(Qt.ItemDataRole.UserRole)
-            self.submitted.emit(self.chosen_index)
+        if item is None or item.data(Qt.ItemDataRole.UserRole) is None:
+            return
+        index = item.data(Qt.ItemDataRole.UserRole)
+        password = self._password or self.password_edit.text()
+        problem = self._check(index, password) if self._check else ""
+        if problem:
+            # 잠긴 메모이거나 다른 암호로 잠긴 기록: 닫지 않고 이유를 알려 줍니다.
+            self.unlock_error.setText("⚠ " + problem)
+            self.unlock_error.show()
+            if self.unlock_row.isVisible():
+                self.password_edit.setFocus()
+            return
+        self.chosen_index, self.chosen_password = index, password
+        self.submitted.emit(index)
 
 
 class HistoryDialog(ThemedDialog):
     """이전 내용 화면을 담은 대화상자. (탐색기에서 부를 때)"""
 
-    def __init__(self, parent, title: str, entries: List[dict], reveal=None) -> None:
+    def __init__(self, parent, title: str, entries: List[dict], reveal=None, check=None) -> None:
         super().__init__(parent, "이전 내용", fit_content=True)       # 본문이 펼쳐지면 창도 따라 넓어짐
-        self.view = HistoryView(title, entries, wide=True, reveal=reveal)
+        self.view = HistoryView(title, entries, wide=True, reveal=reveal, check=check)
         self.view.setMinimumHeight(400)
         self.body.addWidget(self.view)
         self.view.submitted.connect(lambda index: self.accept())
@@ -273,14 +287,18 @@ class HistoryDialog(ThemedDialog):
         return getattr(self.view, name)
 
 
-def pick_history(parent, title: str, entries: List[dict], reveal=None):
-    """되돌릴 기록을 고릅니다. → 기록 번호 (닫으면 None)
+def pick_history(parent, title: str, entries: List[dict], reveal=None, check=None):
+    """되돌릴 기록을 고릅니다. → (기록 번호, 그 기록을 푸는 데 쓴 암호) (닫으면 None)
 
     메모 창에서 부르면 그 메모의 오른쪽에 붙는 패널로, 그 밖에는 대화상자로 보여 줍니다.
-    reveal(기록 번호, 암호) 을 주면 암호 메모의 기록을 암호로 열어 볼 수 있습니다.
+    reveal(기록 번호, 암호) 은 암호 메모의 기록을 열어 볼 때, check(기록 번호, 암호) 는 되돌릴 수 있는지 확인할 때 씁니다.
     """
     window = parent.window() if parent is not None else None
     if hasattr(window, "side_panel") and window.isVisible() and not window.side_panel().is_busy():
-        return window.side_panel().run(HistoryView(title, entries, reveal=reveal), "이전 내용", min_height=460)
-    dialog = HistoryDialog(parent, title, entries, reveal)
-    return dialog.chosen_index if dialog.exec() and dialog.chosen_index is not None else None
+        view = HistoryView(title, entries, reveal=reveal, check=check)
+        chosen = window.side_panel().run(view, "이전 내용", min_height=460)
+        return None if chosen is None else (chosen, view.chosen_password)
+    dialog = HistoryDialog(parent, title, entries, reveal, check)
+    if dialog.exec() and dialog.chosen_index is not None:
+        return dialog.chosen_index, dialog.chosen_password
+    return None

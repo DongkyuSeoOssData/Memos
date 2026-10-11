@@ -19,8 +19,8 @@ from PyQt6.QtWidgets import (
     QSizeGrip, QSizePolicy, QListWidget, QListWidgetItem, QGridLayout
 )
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, pyqtSlot
-from PyQt6.QtGui import QTextCursor, QGuiApplication, QShortcut, QKeySequence, QFont, QIcon
-from utils.text_utils import clean_plain_text, extract_hashtags
+from PyQt6.QtGui import QTextCursor, QTextDocument, QGuiApplication, QShortcut, QKeySequence, QFont, QIcon
+from utils.text_utils import clean_plain_text, extract_hashtags, is_html_content
 
 class MemoExplorerWindow(QWidget):
     """
@@ -49,6 +49,7 @@ class MemoExplorerWindow(QWidget):
         self.current_folder: str = str(self.ui_manager.sync_manager.settings.get("explorer_folder", folders.ALL) or folders.ALL)
         # 사이드바를 열어 창 왼쪽에 덧붙인 너비. 탐색기 본래 크기(글자 크기 계산·저장되는 창 크기)에는 넣지 않습니다.
         self._sidebar_extra: int = 0
+        self._checked_ids: set = set()      # 체크해 둔 메모의 id (목록을 다시 그려도 유지)
         # 환경설정 패널: 열면 탐색기 창이 그만큼 옆으로 늘어납니다. (오른쪽에 자리가 없으면 왼쪽)
         self.settings_panel: Optional[SettingsWindow] = None
         self._settings_extra: int = 0
@@ -138,7 +139,8 @@ class MemoExplorerWindow(QWidget):
         if getattr(self, '_delete_key', None) is None:       # 단축키를 다시 걸 때 겹쳐서 만들지 않음
             self._delete_key = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.table)
             self._delete_key.setContext(Qt.ShortcutContext.WidgetShortcut)
-            self._delete_key.activated.connect(self.del_checked)
+            # 휴지통을 보는 중에는 동작하지 않습니다. (휴지통의 메모는 복원·비우기 버튼으로 다룸)
+            self._delete_key.activated.connect(lambda: None if self.is_trash_mode else self.del_checked())
         QShortcut(QKeySequence(s_cfg.get("toggle_memo_lock", "Ctrl+L")), self).activated.connect(
             lambda: self._lock_action_on_current("toggle_memo_lock"))
         QShortcut(QKeySequence(s_cfg.get("set_memo_password", "Ctrl+Shift+L")), self).activated.connect(
@@ -463,6 +465,7 @@ class MemoExplorerWindow(QWidget):
         self.pv.setReadOnly(False)
         bg_l.addWidget(self.pv)
         self.pv.textChanged.connect(self.on_preview_changed)
+        self.pv.check_marks.intercept = self._toggle_preview_box_keeping_format
         self.pv.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.pv.customContextMenuRequested.connect(self.show_preview_menu)
         # 확인·이름 입력·알림 설정·암호 입력을 따로 창을 띄우지 않고 탐색기 안에서 받는 가림막
@@ -942,6 +945,10 @@ class MemoExplorerWindow(QWidget):
         self.folder_combo.setToolTip(f"{name} — 폴더 (고른 폴더의 메모만 보기)")
         self.folder_combo.view().setMinimumWidth(240)
 
+    def content_x(self) -> int:
+        """왼쪽에 덧붙인 영역(폴더 사이드바, 왼쪽에 붙은 환경설정 패널)을 뺀, 탐색기 본래 영역의 왼쪽 위치."""
+        return self.x() + self._sidebar_extra + (self._settings_extra if self._settings_side == "left" else 0)
+
     def content_width(self) -> int:
         """사이드바·환경설정 패널로 덧붙인 영역을 뺀, 탐색기 본래 너비."""
         return self.width() - self._sidebar_extra - self._settings_extra
@@ -1371,8 +1378,10 @@ class MemoExplorerWindow(QWidget):
             w.flush_auto_save()
         self._flush_preview_save()
         dialog = HistoryDialog(self, str(memo.get('title', '')), sm.list_history(memo_id),
-                               reveal=lambda index, password: sm.read_history_text(memo_id, index, password))
-        if dialog.exec() and dialog.chosen_index is not None and sm.restore_history(memo_id, dialog.chosen_index):
+                               reveal=lambda index, password: sm.read_history_text(memo_id, index, password),
+                               check=lambda index, password: sm.restore_problem(memo_id, index, password))
+        if (dialog.exec() and dialog.chosen_index is not None
+                and sm.restore_history(memo_id, dialog.chosen_index, dialog.chosen_password)):
             self.ui_manager.reload_pulled_memos([memo_id])
             self.pv.clear()
             self.show_toast("이전 내용으로 되돌렸습니다")
@@ -1545,11 +1554,7 @@ class MemoExplorerWindow(QWidget):
         return memo
 
     def _preview_check_colors(self) -> Dict[str, Any]:
-        settings = self.ui_manager.sync_manager.settings
-        pal, is_dark = app_palette(settings)
-        neo = modern_style.is_neo(settings)
-        return {"ink": pal['text'], "fill": pal['text'] if neo else pal['accent'],
-                "tick": "#1C1C1E" if neo and is_dark else "#FFFFFF", "dark": is_dark}
+        return modern_style.check_colors(modern_style.app_colors(self.ui_manager.sync_manager.settings))
 
     def on_preview_changed(self) -> None:
         if self._is_loading_preview or self.is_trash_mode:
@@ -1563,31 +1568,89 @@ class MemoExplorerWindow(QWidget):
             if not m: return
             if m.get('_locked') or m.get('_unreadable') or self.pv.isReadOnly():
                 return
-            memo_id = m.get('id', '')
             new_content = self.pv.toPlainText()
             if new_content == clean_plain_text(m.get('content', '')):
                 return                      # 글자가 그대로면 수정이 아님
-            m['content'] = new_content
-            m['updated_at'] = datetime.datetime.now().isoformat()
+            if is_html_content(m.get('content', '')):
+                # 미리보기는 글자만 다루므로, 서식이 있는 메모를 여기서 고치면 서식이 사라집니다. 그 사실을 알립니다.
+                self.show_toast("서식이 있는 메모라 글자만 저장했습니다 (이전 내용 보기로 되돌릴 수 있음)", warn=True)
+            self._commit_preview_content(m, new_content, r)
 
-            if self._pending_preview_memo is not None and self._pending_preview_memo is not m:
-                self._flush_preview_save()
-            self._pending_preview_memo = m
-            self._preview_save_timer.start()
+    def _commit_preview_content(self, m: Dict[str, Any], new_content: str, row: int) -> None:
+        """미리보기에서 고친 본문을 메모에 반영합니다. (잠시 뒤 저장, 열려 있는 메모 창과 목록의 수정일시도 맞춤)"""
+        memo_id = m.get('id', '')
+        m['content'] = new_content
+        m['updated_at'] = datetime.datetime.now().isoformat()
 
-            if memo_id in self.ui_manager.memo_windows:
-                w = self.ui_manager.memo_windows[memo_id]
-                w._is_updating_from_explorer = True
+        if self._pending_preview_memo is not None and self._pending_preview_memo is not m:
+            self._flush_preview_save()
+        self._pending_preview_memo = m
+        self._preview_save_timer.start()
+
+        if memo_id in self.ui_manager.memo_windows:
+            w = self.ui_manager.memo_windows[memo_id]
+            w._is_updating_from_explorer = True
+            if is_html_content(new_content):
+                w.text_edit.setHtml(new_content)
+            else:
                 w.text_edit.setPlainText(new_content)
-                w._is_updating_from_explorer = False
-                # 창이 들고 있는 데이터도 맞춰 두어야, 창이 나중에 저장할 때 미리보기 편집을 되돌리지 않습니다.
-                w.memo_data['content'] = new_content
-                w.memo_data['updated_at'] = m['updated_at']
-                # 미리보기에서의 입력도 '마지막 입력'으로 보고 자동 잠금 시간을 다시 셉니다.
-                w.restart_relock_timer()
+            w._is_updating_from_explorer = False
+            # 창이 들고 있는 데이터도 맞춰 두어야, 창이 나중에 저장할 때 미리보기 편집을 되돌리지 않습니다.
+            w.memo_data['content'] = new_content
+            w.memo_data['updated_at'] = m['updated_at']
+            # 미리보기에서의 입력도 '마지막 입력'으로 보고 자동 잠금 시간을 다시 셉니다.
+            w.restart_relock_timer()
 
-            if self.table.item(r, 3):
-                self.table.item(r, 3).setText(datetime.datetime.now().strftime("%y.%m.%d %H:%M"))      # 목록과 같은 표기
+        if self.table.item(row, 3):
+            self.table.item(row, 3).setText(datetime.datetime.now().strftime("%y.%m.%d %H:%M"))      # 목록과 같은 표기
+
+    def _toggle_preview_box_keeping_format(self, block: Any) -> bool:
+        """미리보기에서 체크 상자를 눌렀을 때: 서식이 있는 메모면 서식을 지킨 채 그 상자만 바꿉니다.
+
+        처리했으면 True. 서식이 없는 메모는 False 를 돌려주어 보통대로(글자를 바꾸는 방식으로) 처리되게 합니다.
+        """
+        m = self._preview_memo()
+        row = self.table.currentRow()
+        content = m.get('content', '') if m else ''
+        if not m or not isinstance(content, str) or not is_html_content(content):
+            return False
+        # 미리보기의 몇 번째 체크리스트 줄인지 세고, 원본 문서에서 같은 번째 줄을 찾습니다.
+        order, probe = 0, self.pv.document().begin()
+        while probe.isValid() and probe != block:
+            order += checklist.box_index(probe.text()) >= 0
+            probe = probe.next()
+        document = QTextDocument()
+        document.setHtml(content)
+        target, seen, source = None, 0, document.begin()
+        while source.isValid():
+            if checklist.box_index(source.text()) >= 0:
+                if seen == order:
+                    target = source
+                    break
+                seen += 1
+            source = source.next()
+        if target is None or target.text().strip() != block.text().strip():
+            # 줄이 서로 맞지 않으면(목록 안의 체크 상자 등) 엉뚱한 줄을 바꾸지 않습니다.
+            self.show_toast("이 줄은 메모를 열어서 체크하세요 (서식이 있는 메모)", warn=True)
+            return True
+        index = checklist.box_index(target.text())
+        flipped = checklist.CHECKED if target.text()[index] == checklist.UNCHECKED else checklist.UNCHECKED
+        edit = QTextCursor(target)
+        edit.setPosition(target.position() + index)
+        edit.setPosition(target.position() + index + 1, QTextCursor.MoveMode.KeepAnchor)
+        edit.insertText(flipped)
+        # 미리보기의 글자도 같이 바꾸되, 이것을 '미리보기에서 고침'(글자만 저장)으로 처리하지 않게 합니다.
+        self._is_loading_preview = True
+        try:
+            shown = QTextCursor(block)
+            at = checklist.box_index(block.text())
+            shown.setPosition(block.position() + at)
+            shown.setPosition(block.position() + at + 1, QTextCursor.MoveMode.KeepAnchor)
+            shown.insertText(flipped)
+        finally:
+            self._is_loading_preview = False
+        self._commit_preview_content(m, document.toHtml(), row)
+        return True
 
     def _flush_preview_save(self) -> None:
         self._preview_save_timer.stop()
@@ -1637,6 +1700,11 @@ class MemoExplorerWindow(QWidget):
         self._refresh_btn_labels()
 
     def toggle_trash(self) -> None:
+        self._remember_checked()
+        self._checked_ids.clear()                # 목록과 휴지통은 서로 다른 메모들이므로 체크를 이어 가지 않음
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 0):
+                self.table.item(r, 0).setCheckState(Qt.CheckState.Unchecked)
         self.is_trash_mode = self.t_btn.isChecked()
         self.t_btn.setText("목록으로 돌아가기" if self.is_trash_mode else "휴지통 보기")
         is_dark = self.ui_manager.sync_manager.settings.get('app_theme', 'white') == "dark"
@@ -1751,7 +1819,21 @@ class MemoExplorerWindow(QWidget):
         if not self.is_size_fixed() and not self.isMaximized():
             self._apply_minimum_size()
 
+    def _remember_checked(self) -> None:
+        """지금 목록에 보이는 줄들의 체크 상태를 기억해 둡니다. (목록을 다시 그려도 유지되도록)"""
+        for r in range(self.table.rowCount()):
+            box, item = self.table.item(r, 0), self.table.item(r, 2)
+            memo = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if not box or not memo or not memo.get('id'):
+                continue
+            if box.checkState() == Qt.CheckState.Checked:
+                self._checked_ids.add(memo['id'])
+            else:
+                self._checked_ids.discard(memo['id'])
+
     def update_table(self) -> None:
+        # 동기화가 끝나거나 열어 둔 메모가 저장되어 목록이 다시 그려져도, 체크해 둔 것은 그대로 둡니다.
+        self._remember_checked()
         self.table.setRowCount(0)
         row_h = max(38, int(self.ui_font_pt * 3.2))
         items = self.filtered_memos[(self.current_page - 1) * 10 : self.current_page * 10]
@@ -1762,7 +1844,7 @@ class MemoExplorerWindow(QWidget):
 
             c = QTableWidgetItem("")
             c.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            c.setCheckState(Qt.CheckState.Unchecked)
+            c.setCheckState(Qt.CheckState.Checked if m.get('id') in self._checked_ids else Qt.CheckState.Unchecked)
             self.table.setItem(r, 0, c)
 
             if not self.is_trash_mode:
@@ -1881,7 +1963,13 @@ class MemoExplorerWindow(QWidget):
             self.show_toast(f"🔒 {len(protected_memos)}개 메모가 삭제 방지 상태입니다.")
             checked_memos = [m for m in checked_memos if not m.get('is_protected')]
 
-        if checked_memos and themed_dialog.confirm(self, "일괄 삭제", f"선택한 {len(checked_memos)}개 메모를 휴지통으로 이동할까요?", ok_text="일괄 삭제", danger=True):
+        # 어떤 메모가 지워지는지 제목으로 보여 줍니다. (예전에 체크해 둔 줄이 함께 지워지는 실수를 막기 위해)
+        titles = [f"  • {str(m.get('title', '')) or '(제목 없음)'}" for m in checked_memos[:6]]
+        if len(checked_memos) > 6:
+            titles.append(f"  … 외 {len(checked_memos) - 6}개")
+        question = f"선택한 {len(checked_memos)}개 메모를 휴지통으로 이동할까요?" + chr(10) + chr(10).join(titles)
+        if checked_memos and themed_dialog.confirm(self, "일괄 삭제", question, ok_text="일괄 삭제", danger=True):
+            self._checked_ids.difference_update(m.get('id') for m in checked_memos)
             deleted_ids = []
             for m in checked_memos:
                 memo_id = m.get('id')

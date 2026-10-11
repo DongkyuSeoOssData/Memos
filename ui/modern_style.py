@@ -63,14 +63,19 @@ def _styled(func: Callable[[Any], None]) -> Callable[[Any], None]:
 
 
 # ═══ 공용 도우미 ═════════════════════════════════════════════════════════════
-def _rgba(color: str, alpha: float) -> str:
+def rgba(color: str, alpha: float) -> str:
+    """color 를 alpha 만큼 비치게 한 색. (스타일시트용 글자)"""
     c = QColor(color)
     return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha})"
 
 
-def _tint(is_dark: bool, alpha: float) -> str:
+def tint(is_dark: bool, alpha: float) -> str:
     """배경 위에 얹는 옅은 음영 (다크에서는 밝게, 라이트에서는 어둡게)."""
     return f"rgba(255, 255, 255, {alpha})" if is_dark else f"rgba(0, 0, 0, {alpha})"
+
+
+# 이 파일과 neo_style 안에서 쓰는 예전 이름
+_rgba, _tint = rgba, tint
 
 
 def _muted(is_dark: bool) -> str:
@@ -199,12 +204,10 @@ def dialog_qss(settings: Dict[str, Any]) -> str:
 
 def memo_form_qss(w: Any) -> str:
     """메모 옆에 붙는 패널 안의 입력 화면. 앱 색 테마가 아니라 그 메모의 바탕색과 글자색을 따릅니다."""
-    base, is_dark, bg_color = memo_tone(w)
-    ink = base['text']
-    pal = dict(base, card=bg_color, bg=bg_color, border=_rgba(ink, 0.30))
-    settings = w.memo_window_get_settings()
-    field = "rgba(0,0,0,0.26)" if is_dark else "rgba(255,255,255,0.72)"
-    return _form_qss(pal, is_dark, is_neo(settings), field) + f"""
+    colors = memo_colors(w)
+    base = w._memo_theme_palette()
+    pal = dict(base, card=colors["bg"], bg=colors["bg"], border=rgba(colors["ink"], 0.30))
+    return _form_qss(pal, colors["dark"], colors["neo"], colors["field"]) + f"""
         QPushButton#PanelClose {{ border: none; padding: 0; background: transparent; font-size: 10.5pt; font-weight: 500; }}
         QPushButton#PanelClose:hover {{ background: {DANGER}; color: white; }}
     """
@@ -309,6 +312,51 @@ def memo_tone(w: Any) -> tuple:
     pal = w._memo_theme_palette()
     bg_color = pal['card'] if w.memo_data.get('is_code_memo', False) else w.memo_bg_color()
     return pal, w.is_dark_bg(), bg_color
+
+
+# ── 색 묶음 ──────────────────────────────────────────────────────────────────
+# 화면의 각 부분(체크 상자, 암호 입력 가림막, 메모 옆 패널, 미리보기 등)이 색을 저마다 정하지 않고 여기서 받아 씁니다.
+# 디자인 스타일(Modern 은 강조색, Neo 는 흑백)에 따른 차이도 여기에서만 가릅니다.
+#   ink       글자색
+#   accent    강조색
+#   bg        바탕색
+#   dark      바탕이 어두운지
+#   neo       Neo 디자인인지
+#   strong    누르는 단추·체크된 상자처럼 눈에 띄어야 하는 것의 바탕 (Modern: 강조색, Neo: 글자색)
+#   on_strong 그 위에 얹는 글자·표시의 색
+#   field     글자 칸의 바탕 (바탕 위에 살짝 얹는 색)
+#   edge      창 테두리
+def memo_colors(w: Any) -> Dict[str, Any]:
+    """메모 창 하나의 색 묶음. 앱 색 테마가 아니라 그 메모의 바탕색과 밝기를 따릅니다."""
+    pal, dark, bg_color = memo_tone(w)
+    neo = is_neo(w.memo_window_get_settings())
+    ink = pal['text']
+    return {
+        "ink": ink, "accent": pal['accent'], "bg": bg_color, "dark": dark, "neo": neo,
+        "strong": ink if neo else pal['accent'],
+        "on_strong": ("#1C1C1E" if dark else "#FFFFFF") if neo else "#FFFFFF",
+        "field": "rgba(0,0,0,0.28)" if dark else "rgba(255,255,255,0.78)",
+        "edge": rgba(ink, 0.22) if neo else tint(dark, 0.16 if dark else 0.10),
+    }
+
+
+def app_colors(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """탐색기·환경설정처럼 앱 색 테마를 따르는 화면의 색 묶음."""
+    pal, dark = app_palette(settings)
+    neo = is_neo(settings)
+    return {
+        "ink": pal['text'], "accent": pal['accent'], "bg": pal['bg'], "dark": dark, "neo": neo,
+        "strong": pal['text'] if neo else pal['accent'],
+        "on_strong": pal['bg'] if neo else "white",
+        "field": pal['input'] if dark else pal['bg'],
+        "edge": pal['text'] if neo else pal['border'],
+    }
+
+
+def check_colors(colors: Dict[str, Any]) -> Dict[str, Any]:
+    """체크 상자에 쓸 색. (CheckMarks 가 받는 형식: 테두리·글자색, 채움색, 체크 표시색, 바탕이 어두운지)"""
+    tick = "#1C1C1E" if colors["neo"] and colors["dark"] else "#FFFFFF"
+    return {"ink": colors["ink"], "fill": colors["strong"], "tick": tick, "dark": colors["dark"]}
 
 
 def explorer_rows(ex: Any) -> Iterator[tuple]:

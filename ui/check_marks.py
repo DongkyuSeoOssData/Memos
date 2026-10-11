@@ -23,6 +23,12 @@ class CheckMarks:
         self.editor = editor
         self.colors = colors
         self.on_edit = on_edit
+        # 체크 상자를 누르기 직전에 부르는 함수. True 를 돌려주면 여기서는 글자를 바꾸지 않습니다.
+        # (탐색기 미리보기가 서식이 있는 메모를 서식을 지키며 고칠 때 씀)
+        self.intercept: Optional[Callable[[Any], bool]] = None
+        # 본문이 바뀔 때 한 번만 훑어서 기억해 둡니다. (그릴 때와 진행 표시를 낼 때 다시 훑지 않도록)
+        self.has_boxes = False
+        self.done, self.total = 0, 0
         editor.textChanged.connect(self.refresh)
 
     # ── 위치 ─────────────────────────────────────────────────────────────────
@@ -56,7 +62,10 @@ class CheckMarks:
         """체크 상자 글자는 안 보이게 하고(그 자리에 paint 가 네모를 그림), 끝낸 줄의 글자는 흐리게 합니다."""
         selections = []
         document = self.editor.document()
-        if checklist.has_boxes(document.toPlainText()):
+        # 체크 상자 글자가 하나도 없는 메모(대부분)는 줄을 훑지 않고 끝냅니다.
+        self.has_boxes = not (document.find(checklist.UNCHECKED).isNull() and document.find(checklist.CHECKED).isNull())
+        self.done, self.total = 0, 0
+        if self.has_boxes:
             hidden = QTextCharFormat()
             hidden.setForeground(QColor(0, 0, 0, 0))
             faded = QTextCharFormat()
@@ -66,6 +75,8 @@ class CheckMarks:
                 text = block.text()
                 index = checklist.box_index(text)
                 if index >= 0:
+                    self.total += 1
+                    self.done += text[index] == checklist.CHECKED
                     spans = [(index, index + 1, hidden)]
                     if text[index] == checklist.CHECKED and len(text) > index + 1:
                         spans.append((index + 1, len(text), faded))
@@ -82,7 +93,7 @@ class CheckMarks:
     def paint(self) -> None:
         """보이는 줄의 체크 상자를 그립니다. 안 한 일은 빈 네모, 끝낸 일은 채운 네모에 체크 표시와 취소선."""
         editor = self.editor
-        if not checklist.has_boxes(editor.document().toPlainText()):
+        if not self.has_boxes:
             return
         colors = self.colors()
         ink, fill, tick = QColor(colors["ink"]), QColor(colors["fill"]), QColor(colors["tick"])
@@ -141,6 +152,12 @@ class CheckMarks:
             block = block.next()
         painter.end()
 
+    def progress_label(self) -> str:
+        """진행 표시. 다 끝냈으면 '☑ 5/5', 남은 일이 있으면 '☐ 3/5'. 체크리스트가 없으면 ''."""
+        if not self.total:
+            return ""
+        return f"{checklist.CHECKED if self.done == self.total else checklist.UNCHECKED} {self.done}/{self.total}"
+
     # ── 조작 ─────────────────────────────────────────────────────────────────
     def toggle_at(self, pos: Any) -> bool:
         """pos(편집기 안의 좌표)가 체크 상자 위면 체크 상태를 뒤집고 True 를 돌려줍니다."""
@@ -151,6 +168,8 @@ class CheckMarks:
         index = checklist.box_index(block.text())
         if index < 0 or not self.box_rect(block, index).adjusted(-4, -4, 5, 4).contains(pos):
             return False
+        if self.intercept is not None and self.intercept(block):
+            return True
         edit = QTextCursor(block)
         edit.setPosition(block.position() + index)
         edit.setPosition(block.position() + index + 1, QTextCursor.MoveMode.KeepAnchor)

@@ -1,5 +1,6 @@
 """3.2 기능 테스트: 알림(반복·크론식), 변경 기록, 체크리스트, 빠른 검색."""
 import datetime as dt
+import json
 import pathlib
 import unittest
 from unittest import mock
@@ -1381,45 +1382,6 @@ class MultiDeleteAndHistoryPasswordTest(test_ui.UiTestCase):
         self.assertEqual(len(self.ids()), 3)
         self.assertTrue(self.warnings == [] and ex.toast.text().startswith("⚠"))
 
-    def test_locked_history_can_be_read_with_the_password(self) -> None:
-        from ui.dialogs import HistoryView
-        w = self.open_window("memo-0000")
-        self.answers[:] = ["pw12", "pw12"]
-        w.set_memo_password()
-        with mock.patch.object(self.sm, "HISTORY_MIN_GAP_SEC", 0):
-            w.text_edit.setPlainText("secret second")
-            w.text_edit.document().setModified(True)
-            w.execute_auto_save()
-        entries = self.sm.list_history("memo-0000")
-        locked = next(e for e in entries if e["locked"])
-        self.assertEqual(locked["text"], "")                         # 목록에는 내용이 실리지 않음
-        self.assertIsNone(self.sm.read_history_text("memo-0000", locked["index"], "wrong"))
-        self.assertEqual(self.sm.read_history_text("memo-0000", locked["index"], "pw12"), "body 0 #tag0")
-        plain = next(e for e in entries if not e["locked"])
-        self.assertEqual(self.sm.read_history_text("memo-0000", plain["index"], ""), "body 0 #tag0")
-
-        view = HistoryView("t", entries, reveal=lambda index, pwd: self.sm.read_history_text("memo-0000", index, pwd))
-        self.addCleanup(view.close)
-        view.show()
-        view.list.setCurrentRow(entries.index(locked))
-        self.assertTrue(view.unlock_row.isVisible())
-        self.assertNotIn("body 0", view.preview.toPlainText())
-        view.password_edit.setText("wrong")
-        view.unlock_button.click()
-        self.assertTrue(view.unlock_error.isVisible())
-        self.assertNotIn("body 0", view.preview.toPlainText())
-        view.password_edit.setText("pw12")
-        QTest.keyClick(view.password_edit, Qt.Key.Key_Return)
-        self.assertEqual(view.preview.toPlainText(), "body 0 #tag0")
-        self.assertFalse(view.unlock_row.isVisible())
-        self.assertEqual(view.password_edit.text(), "")
-        # 일반 기록에는 암호 칸이 없음
-        view.list.setCurrentRow(entries.index(plain))
-        self.assertFalse(view.unlock_row.isVisible())
-        # 한 번 맞은 암호로 다른 잠긴 기록도 바로 열림
-        view.list.setCurrentRow(entries.index(locked))
-        self.assertEqual(view.preview.toPlainText(), "body 0 #tag0")
-
     def test_settings_button_sits_left_of_the_title_and_toggles(self) -> None:
         ex = self.explorer()
         test_ui._app.processEvents()
@@ -1697,6 +1659,438 @@ class UnsavedSettingsTest(test_ui.UiTestCase):
         self.assertTrue(self.ex.settings_open())
 
 
+class LockedHistoryTest(test_ui.UiTestCase):
+    """암호 메모의 내용은 변경 기록에도 평문으로 남지 않고, 되돌려도 잠금 상태가 바뀌지 않습니다."""
+
+    SECRET = "body 0 #tag0"
+
+    def history_file(self, memo_id: str = "memo-0000") -> pathlib.Path:
+        return self.memo_dir / "history_bin" / f"{memo_id}.json"
+
+    def edit(self, w, text: str) -> None:
+        with mock.patch.object(self.sm, "HISTORY_MIN_GAP_SEC", 0):
+            w.text_edit.setPlainText(text)
+            w.text_edit.document().setModified(True)
+            w.execute_auto_save()
+
+    def lock(self, memo_id: str = "memo-0000", password: str = "pw12"):
+        w = self.open_window(memo_id)
+        self.answers[:] = [password, password]
+        w.set_memo_password()
+        return w
+
+    def test_setting_a_password_leaves_no_plaintext_in_the_history(self) -> None:
+        w = self.open_window("memo-0000")
+        self.edit(w, "second version")                               # 암호를 걸기 전에 쌓인 평문 기록
+        self.assertIn(self.SECRET, self.history_file().read_text(encoding="utf-8"))
+        self.answers[:] = ["pw12", "pw12"]
+        w.set_memo_password()
+        raw = self.history_file().read_text(encoding="utf-8")
+        self.assertNotIn(self.SECRET, raw)                           # 예전 기록도
+        self.assertNotIn("second version", raw)                      # 암호를 걸기 직전의 내용도 평문으로 남지 않음
+        entries = self.sm.list_history("memo-0000")
+        self.assertTrue(entries and all(e["locked"] and e["text"] == "" for e in entries))
+        self.edit(w, "third version")                                # 잠긴 뒤에 쌓이는 기록도 암호문
+        self.assertNotIn("second version", self.history_file().read_text(encoding="utf-8"))
+
+    def test_history_opens_with_the_memo_key_or_the_password(self) -> None:
+        w = self.lock()
+        self.edit(w, "second version")
+        index = self.sm.list_history("memo-0000")[-1]["index"]
+        self.assertEqual(self.sm.read_history_text("memo-0000", index), self.SECRET)          # 메모가 열려 있으면 바로 보임
+        w.lock_now()
+        self.assertIsNone(self.sm.read_history_text("memo-0000", index))                      # 잠그면 암호가 필요
+        self.assertIsNone(self.sm.read_history_text("memo-0000", index, "wrong"))
+        self.assertEqual(self.sm.read_history_text("memo-0000", index, "pw12"), self.SECRET)
+
+    def test_changing_the_password_reseals_the_history(self) -> None:
+        w = self.lock()
+        self.edit(w, "second version")
+        self.answers[:] = ["new-pw", "new-pw"]
+        w.set_memo_password()                                        # 암호 변경
+        w.lock_now()
+        for entry in self.sm.list_history("memo-0000"):
+            self.assertIsNone(self.sm.read_history_text("memo-0000", entry["index"], "pw12"), entry)       # 예전 암호로는 안 열림
+            self.assertIsNotNone(self.sm.read_history_text("memo-0000", entry["index"], "new-pw"), entry)  # 새 암호 하나로 다 열림
+
+    def test_removing_the_password_opens_the_history_again(self) -> None:
+        w = self.lock()
+        self.edit(w, "second version")
+        w.remove_memo_password()
+        entries = self.sm.list_history("memo-0000")
+        self.assertTrue(entries and all(not e["locked"] for e in entries))
+        self.assertIn(self.SECRET, [e["text"] for e in entries])
+
+    def test_plaintext_left_by_older_versions_is_sealed_on_unlock(self) -> None:
+        w = self.lock()
+        w.lock_now()
+        self.history_file().parent.mkdir(parents=True, exist_ok=True)
+        self.history_file().write_text(json.dumps([{                 # 예전 버전이 남긴 평문 기록
+            "saved_at": "2026-01-01T00:00:00", "reason": "", "title": "t0", "content": "left in the clear",
+            "updated_at": "", "is_locked": False}]), encoding="utf-8")
+        w.lock_overlay.unlock_panel.inputs[0].setText("pw12")
+        w.lock_overlay.unlock_panel.submit()                         # 잠금을 푸는 순간
+        self.assertNotIn("left in the clear", self.history_file().read_text(encoding="utf-8"))
+        self.assertEqual(self.sm.read_history_text("memo-0000", 0), "left in the clear")
+
+    def test_restoring_keeps_the_memo_locked_with_its_current_password(self) -> None:
+        w = self.open_window("memo-0000")
+        self.edit(w, "second version")                               # 기록 0: 평문이었던 처음 내용
+        self.answers[:] = ["pw12", "pw12"]
+        w.set_memo_password()
+        self.assertEqual(self.sm.restore_problem("memo-0000", 0), "")
+        self.assertTrue(self.sm.restore_history("memo-0000", 0))
+        self.ui.reload_pulled_memos(["memo-0000"])
+        saved = self.disk("memo-0000")
+        self.assertTrue(saved["is_locked"] and isinstance(saved["content"], dict))       # 여전히 암호 메모
+        self.assertNotIn(self.SECRET, self.raw("memo-0000"))
+        w.lock_now()
+        self.answers[:] = ["pw12"]
+        w.prompt_unlock()                                            # 지금 암호 그대로 열림
+        self.assertEqual(w.text_edit.toPlainText(), self.SECRET)
+
+    def test_locked_memo_must_be_unlocked_before_restoring(self) -> None:
+        w = self.lock()
+        self.edit(w, "second version")
+        w.lock_now()
+        before = self.raw("memo-0000")
+        self.assertIn("잠금", self.sm.restore_problem("memo-0000", 0, "pw12"))
+        self.assertFalse(self.sm.restore_history("memo-0000", 0, "pw12"))
+        self.assertEqual(self.raw("memo-0000"), before)
+
+    def test_history_under_another_password_needs_that_password(self) -> None:
+        w = self.lock()
+        crypto = self.sm.crypto
+        salt = crypto.new_salt()
+        foreign = crypto.encrypt_locked("old secret", crypto.derive_key("other-pw", salt), salt)
+        self.history_file().parent.mkdir(parents=True, exist_ok=True)
+        self.history_file().write_text(json.dumps([{
+            "saved_at": "2026-01-01T00:00:00", "reason": "", "title": "old", "content": foreign,
+            "updated_at": "", "is_locked": True}]), encoding="utf-8")
+        self.assertIn("다른 암호", self.sm.restore_problem("memo-0000", 0))
+        self.assertIn("일치하지", self.sm.restore_problem("memo-0000", 0, "nope"))
+        self.assertFalse(self.sm.restore_history("memo-0000", 0, "nope"))
+        self.assertTrue(self.sm.restore_history("memo-0000", 0, "other-pw"))
+        self.ui.reload_pulled_memos(["memo-0000"])
+        w.lock_now()
+        self.answers[:] = ["pw12"]                                   # 되돌린 뒤에도 메모의 암호는 지금 것
+        w.prompt_unlock()
+        self.assertEqual((w.text_edit.toPlainText(), w.memo_data["title"]), ("old secret", "old"))
+
+    def test_plain_memo_stays_plain_when_restoring_a_locked_entry(self) -> None:
+        crypto = self.sm.crypto
+        salt = crypto.new_salt()
+        sealed = crypto.encrypt_locked("was secret once", crypto.derive_key("other-pw", salt), salt)
+        self.history_file("memo-0001").parent.mkdir(parents=True, exist_ok=True)
+        self.history_file("memo-0001").write_text(json.dumps([{
+            "saved_at": "2026-01-01T00:00:00", "reason": "", "title": "t1", "content": sealed,
+            "updated_at": "", "is_locked": True}]), encoding="utf-8")
+        self.assertFalse(self.sm.restore_history("memo-0001", 0))
+        self.assertTrue(self.sm.restore_history("memo-0001", 0, "other-pw"))
+        saved = self.disk("memo-0001")
+        self.assertEqual((saved["content"], saved["is_locked"]), ("was secret once", False))
+
+    def test_history_screen_shows_and_checks_before_restoring(self) -> None:
+        from ui.dialogs import HistoryView
+        w = self.lock()
+        self.edit(w, "second version")
+        w.lock_now()
+        entries = self.sm.list_history("memo-0000")
+        view = HistoryView("t", entries,
+                           reveal=lambda index, pwd: self.sm.read_history_text("memo-0000", index, pwd),
+                           check=lambda index, pwd: self.sm.restore_problem("memo-0000", index, pwd))
+        self.addCleanup(view.close)
+        view.show()
+        got = []
+        view.submitted.connect(got.append)
+        view.list.setCurrentRow(len(entries) - 1)
+        self.assertTrue(view.unlock_row.isVisible())                 # 잠긴 메모: 암호를 넣어야 내용이 보임
+        self.assertNotIn(self.SECRET, view.preview.toPlainText())
+        view.password_edit.setText("wrong")
+        view.unlock_button.click()
+        self.assertTrue(view.unlock_error.isVisible())
+        view.password_edit.setText("pw12")
+        QTest.keyClick(view.password_edit, Qt.Key.Key_Return)
+        self.assertEqual(view.preview.toPlainText(), self.SECRET)
+        self.assertFalse(view.unlock_row.isVisible())
+        view.restore_button.click()                                  # 메모가 잠겨 있으면 되돌리지 않고 이유를 알림
+        self.assertEqual(got, [])
+        self.assertIn("잠금", view.unlock_error.text())
+
+        self.answers[:] = ["pw12"]
+        w.prompt_unlock()
+        view.restore_button.click()                                  # 잠금을 푼 뒤에는 되돌려짐
+        self.assertEqual(got, [entries[-1]["index"]])
+
+    def test_open_memo_shows_its_locked_history_without_asking(self) -> None:
+        from ui.dialogs import HistoryView
+        w = self.lock()
+        self.edit(w, "second version")
+        entries = self.sm.list_history("memo-0000")
+        view = HistoryView("t", entries, reveal=lambda index, pwd: self.sm.read_history_text("memo-0000", index, pwd))
+        self.addCleanup(view.close)
+        view.show()
+        view.list.setCurrentRow(len(entries) - 1)
+        self.assertFalse(view.unlock_row.isVisible())
+        self.assertEqual(view.preview.toPlainText(), self.SECRET)
+
+
+class ReviewFixesTest(test_ui.UiTestCase):
+    """코드 리뷰에서 나온 문제들."""
+
+    def rich_memo(self) -> str:
+        """굵은 제목 한 줄과 체크리스트 두 줄로 된, 서식이 있는 메모. (편집기가 실제로 만드는 HTML 그대로)"""
+        from PyQt6.QtGui import QFont, QTextCharFormat, QTextDocument
+        document = QTextDocument()
+        cursor = QTextCursor(document)
+        bold = QTextCharFormat()
+        bold.setFontWeight(QFont.Weight.Bold)
+        cursor.insertText("bold title", bold)
+        for line in ("☐ first", "☐ second"):
+            cursor.insertBlock()
+            cursor.insertText(line, QTextCharFormat())
+        self.sm.save_memo_locally({"id": "memo-0005", "title": "rich", "content": document.toHtml(),
+                                   "updated_at": "2026-04-01T00:00:00", "is_visible": False})
+        return "memo-0005"
+
+    def select(self, ex, memo_id: str) -> int:
+        ex.refresh()
+        row = self.row_of(ex, memo_id)
+        ex.table.setCurrentCell(row, 2)
+        ex.on_cell_click(row, 2)
+        return row
+
+    # ── 3. 미리보기에서 체크해도 서식이 남음 ──
+    def test_checking_a_box_in_the_preview_keeps_formatting(self) -> None:
+        memo_id = self.rich_memo()
+        ex = self.explorer()
+        self.select(ex, memo_id)
+        self.assertEqual(ex.pv.toPlainText().splitlines()[-2:], ["☐ first", "☐ second"])
+        block = ex.pv.document().findBlockByNumber(ex.pv.document().blockCount() - 1)
+        box = ex.pv.check_marks.box_rect(block, 0)
+        QTest.mouseClick(ex.pv.viewport(), Qt.MouseButton.LeftButton, pos=box.center())
+        ex._flush_preview_save()
+        saved = self.disk(memo_id)["content"]
+        self.assertRegex(saved, r"font-weight:\s*(700|600|bold)")                      # 굵게 서식이 그대로
+        self.assertIn("☑ second", saved)
+        self.assertIn("☐ first", saved)                              # 누른 줄만 바뀜
+        self.assertTrue(ex.pv.toPlainText().endswith("☑ second"))
+        self.assertEqual(self.warnings, [])
+
+    def test_typing_in_the_preview_of_a_formatted_memo_warns(self) -> None:
+        memo_id = self.rich_memo()
+        ex = self.explorer()
+        self.select(ex, memo_id)
+        ex.pv.setPlainText(ex.pv.toPlainText() + " more")
+        self.assertTrue(ex.toast.text().startswith("⚠") and "서식" in ex.toast.text())
+        ex._flush_preview_save()
+        self.assertNotIn("<html>", self.disk(memo_id)["content"])     # 글자만 저장된다는 점은 예전과 같음
+
+    def test_plain_memo_preview_still_toggles_normally(self) -> None:
+        w = self.open_window("memo-0001")
+        w.text_edit.setPlainText("☐ a")
+        w.text_edit.document().setModified(True)
+        w.flush_auto_save()
+        w.execute_auto_save()
+        ex = self.explorer()
+        self.select(ex, "memo-0001")
+        box = ex.pv.check_marks.box_rect(ex.pv.document().firstBlock(), 0)
+        QTest.mouseClick(ex.pv.viewport(), Qt.MouseButton.LeftButton, pos=box.center())
+        ex._flush_preview_save()
+        self.assertEqual(self.disk("memo-0001")["content"], "☑ a")
+
+    # ── 4. 다른 모니터에 기억해 둔 자리 ──
+    def test_unrolling_goes_back_to_the_other_monitor(self) -> None:
+        from PyQt6.QtCore import QRect
+        left, right = QRect(0, 0, 1600, 900), QRect(1600, 0, 1600, 900)
+
+        def screen_at(point):
+            area = left if point.x() < 1600 else right
+            return mock.Mock(availableGeometry=lambda: QRect(area))
+
+        w = self.open_window("memo-0000")
+        with mock.patch("ui.memo_window.QApplication.screenAt", side_effect=screen_at):
+            w.setGeometry(2000, 200, 400, 300)                       # 펼친 자리는 오른쪽 모니터
+            w.toggle_rollup()
+            w.move(100, 700)                                         # 접은 메모는 왼쪽 모니터로 옮겨 둠
+            w.toggle_rollup()
+            self.assertEqual((w.x(), w.y(), w.width(), w.height()), (2000, 200, 400, 300))
+            w.toggle_rollup()
+            self.assertEqual((w.x(), w.y()), (100, 700))
+
+    # ── 5. 체크해 둔 것이 유지되고, 지울 때 제목이 보임 ──
+    def test_checks_survive_a_refresh_and_reset_in_the_trash(self) -> None:
+        ex = self.explorer()
+        ex.table.clearSelection()
+        ex.table.item(self.row_of(ex, "memo-0000"), 0).setCheckState(Qt.CheckState.Checked)
+        ex.refresh()                                                 # 동기화나 자동 저장으로 목록이 다시 그려져도
+        self.assertEqual([m["id"] for m in ex.picked_memos()], ["memo-0000"])
+        ex.t_btn.setChecked(True)
+        ex.toggle_trash()
+        ex.t_btn.setChecked(False)
+        ex.toggle_trash()
+        ex.table.clearSelection()
+        self.assertEqual(ex.picked_memos(), [])                      # 휴지통을 다녀오면 체크를 이어 가지 않음
+
+    def test_delete_confirmation_lists_the_titles(self) -> None:
+        ex = self.explorer()
+        ex.table.clearSelection()
+        for memo_id in ("memo-0000", "memo-0002"):
+            ex.table.item(self.row_of(ex, memo_id), 0).setCheckState(Qt.CheckState.Checked)
+        asked = []
+        with mock.patch.object(test_ui.themed_dialog, "confirm", lambda parent, title, text, **k: asked.append(text) or False):
+            ex.del_checked()
+        self.assertEqual(len(asked), 1)
+        self.assertIn("• t0", asked[0])
+        self.assertIn("• t2", asked[0])
+        self.assertEqual(len(self.sm.load_local_memos()), 3)         # 취소했으므로 그대로
+
+    def test_delete_key_does_nothing_in_the_trash(self) -> None:
+        ex = self.explorer()
+        self.sm.delete_memo_locally("memo-0002")
+        ex.t_btn.setChecked(True)
+        ex.toggle_trash()
+        ex.table.selectRow(0)
+        with mock.patch.object(ex, "del_checked") as deleting:
+            ex._delete_key.activated.emit()
+            deleting.assert_not_called()
+
+    # ── 6. 다른 기기에서 받은 설정이 고치던 값을 덮지 않음 ──
+    def test_incoming_settings_do_not_overwrite_unsaved_edits(self) -> None:
+        self.explorer()
+        self.ui.open_settings()
+        panel = self.ui.settings_window
+        before = panel.spin_relock_min.value()
+        panel.spin_relock_min.setValue(before + 7)
+        self.sm.settings["locked_memo_relock_min"] = before + 1      # 다른 기기에서 받은 값
+        self.ui.apply_settings_to_windows(reload_settings_window=True)
+        self.assertEqual(panel.spin_relock_min.value(), before + 7)  # 고치던 값이 그대로
+        self.assertTrue(panel.is_dirty())
+        self.assertTrue(panel.toast.isVisible() and panel.toast.toolTip().startswith("⚠"))
+
+        panel.spin_relock_min.setValue(before)
+        panel.mark_clean()
+        self.sm.settings["locked_memo_relock_min"] = before + 2
+        self.ui.apply_settings_to_windows(reload_settings_window=True)
+        self.assertEqual(panel.spin_relock_min.value(), before + 2)  # 고치던 것이 없으면 새 값으로 채움
+
+    # ── 7. 체크 상자가 없는 메모는 줄을 훑지 않음 ──
+    def test_progress_is_tracked_without_rescanning(self) -> None:
+        w = self.open_window("memo-0000")
+        marks = w.text_edit.check_marks
+        w.text_edit.setPlainText("no boxes here")
+        self.assertEqual((marks.has_boxes, marks.total, marks.progress_label()), (False, 0, ""))
+        w.text_edit.setPlainText("☑ a\n☐ b\nmid ☐ line")
+        self.assertEqual((marks.has_boxes, marks.done, marks.total, marks.progress_label()), (True, 1, 2, "☐ 1/2"))
+        with mock.patch.object(type(w.text_edit), "toPlainText", side_effect=AssertionError("본문 전체를 다시 읽으면 안 됨")):
+            w.refresh_progress()
+            w.text_edit.viewport().grab()
+        self.assertEqual(w.lbl_progress.text(), "☐ 1/2")
+
+    # ── 8. 동기화를 쓰는 PC 에서는 안내 메모를 자동으로 만들지 않음 ──
+    def test_guides_are_not_auto_made_on_a_pc_joining_sync(self) -> None:
+        for path in self.memo_dir.glob("*.json"):
+            path.unlink()
+        self.sm.settings.update({"use_sync": True, "drive_folder_id": "https://example.invalid/exec"})
+        with mock.patch.object(self.sm, "check_remote_if_stale"), mock.patch.object(self.sm, "_start_sync", create=True):
+            self.ui.show_all_memos()
+        self.assertFalse(any(m["id"].startswith("guide-") for m in self.sm.load_local_memos()))
+
+    # ── 9. 왼쪽에 붙은 사이드바가 탐색기 위치로 저장되지 않음 ──
+    def test_saved_explorer_position_ignores_the_left_sidebar(self) -> None:
+        self.sm.save_settings({"folder_ui": "sidebar", "folder_sidebar_open": True})
+        ex = self.explorer()
+        ex.move(900, 200)
+        ex.refresh()
+        test_ui._app.processEvents()
+        self.assertGreater(ex._sidebar_extra, 0)
+        self.assertEqual(ex.content_x(), ex.x() + ex._sidebar_extra)
+        self.ui.open_settings()
+        self.ui.settings_window.save()
+        self.assertEqual(self.sm.settings["explorer_geom"][0], ex.content_x())
+
+    # ── 그 밖에 ──
+    def test_side_panel_is_removed_with_the_memo(self) -> None:
+        w = self.open_window("memo-0000")
+        panel = w.side_panel()
+        w.close()
+        test_ui._app.processEvents()
+        self.assertIsNone(w._side_panel)
+        with self.assertRaises(RuntimeError):                        # 패널 창도 없어짐
+            panel.isVisible()
+
+    def test_quick_search_hides_unlocked_password_memo_text(self) -> None:
+        w = self.open_window("memo-0000")
+        self.answers[:] = ["pw12", "pw12"]
+        w.set_memo_password()                                        # 암호 메모지만 지금은 열려 있음
+        qs = QuickSearch(self.ui)
+        self.addCleanup(qs.close)
+        qs.popup()
+        self.assertNotIn("memo-0000", [m["id"] for m in qs.search("tag0")])      # 내용으로는 찾지 않음
+        self.assertIn("memo-0000", [m["id"] for m in qs.search("t0")])           # 제목으로는 찾음
+        qs.input.setText("t0")
+        text = " ".join(qs.results.item(i).text() for i in range(qs.results.count()))
+        self.assertNotIn("body 0", text)
+
+
+class ColorSourceTest(test_ui.UiTestCase):
+    """색은 modern_style 한곳에서 정하고, 화면의 각 부분은 거기서 받아 씁니다."""
+
+    def colors_of(self, memo_id: str, ui_style: str, bg: str) -> dict:
+        from ui import modern_style
+        self.sm.settings["ui_style"] = ui_style
+        w = self.open_window(memo_id)
+        w.memo_data["bg_color"] = bg
+        return modern_style.memo_colors(w)
+
+    def test_memo_colors_follow_the_memo_and_the_design_style(self) -> None:
+        from ui import modern_style
+        light = self.colors_of("memo-0000", "modern", "#FEF9C3")
+        self.assertEqual((light["bg"], light["dark"], light["neo"]), ("#FEF9C3", False, False))
+        self.assertEqual((light["strong"], light["on_strong"]), (light["accent"], "#FFFFFF"))      # Modern: 강조색
+        neo_light = self.colors_of("memo-0000", "neo", "#FEF9C3")
+        self.assertEqual((neo_light["strong"], neo_light["on_strong"]), (neo_light["ink"], "#FFFFFF"))   # Neo: 흑백
+        neo_dark = self.colors_of("memo-0000", "neo", "#2E3440")
+        self.assertEqual((neo_dark["dark"], neo_dark["strong"], neo_dark["on_strong"]), (True, neo_dark["ink"], "#1C1C1E"))
+        self.assertNotEqual(neo_dark["field"], neo_light["field"])
+        self.assertEqual(modern_style.check_colors(neo_dark),
+                         {"ink": neo_dark["ink"], "fill": neo_dark["ink"], "tick": "#1C1C1E", "dark": True})
+        self.assertEqual(modern_style.check_colors(light)["fill"], light["accent"])
+
+    def test_app_colors_follow_the_app_theme(self) -> None:
+        from ui import modern_style
+        modern = modern_style.app_colors({"ui_style": "modern", "app_theme": "white"})
+        neo = modern_style.app_colors({"ui_style": "neo", "app_theme": "dark"})
+        self.assertEqual((modern["neo"], modern["dark"], modern["strong"]), (False, False, modern["accent"]))
+        self.assertEqual((neo["neo"], neo["dark"], neo["strong"], neo["on_strong"]), (True, True, neo["ink"], neo["bg"]))
+
+    def test_every_part_takes_its_colors_from_the_one_source(self) -> None:
+        from ui import modern_style
+        for style in ("modern", "neo"):
+            self.sm.settings["ui_style"] = style
+            w = self.open_window("memo-0000")
+            colors = modern_style.memo_colors(w)
+            self.assertEqual(w.text_edit._check_colors(), modern_style.check_colors(colors))       # 본문의 체크 상자
+            w.lock_overlay.apply_style()
+            self.assertIn(colors["strong"], w.lock_overlay.styleSheet())                           # 암호 입력 가림막
+            panel = w.side_panel()
+            panel.apply_style()
+            self.assertIn(colors["bg"], panel.styleSheet())                                        # 메모 옆 패널
+            self.assertIn(colors["edge"], panel.styleSheet())
+            ex = self.explorer()
+            self.assertEqual(ex._preview_check_colors(),                                           # 탐색기 미리보기
+                             modern_style.check_colors(modern_style.app_colors(self.sm.settings)))
+
+    def test_no_screen_decides_colors_on_its_own(self) -> None:
+        folder = pathlib.Path(test_ui.uim.__file__).parent
+        for path in folder.glob("*.py"):
+            if path.name in ("modern_style.py", "neo_style.py", "themes.py"):
+                continue
+            source = path.read_text(encoding="utf-8")
+            self.assertNotRegex(source, r"modern_style\._[a-z]", path.name)       # 스타일 모듈의 내부 함수를 직접 쓰지 않음
+            self.assertNotIn("is_neo(", source, path.name)                         # 디자인 스타일을 직접 가르지 않음
+
+
 class QuickSearchTest(test_ui.UiTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -1757,16 +2151,19 @@ class ReminderUiTest(test_ui.UiTestCase):
     def test_setting_a_reminder_schedules_the_timer_without_touching_modified_time(self) -> None:
         self.assertFalse(self.ui._reminder_timer.isActive())
         self.sm.set_reminder(self.memo("memo-0000"), reminders.make(D.now() + dt.timedelta(minutes=30)))
+        test_ui._app.processEvents()
         self.assertTrue(self.ui._reminder_timer.isActive())
         self.assertLessEqual(self.ui._reminder_timer.interval(), 30 * 60 * 1000 + 300)
         self.assertEqual(self.disk("memo-0000")["updated_at"], "2026-01-01T00:00:00")
         self.assertIn("meta_updated_at", self.disk("memo-0000"))
         self.sm.set_reminder(self.memo("memo-0000"), None)
+        test_ui._app.processEvents()
         self.assertFalse(self.ui._reminder_timer.isActive())
         self.assertNotIn("reminder", self.disk("memo-0000"))
 
     def test_far_reminders_are_rechecked_within_an_hour(self) -> None:
         self.sm.set_reminder(self.memo("memo-0000"), reminders.make(D.now() + dt.timedelta(days=30)))
+        test_ui._app.processEvents()
         self.assertEqual(self.ui._reminder_timer.interval(), self.ui.MAX_REMINDER_WAIT_MS)
 
     def test_due_one_shot_fires_once_and_is_cleared(self) -> None:

@@ -1093,7 +1093,7 @@ class SettingsWindow(QWidget):
         explorer = self._explorer_window()
         geom = self.sm.settings.get("explorer_geom")
         if explorer:
-            x, y = explorer.x(), explorer.y()
+            x, y = explorer.content_x(), explorer.y()     # 왼쪽에 붙은 사이드바·패널은 탐색기 위치에 넣지 않음
         elif geom and len(geom) == 4:
             x, y = int(geom[0]), int(geom[1])
         else:
