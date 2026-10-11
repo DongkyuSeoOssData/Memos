@@ -42,7 +42,6 @@ class OfflineSyncTest(SyncManagerTestCase):
         self.drive.online = False
         self.sm._start_sync()
         worker = self.sm._current_worker
-        worker.finished.connect(self.sm._on_sync_cycle_done)
         worker.run_sync()
         self.assertEqual(self.sm._dirty_ids, {"memo-aaaa"})          # 올리지 못한 메모는 그대로 남음
         self.sm._push_timer.stop()

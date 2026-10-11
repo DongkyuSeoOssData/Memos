@@ -280,6 +280,14 @@ class SettingsWindow(QWidget):
         ]:
             g4_l.addWidget(cb_item)
 
+        self.cb_error_report = QCheckBox("오류가 나면 보고 메일 보내기")
+        g4_l.addWidget(self.cb_error_report)
+        report_hint = QLabel("동기화 스크립트가 메일을 보냅니다. 받는 주소는 스크립트 속성 ERROR_MAIL_TO 이고, 없으면 스크립트 주인의 "
+                             "구글 계정입니다. 오류의 종류와 발생 위치만 보내며 메모의 제목·본문은 보내지 않습니다.")
+        report_hint.setProperty("role", "hint")
+        report_hint.setWordWrap(True)
+        g4_l.addWidget(report_hint)
+
         g4_l.addWidget(QLabel("자동 저장 대기 시간 (마지막 입력 후):"))
         self.auto_save_interval_box = QComboBox()
         for label, sec in self.AUTO_SAVE_INTERVALS:
@@ -1022,6 +1030,7 @@ class SettingsWindow(QWidget):
         ("explorer_fixed_size", "cb_explorer_fixed", False),
         ("folder_ui", "folder_ui_box", "tabs"),
         ("global_hotkeys", "cb_global_hotkeys", True),
+        ("error_report", "cb_error_report", True),
     )
     _SET_QUIETLY = ("dark_theme_box", "light_theme_box")      # 불러올 때 '바뀜' 신호를 내지 않는 칸 (미리보기가 돌지 않게)
 

@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from ui.ui_manager import UIManager
 from core.sync_manager import SyncManager
+from core import error_report
 from drive_api import DriveAPI
 
 ERROR_ALREADY_EXISTS = 183
@@ -82,6 +83,8 @@ def main() -> None:
     # 1. 각 모듈 인스턴스화
     drive_api = DriveAPI()
     sync_manager = SyncManager(drive_api)
+    # 처리하지 못한 오류가 나도 프로그램이 꺼지지 않게 하고, error.log 에 남기고 메일로 알립니다.
+    error_report.install(sync_manager)
     ui_manager = UIManager(sync_manager)
 
     # 2. 애플리케이션 메모 화면 복원 및 실행

@@ -10,6 +10,11 @@
  *  프로젝트 설정 → 스크립트 속성에 ACCESS_TOKEN 을 추가하면, 그 값을 아는 요청만 처리합니다.
  *  PC 앱은 환경설정의 '동기화 접근 암호'에, 모바일은 첫 화면에 같은 값을 넣습니다.
  *  ACCESS_TOKEN 이 없으면 주소를 아는 누구나 메모를 읽고 쓸 수 있습니다.
+ *
+ * 오류 보고 메일
+ *  PC 앱에서 처리하지 못한 오류가 나면 이 스크립트가 메일로 알립니다.
+ *  받는 주소는 스크립트 속성 ERROR_MAIL_TO 이고, 없으면 이 스크립트 주인의 구글 계정 주소입니다.
+ *  받는 주소를 요청에서 받지 않으므로, 주소를 아는 사람이 이 스크립트로 다른 곳에 메일을 보낼 수는 없습니다.
  */
 const MAIN_FOLDER = "Memos";
 const TRASH_FOLDER = "trash_bin";
@@ -62,10 +67,23 @@ function json_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
+// ── 오류 보고 메일 ───────────────────────────────────────────────────────────
+function sendReport_(data) {
+  const to = PropertiesService.getScriptProperties().getProperty("ERROR_MAIL_TO")
+    || Session.getEffectiveUser().getEmail();
+  if (!to) return "No recipient";
+  if (MailApp.getRemainingDailyQuota() < 1) return "Quota exceeded";
+  const subject = String(data.subject || "Memos 오류").slice(0, 150);
+  const body = String(data.body || "").slice(0, 20000);
+  MailApp.sendEmail(to, subject, body);
+  return "Reported";
+}
+
 // ── PC 앱 동기화 ─────────────────────────────────────────────────────────────
 function doPost(e) {
   const data = JSON.parse(e.postData.contents);
   if (!tokenOk_(data.token)) return text_("Unauthorized");
+  if (data.action === "report") return text_(sendReport_(data));
   if (!SAFE_NAME.test(String(data.filename || ""))) return text_("Bad filename");
 
   const mainFolder = getOrCreateFolder(MAIN_FOLDER);

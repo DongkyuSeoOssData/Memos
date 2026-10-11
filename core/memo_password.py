@@ -21,14 +21,24 @@ class MemoPasswordMixin:
         if not memo_id or not password or memo.get('_locked') or memo.get('_unreadable'):
             return False
         previous = self._memo_keys.get(memo_id)             # 암호를 바꾸는 경우: 지금까지 쓰던 키
+        before = {k: memo[k] for k in ('is_locked', 'is_draft') if k in memo}
         salt = self.crypto.new_salt()
         self._memo_keys[memo_id] = (self.crypto.derive_key(password, salt), salt)
         memo['is_locked'] = True
         memo['is_draft'] = False
-        saved = self.save_memo_locally(memo)
+        if not self.save_memo_locally(memo):
+            # 파일은 그대로이므로 키와 표시도 되돌립니다. (안 그러면 파일은 예전 암호인데 메모리는 새 암호를 들고 있게 됨)
+            if previous:
+                self._memo_keys[memo_id] = previous
+            else:
+                self._memo_keys.pop(memo_id, None)
+            for k in ('is_locked', 'is_draft'):
+                memo.pop(k, None)
+            memo.update(before)
+            return False
         # 암호를 걸기 전의 평문(방금 남긴 것 포함)과 예전 암호로 잠긴 기록을 새 암호로 잠급니다.
         self._seal_history(memo_id, previous[0] if previous else None)
-        return saved
+        return True
 
     def unlock_memo(self, memo_id: str, password: str) -> Optional[str]:
         """암호가 맞으면 본문을 돌려주고 키를 메모리에 보관합니다. 틀리면 None."""
@@ -79,13 +89,14 @@ class MemoPasswordMixin:
         memo_id = memo.get('id')
         if not memo_id or memo.get('_locked') or memo_id not in self._memo_keys:
             return False
-        key = self._memo_keys[memo_id][0]
+        holder = self._memo_keys.pop(memo_id)
         memo['is_locked'] = False
-        self._memo_keys.pop(memo_id, None)
-        saved = self.save_memo_locally(memo)
-        if saved:
-            self._unseal_history(memo_id, key)              # 이제 비밀이 아니므로, 이 암호로 잠겨 있던 기록도 풉니다.
-        return saved
+        if not self.save_memo_locally(memo):
+            memo['is_locked'] = True                        # 저장하지 못했으면 여전히 암호 메모입니다.
+            self._memo_keys[memo_id] = holder
+            return False
+        self._unseal_history(memo_id, holder[0])            # 이제 비밀이 아니므로, 이 암호로 잠겨 있던 기록도 풉니다.
+        return True
 
     def _read_raw_content(self, memo_id: str) -> Any:
         try:

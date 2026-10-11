@@ -104,6 +104,8 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         "locked_memo_relock_min": 5,
         "explorer_is_pinned": True,
         "explorer_fixed_size": False,
+        # 처리하지 못한 오류가 나면 동기화 스크립트를 통해 보고 메일을 보낼지
+        "error_report": True,
         # 탐색기 폴더 목록(이 PC에 적어 둔 것)과 마지막으로 고른 폴더
         "folders": list(DEFAULT_FOLDERS),
         "explorer_folder": "",
@@ -168,7 +170,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         self.sync_timer = QTimer()
         self.setup_timer()
 
-        QTimer.singleShot(3000, self.sync_all)
+        QTimer.singleShot(3000, self._startup_sync)
 
         # 휴지통 보관 기간이 지난 메모 정리 (시작 직후 1회 + 6시간마다)
         self._purge_timer = QTimer()
@@ -509,6 +511,14 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
             self._resync_requested = True
         else:
             self._start_sync()
+
+    def _startup_sync(self) -> None:
+        """앱을 켠 직후의 동기화. 모든 메모를 훑되, 바뀐 것이 없거나 드라이브에 닿지 못했으면 알리지 않습니다.
+
+        (인터넷 없이 PC를 켤 때마다 연결 실패 경고가 뜨지 않게)
+        """
+        self._full_scan_pending = True
+        self._start_sync()
 
     def _start_sync(self) -> None:
         if not self.settings.get("use_sync", False):

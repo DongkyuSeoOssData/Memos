@@ -2,7 +2,7 @@
 
 (MemoWindow 에 섞어 쓰는 부분)
 """
-from ui import modern_style
+from ui import modern_style, themed_dialog
 from core import reminders
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QMenu, QApplication, QLabel, QSlider, QWidgetAction
 from PyQt6.QtCore import Qt, QPoint
@@ -12,6 +12,23 @@ from utils.text_utils import clean_plain_text
 
 class MemoMenuMixin:
     """메모 창의 우클릭 메뉴."""
+
+    def request_delete(self) -> None:
+        """메모를 휴지통으로 보냅니다. (단축키·우클릭 메뉴)
+
+        탐색기에서 지울 때와 같게, 삭제 방지를 건 메모는 지우지 않고 내용이 있는 메모는 먼저 묻습니다.
+        아무것도 적지 않은 메모는 묻지 않고 지웁니다.
+        """
+        if self.memo_data.get('is_protected'):
+            self.show_toast("🔒 삭제 방지 설정된 메모입니다.", warn=True)
+            return
+        has_content = (self.is_sealed() or bool(self.memo_data.get('is_locked'))
+                       or bool(clean_plain_text(self.current_content()).strip()))
+        title = str(self.memo_data.get('title', '')) or "(제목 없음)"
+        if has_content and not themed_dialog.confirm(self, "삭제", f"'{title}' 메모를 휴지통으로 이동할까요?",
+                                                     ok_text="삭제", danger=True):
+            return
+        self.delete_callback(self)
 
     def show_menu(self, pos: QPoint) -> None:
         menu = QMenu(self)
@@ -129,7 +146,7 @@ class MemoMenuMixin:
         opacity_menu.addAction("40% (많이 투명)").triggered.connect(lambda: opa_slider.setValue(40))
 
         menu.addSeparator()
-        menu.addAction(_fmt_sc("메모 삭제", "delete_memo", "Ctrl+D")).triggered.connect(lambda: self.delete_callback(self))
+        menu.addAction(_fmt_sc("메모 삭제", "delete_memo", "Alt+D")).triggered.connect(self.request_delete)
         menu.exec(self.sender().mapToGlobal(pos))
 
     def toggle_auto_eng_kor_setting(self) -> None:

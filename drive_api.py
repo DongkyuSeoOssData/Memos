@@ -125,6 +125,22 @@ class DriveAPI:
             print(f"GAS Download Error: {e}")
         return None
 
+    def send_error_report(self, subject: str, body: str) -> bool:
+        """오류 보고 메일을 스크립트를 통해 보냅니다. 받는 주소는 스크립트가 정합니다. (ERROR_MAIL_TO 속성, 없으면 스크립트 주인)
+
+        동기화와 다른 스레드에서 부르므로 동기화용 세션을 같이 쓰지 않습니다.
+        예전 스크립트는 이 요청을 모르므로 False 가 됩니다.
+        """
+        if not self.is_available() or not self.web_app_url:
+            return False
+        try:
+            data = self._with_token({"action": "report", "subject": subject, "body": body})
+            response = requests.post(self.web_app_url, data=json.dumps(data), timeout=10)
+            return response.status_code == 200 and response.text.strip().startswith("Reported")
+        except Exception as e:
+            print(f"GAS Report Error: {e}")
+            return False
+
     def delete_file(self, filename: str) -> bool:
         """
         GAS를 통해 파일 이동 (Memos -> Trash_Bin 폴더로 소프트 삭제 처리)을 수행합니다.
