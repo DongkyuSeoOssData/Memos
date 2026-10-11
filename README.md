@@ -572,6 +572,7 @@ python tools/mobile_dev_server.py
 - **메모 탐색기를 역할별로 나눔.** 2천 줄 가까이 되던 `memo_explorer.py`에서 폴더, 창 크기·옆 패널, 미리보기, 여러 메모 고르기를 각각 `explorer_folders.py`, `explorer_panels.py`, `explorer_preview.py`, `explorer_selection.py`로 옮겼습니다. 폴더 사이드바와 환경설정 패널을 열 때 창을 옆으로 늘리던 같은 코드 두 벌도 하나로 합쳤습니다.
 - **창 안 입력 쪽 모듈의 경계 정리.** 대화상자와 가림막이 서로를 불러 쓰던 것을 한 방향(`live_settings` → `input_panels` → `overlay` → `themed_dialog`)으로 풀었습니다. 입력 화면(여러 칸 입력·버튼 고르기·색 고르기)은 `input_panels.py`로, 설정을 읽는 통로는 `live_settings.py`로 옮기고, 탐색기의 가림막까지 담고 있어 이름이 맞지 않던 `lock_overlay.py`는 `overlay.py`로 바꿨습니다.
 - **환경설정의 불러오기·모으기를 표 하나로.** 화면의 칸 하나가 설정값 하나와 그대로 짝지어지는 설정 21가지를 `SettingsWindow.FIELDS` 표에 모아, 불러올 때와 저장할 때 같은 표를 쓰게 했습니다. 이런 설정을 새로 넣을 때 두 곳을 따로 고치다 한쪽을 빠뜨리는 일이 없어집니다. 저장된 값이 고를 수 있는 항목에 없으면 기본값을 고릅니다.
+- **테스트를 주제별 파일로.** 2,500줄짜리 `test_features.py`를 알림·체크리스트·이전 내용·암호 메모·탐색기·환경설정·대화상자·메모 창·사용 안내·빠른 검색 파일로 나누고, 작업한 순서대로 묶여 주제가 섞여 있던 테스트를 주제에 맞는 묶음으로 옮겼습니다. 공용 준비는 `tests/support.py`로 뺐고, 파일 하나만 따로 돌릴 수도 있습니다(`python tests/test_reminders.py`).
 
 ### 올릴 때 할 일
 
@@ -808,6 +809,7 @@ python tools/mobile_dev_server.py
  ┣ 📂 tools
  ┃ ┣ 📜 generate_master_key.py # 관리자 복구 키 만들기
  ┃ ┗ 📜 mobile_dev_server.py   # 모바일 화면을 PC에서 시험하는 서버
- ┣ 📂 tests                    # 자동 테스트
+ ┣ 📂 tests                    # 자동 테스트 (주제별 파일: test_reminders, test_checklist, test_history, test_settings …)
+ ┃ ┗ 📜 support.py             # UI 테스트의 공용 준비 (임시 폴더, 대화상자·자동 실행·전역 단축키 대역)
  ┗ 📂 icons                    # SVG 아이콘
 ```
