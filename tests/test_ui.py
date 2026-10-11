@@ -329,7 +329,7 @@ class RolledStackTest(UiTestCase):
     def setUp(self) -> None:
         super().setUp()
         screen = mock.Mock(availableGeometry=lambda: QRect(self.AREA))
-        patcher = mock.patch("ui.memo_window.QApplication.screenAt", return_value=screen)
+        patcher = mock.patch("ui.memo_drag.QApplication.screenAt", return_value=screen)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -470,7 +470,7 @@ class ScreenBoundsTest(UiTestCase):
     def test_memo_window_sticks_to_screen_edges(self) -> None:
         w = self.open_window("memo-0000")
         w.setGeometry(400, 300, 300, 200)
-        with mock.patch("ui.memo_window.QApplication.screenAt", return_value=mock.Mock(availableGeometry=lambda: QRect(self.AREA))):
+        with mock.patch("ui.memo_drag.QApplication.screenAt", return_value=mock.Mock(availableGeometry=lambda: QRect(self.AREA))):
             self.drag(w, QPoint(450, 310), QPoint(840, 310))                  # 오른쪽 가장자리 근처로 (x=790)
             self.assertEqual(w.x(), 800)
             self.drag(w, QPoint(850, 310), QPoint(550, 310))

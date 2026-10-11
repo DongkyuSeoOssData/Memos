@@ -80,7 +80,7 @@ class MemoMonitorTest(support.UiTestCase):
             return mock.Mock(availableGeometry=lambda: QRect(area))
 
         w = self.open_window("memo-0000")
-        with mock.patch("ui.memo_window.QApplication.screenAt", side_effect=screen_at):
+        with mock.patch("ui.memo_drag.QApplication.screenAt", side_effect=screen_at):
             w.setGeometry(2000, 200, 400, 300)                       # 펼친 자리는 오른쪽 모니터
             w.toggle_rollup()
             w.move(100, 700)                                         # 접은 메모는 왼쪽 모니터로 옮겨 둠
