@@ -24,7 +24,7 @@ from core.defaults import DEFAULT_SHORTCUTS
 from core import folders, guide, reminders
 from ui.quick_search import QuickSearch
 from ui import live_settings
-from ui.reminder_ui import ReminderPopup
+from ui.reminder_ui import POPUP_GAP, ReminderPopup
 from utils.text_utils import clean_plain_text
 
 
@@ -346,7 +346,9 @@ class UIManager:
         self._reminder_popups = [p for p in self._reminder_popups if self._still_open(p)]
         popup = ReminderPopup(self.sync_manager.settings, memo_id, title,
                               ("(지나간 알림) " if late else "") + detail,
-                              self.show_specific_memo, self.snooze_reminder, slot=len(self._reminder_popups))
+                              self.show_specific_memo, self.snooze_reminder)
+        # 먼저 떠 있는 알림 창들이 차지한 높이만큼 비켜서 놓습니다. (자리가 없으면 모서리에서 다시 시작)
+        popup.place(self.sync_manager.settings, sum(p.height() + POPUP_GAP for p in self._reminder_popups))
         self._reminder_popups.append(popup)
         popup.show()
         if self.explorer_window and self.explorer_window.isVisible():

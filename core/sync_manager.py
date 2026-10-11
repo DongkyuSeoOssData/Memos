@@ -108,6 +108,9 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         "explorer_fixed_size": False,
         # 처리하지 못한 오류가 나면 동기화 스크립트를 통해 보고 메일을 보낼지
         "error_report": True,
+        # 알림 창을 띄울 자리: 모니터 이름(비어 있으면 주 모니터)과 모서리
+        "reminder_popup_screen": "",
+        "reminder_popup_corner": "bottom_right",
         # 탐색기 폴더 목록(이 PC에 적어 둔 것)과 마지막으로 고른 폴더
         "folders": list(DEFAULT_FOLDERS),
         "explorer_folder": "",

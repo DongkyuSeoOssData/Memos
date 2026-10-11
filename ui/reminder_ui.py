@@ -501,8 +501,52 @@ def ask_reminder(parent: Any, current: Optional[Dict[str, Any]], title: str = ""
     return True, dialog.result_reminder
 
 
+# 알림 창을 띄울 모서리. (환경설정의 reminder_popup_corner)
+POPUP_CORNERS = (
+    ("bottom_right", "오른쪽 아래"), ("bottom_left", "왼쪽 아래"),
+    ("top_right", "오른쪽 위"), ("top_left", "왼쪽 위"),
+)
+DEFAULT_POPUP_CORNER = "bottom_right"
+POPUP_MARGIN = 16           # 화면 가장자리에서 띄우는 간격
+POPUP_GAP = 12              # 쌓이는 알림 창 사이의 간격
+
+
+def popup_screen(settings: Dict[str, Any]) -> Any:
+    """알림 창을 띄울 모니터. 환경설정에서 고른 모니터(reminder_popup_screen, 모니터 이름)이고,
+    고르지 않았거나 그 모니터가 지금 연결돼 있지 않으면 주 모니터입니다."""
+    wanted = str(settings.get("reminder_popup_screen", "") or "")
+    if wanted:
+        for screen in QGuiApplication.screens():
+            if screen.name() == wanted:
+                return screen
+    return QGuiApplication.primaryScreen()
+
+
+def popup_position(area: Any, size: Tuple[int, int], corner: str, stacked: int = 0) -> Tuple[int, int]:
+    """알림 창의 왼쪽 위 좌표. area 는 모니터의 작업 영역, size 는 창의 (너비, 높이).
+
+    stacked 는 같은 모서리에 먼저 떠 있는 알림 창들이 차지한 높이입니다. 아래 모서리에서는 위로, 위 모서리에서는 아래로 쌓고,
+    더 쌓을 자리가 없으면 모서리에서 다시 시작합니다. (화면 밖으로 나가지 않게)
+    """
+    width, height = size
+    if corner not in dict(POPUP_CORNERS):
+        corner = DEFAULT_POPUP_CORNER
+    room = area.height() - 2 * POPUP_MARGIN
+    if stacked + height > room:
+        stacked = 0
+    x = area.left() + POPUP_MARGIN if corner.endswith("left") else area.left() + area.width() - width - POPUP_MARGIN
+    if corner.startswith("top"):
+        y = area.top() + POPUP_MARGIN + stacked
+    else:
+        y = area.top() + area.height() - POPUP_MARGIN - height - stacked
+    return x, y
+
+
 class ReminderPopup(QWidget):
-    """알림 시각이 됐을 때 화면 오른쪽 아래에 뜨는 창. 메모 열기 / 미루기 / 완료를 고릅니다."""
+    """알림 시각이 됐을 때 화면 모서리에 뜨는 창. 메모 열기 / 미루기 / 완료를 고릅니다.
+
+    어느 모니터의 어느 모서리에 띄울지는 환경설정에서 정합니다. (기본: 주 모니터의 오른쪽 아래)
+    """
 
     SNOOZES = (("10분", 10), ("1시간", 60), ("내일", 24 * 60))
 
@@ -559,8 +603,11 @@ class ReminderPopup(QWidget):
         layout.addLayout(later)
 
         self.adjustSize()
-        screen = QGuiApplication.primaryScreen()
+        self.place(settings, (self.height() + POPUP_GAP) * slot)
+
+    def place(self, settings: Dict[str, Any], stacked: int = 0) -> None:
+        """환경설정에서 고른 모니터의 모서리에 놓습니다. stacked 는 먼저 떠 있는 알림 창들이 차지한 높이."""
+        screen = popup_screen(settings)
         if screen:
-            area = screen.availableGeometry()
-            self.move(area.left() + area.width() - self.width() - 16,
-                      area.top() + area.height() - (self.height() + 12) * (slot + 1) - 4)
+            corner = str(settings.get("reminder_popup_corner", DEFAULT_POPUP_CORNER))
+            self.move(*popup_position(screen.availableGeometry(), (self.width(), self.height()), corner, stacked))

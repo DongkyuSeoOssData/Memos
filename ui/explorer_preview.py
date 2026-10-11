@@ -254,4 +254,10 @@ class ExplorerPreviewMixin:
         m = self._pending_preview_memo
         self._pending_preview_memo = None
         if m is not None:
-            self.ui_manager.sync_manager.save_memo_locally(m)
+            sm = self.ui_manager.sync_manager
+            if not (sm.save_memo_locally(m) or sm.is_blank_draft(m)):
+                # 저장하지 못했으면 알리고, 그사이 다른 메모를 고치기 시작하지 않았다면 조금 뒤에 다시 시도합니다.
+                self.show_toast("미리보기에서 고친 내용을 저장하지 못했습니다 · 메모 폴더를 확인하세요", warn=True)
+                if self._pending_preview_memo is None:
+                    self._pending_preview_memo = m
+                    self._preview_save_timer.start()

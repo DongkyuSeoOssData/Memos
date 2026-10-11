@@ -5,7 +5,7 @@ from ui.themes import LIGHT_THEMES, DARK_THEMES, app_palette
 from ui import modern_style
 from ui.wheel_guard import guard_wheel
 from ui import screen_bounds
-from ui.reminder_ui import DEFAULT_QUICK_MINUTES, quick_minutes
+from ui.reminder_ui import DEFAULT_POPUP_CORNER, DEFAULT_QUICK_MINUTES, POPUP_CORNERS, quick_minutes
 
 # 구글 드라이브 동기화를 준비하는 방법 (README 의 '설정 방법')
 SYNC_GUIDE_URL = "https://github.com/DongkyuSeoOssData/Memos#설정-방법"
@@ -304,11 +304,12 @@ class SettingsWindow(QWidget):
         return g4
 
     def _build_reminder_group(self) -> Any:
-        """알림 설정의 빠른 선택 세 가지."""
-        g_alarm = QGroupBox("알림 설정의 빠른 선택")
+        """알림: 알림 설정 화면의 빠른 선택 세 가지, 알림 창을 띄울 모니터와 모서리."""
+        g_alarm = QGroupBox("알림")
         g_alarm_l = QVBoxLayout(g_alarm)
         g_alarm_l.setContentsMargins(18, 24, 18, 18)
         g_alarm_l.setSpacing(8)
+        g_alarm_l.addWidget(QLabel("알림 설정의 빠른 선택"))
         self.quick_minute_spins = []
         for n in range(3):                               # 버튼 하나에 한 줄씩
             alarm_row = QHBoxLayout()
@@ -327,7 +328,46 @@ class SettingsWindow(QWidget):
         alarm_hint.setProperty("role", "hint")
         alarm_hint.setWordWrap(True)
         g_alarm_l.addWidget(alarm_hint)
+
+        g_alarm_l.addSpacing(6)
+        g_alarm_l.addWidget(QLabel("알림 창을 띄울 자리"))
+        place_row = QHBoxLayout()
+        place_row.setSpacing(10)
+        self.popup_screen_box = QComboBox()
+        self.popup_screen_box.setFixedHeight(40)
+        self.popup_screen_box.setToolTip("모니터가 여러 대일 때 알림 창을 띄울 모니터")
+        place_row.addWidget(self.popup_screen_box, 2)
+        self.popup_corner_box = QComboBox()
+        self.popup_corner_box.setFixedHeight(40)
+        for key, label in POPUP_CORNERS:
+            self.popup_corner_box.addItem(label, key)
+        place_row.addWidget(self.popup_corner_box, 1)
+        g_alarm_l.addLayout(place_row)
+        place_hint = QLabel("고른 모니터가 연결돼 있지 않으면 주 모니터에 띄웁니다. 알림이 여럿이면 그 모서리에서부터 쌓입니다.")
+        place_hint.setProperty("role", "hint")
+        place_hint.setWordWrap(True)
+        g_alarm_l.addWidget(place_hint)
         return g_alarm
+
+    def _fill_popup_screens(self, saved: str) -> None:
+        """알림 창을 띄울 모니터 목록을 지금 연결된 모니터로 채웁니다.
+
+        설정에는 모니터 이름을 적어 둡니다. 골라 둔 모니터가 지금 연결돼 있지 않아도 목록에 남겨,
+        다른 설정을 저장할 때 그 선택이 사라지지 않게 합니다.
+        """
+        box = self.popup_screen_box
+        box.blockSignals(True)
+        box.clear()
+        box.addItem("주 모니터", "")
+        names = []
+        for n, screen in enumerate(QGuiApplication.screens(), start=1):
+            size = screen.geometry()
+            main = " · 주 모니터" if screen is QGuiApplication.primaryScreen() else ""
+            box.addItem(f"모니터 {n} ({size.width()}×{size.height()}{main})", screen.name())
+            names.append(screen.name())
+        if saved and saved not in names:
+            box.addItem(f"연결되지 않은 모니터 ({saved})", saved)
+        box.blockSignals(False)
 
     def _build_guide_group(self) -> Any:
         """사용 안내 메모 다시 만들기."""
@@ -1032,6 +1072,8 @@ class SettingsWindow(QWidget):
         ("folder_ui", "folder_ui_box", "tabs"),
         ("global_hotkeys", "cb_global_hotkeys", True),
         ("error_report", "cb_error_report", True),
+        ("reminder_popup_screen", "popup_screen_box", ""),
+        ("reminder_popup_corner", "popup_corner_box", DEFAULT_POPUP_CORNER),
     )
     _SET_QUIETLY = ("dark_theme_box", "light_theme_box")      # 불러올 때 '바뀜' 신호를 내지 않는 칸 (미리보기가 돌지 않게)
 
@@ -1116,6 +1158,7 @@ class SettingsWindow(QWidget):
 
     def _load_form(self) -> None:
         s = self.sm.settings
+        self._fill_popup_screens(str(s.get("reminder_popup_screen", "") or ""))      # 아래 표가 값을 고르기 전에 목록부터
         self._loading_settings = True                      # 화면 스타일을 '고른' 것이 아니라 불러오는 중임을 알림
         try:
             for key, name, default in self.FIELDS:
