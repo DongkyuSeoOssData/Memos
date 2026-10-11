@@ -576,6 +576,8 @@ python tools/mobile_dev_server.py
 - **동기화가 화면을 직접 부르지 않게.** 동기화 쪽(`core`)이 탐색기 토스트와 트레이 알림을 직접 띄우고, 안내 문구에 "동기화 완료"가 들어 있는지로 목록을 새로 고칠지 정하던 것을 고쳤습니다. 이제 동기화는 결과 값(바뀜·바뀐 것 없음·끝내지 못함)만 넘기고, 어떻게 보여 줄지는 `UIManager.show_sync_result`가 정합니다.
 - **화면을 만드는 긴 함수를 구역별로.** 환경설정(594줄), 탐색기(287줄), 메모 창(275줄), 알림 설정(153줄)의 화면을 한 함수에서 만들던 것을 탭·줄·묶음별 함수(`_build_general_tab`, `_build_header`, `_build_title_row` 등)로 나눴습니다. 내용은 그대로 옮기기만 했습니다.
 - **`SyncManager`를 역할별로 나눔.** 1,100줄 가까이 되던 `sync_manager.py`에서 암호 메모, 이전 내용, 휴지통을 각각 `memo_password.py`, `memo_history.py`, `memo_trash.py`로 옮겼습니다. `sync_manager.py`에는 설정, 메모 파일 읽고 쓰기, 알림 목록, 동기화 실행이 남습니다.
+- **본문 편집기의 키 처리를 키 종류별로.** 215줄짜리 `keyPressEvent`를 여러 커서, 줄 옮기기, 코드 메모의 괄호 짝·들여쓰기, Tab 처리 함수로 나누고, 이 키 동작을 확인하는 테스트 10개를 새로 넣었습니다.
+- **메모 창을 역할별로 나눔.** `memo_window.py`에서 접기·펴기, 저장·제목 바꾸기, 찾기·바꾸기, 우클릭 메뉴를 각각 `memo_rollup.py`, `memo_saving.py`, `memo_find.py`, `memo_menu.py`로 옮겼습니다(1,585줄 → 1,067줄).
 
 ### 올릴 때 할 일
 
@@ -779,6 +781,10 @@ python tools/mobile_dev_server.py
  ┃ ┣ 📜 ui_manager.py          # 창 관리, 트레이, 전역 단축키, 아이콘
  ┃ ┣ 📜 memo_window.py         # 메모 창
  ┃ ┣ 📜 memo_lock.py           # 메모 창의 암호 잠금 기능
+ ┃ ┣ 📜 memo_rollup.py         # 메모 창의 접기·펴기와 자리 잡기
+ ┃ ┣ 📜 memo_saving.py         # 메모 창의 자동 저장, 직접 저장, 제목 바꾸기
+ ┃ ┣ 📜 memo_find.py           # 메모 창의 찾기·바꾸기 줄
+ ┃ ┣ 📜 memo_menu.py           # 메모 창의 우클릭 메뉴, 한영 변환, 전체 복사
  ┃ ┣ 📜 memo_geometry.py       # 메모 창의 위치·크기 규칙 (접힌/펼친 자리 기억, 잠긴 크기, 모니터 경계)
  ┃ ┣ 📜 memo_format.py         # 메모 창의 서식 기능
  ┃ ┣ 📜 memo_editor.py         # 본문 편집기, 행 번호, 문법 강조

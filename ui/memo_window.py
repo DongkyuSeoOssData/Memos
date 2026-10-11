@@ -4,31 +4,26 @@ from ui import modern_style
 from ui.wheel_guard import guard_wheel
 from ui import screen_bounds
 from core import reminders
-from ui import checklist, memo_geometry
+from ui import memo_geometry
 from ui.reminder_ui import ask_reminder
 from ui.dialogs import pick_history
 from ui.side_panel import SidePanel
 from ui.overlay import LockOverlay
 from ui.memo_lock import MemoLockMixin
 from ui.memo_format import MemoFormatMixin
-import re
-import datetime
 import json
 from typing import Dict, Any, Optional
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMenu, QApplication,
-    QLabel, QComboBox, QSizeGrip, QFontComboBox, QSlider, QCompleter,
-    QWidgetAction
-)
-from PyQt6.QtCore import Qt, QPoint, QRect, QTimer, QEvent
-from PyQt6.QtGui import (
-    QColor, QShortcut, QKeySequence, QFont, QTextCursor, QTextCharFormat, QIntValidator,
-    QPalette, QTextDocument, QCursor
-)
-from utils.text_utils import convert_eng_kor_smart
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QApplication, QLabel, QComboBox, QSizeGrip, QFontComboBox, QCompleter
+from PyQt6.QtCore import Qt, QPoint, QTimer, QEvent
+from PyQt6.QtGui import QColor, QShortcut, QKeySequence, QFont, QTextCursor, QTextCharFormat, QIntValidator, QCursor
 from utils.text_utils import clean_plain_text, is_html_content
+from ui.memo_rollup import MemoRollupMixin
+from ui.memo_saving import MemoSavingMixin
+from ui.memo_find import MemoFindMixin
+from ui.memo_menu import MemoMenuMixin
 
-class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
+
+class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin, MemoLockMixin, MemoFormatMixin, QWidget):
     """
     개별 메모장 창 클래스:
     - 옵션 2: 애플 모던 사이버/네온 핀 뱃지 (📍 / 📌)
@@ -305,45 +300,6 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
         bg_l.addLayout(ctrl)
 
-    def _build_search_bar(self, cc_layout: Any) -> None:
-        """찾기·바꾸기 줄."""
-        self.search_bar = QWidget()
-        sl = QHBoxLayout(self.search_bar)
-        sl.setContentsMargins(0, 4, 0, 4)
-
-        self.s_in = QLineEdit()
-        self.s_in.setPlaceholderText("찾을 단어")
-        self.s_in.returnPressed.connect(lambda: self.do_find(backward=False))
-
-        self.s_count = QLabel("0/0")
-
-        self.s_prev_btn = QPushButton("▲")
-        self.s_prev_btn.setFixedSize(24, 24)
-        self.s_prev_btn.clicked.connect(lambda: self.do_find(backward=True))
-
-        self.s_next_btn = QPushButton("▼")
-        self.s_next_btn.setFixedSize(24, 24)
-        self.s_next_btn.clicked.connect(lambda: self.do_find(backward=False))
-
-        self.r_in = QLineEdit()
-        self.r_in.setPlaceholderText("바꿀 단어")
-        self.r_in.returnPressed.connect(self.do_replace)
-
-        self.r_btn = QPushButton("바꾸기")
-        self.r_btn.clicked.connect(self.do_replace)
-
-        self.s_close = QPushButton("")
-        self.s_close.setFixedSize(24, 24)
-        self.s_close.setStyleSheet("border:none; background:transparent;")
-        if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
-            self.s_close.setIcon(self.ui_manager.get_theme_icon("close.svg", False, override_color="#FF453A"))
-        self.s_close.clicked.connect(self.search_bar.hide)
-
-        for w in [self.s_in, self.s_count, self.s_prev_btn, self.s_next_btn, self.r_in, self.r_btn, self.s_close]:
-            sl.addWidget(w)
-
-        self.search_bar.hide()
-        cc_layout.addWidget(self.search_bar)
 
     def _build_format_bar(self) -> None:
         """서식 줄: 굵게·기울임·취소선, 목록·체크리스트, 코드 정렬, 알림 표시."""
@@ -778,225 +734,6 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             self.memo_data['width'] = self.width()
             self.memo_data['height'] = self.height()
 
-    def show_menu(self, pos: QPoint) -> None:
-        menu = QMenu(self)
-        menu.setStyleSheet(modern_style.menu_qss(self.memo_window_get_settings()))
-
-        s = self.memo_window_get_settings()
-        sc = s.get("shortcuts", {})
-        def _fmt_sc(title: str, key: str, default: str) -> str:
-            val = sc.get(key, default)
-            return f"{title} ({val})" if val else title
-
-        sender_widget = self.sender()
-        if hasattr(sender_widget, 'copy'):
-            menu.addAction("복사 (Ctrl+C)").triggered.connect(sender_widget.copy)
-            menu.addAction("잘라내기 (Ctrl+X)").triggered.connect(sender_widget.cut)
-            menu.addAction("붙여넣기 (Ctrl+V)").triggered.connect(sender_widget.paste)
-            menu.addAction("모두 선택 (Ctrl+A)").triggered.connect(sender_widget.selectAll)
-            menu.addSeparator()
-
-        is_code = self.memo_data.get('is_code_memo', False)
-        if is_code:
-            menu.addAction(_fmt_sc("코드 자동 정렬", "format_code", "Ctrl+Shift+F")).triggered.connect(self.prettify_code)
-            menu.addAction("코드만 클립보드 복사").triggered.connect(self.copy_all_content)
-            menu.addAction(_fmt_sc("코드 테마 전환", "toggle_code_theme", "Ctrl+Shift+L")).triggered.connect(self.toggle_code_theme)
-        else:
-            menu.addAction(_fmt_sc("전체 메모 내용 복사 (클립보드)", "copy_all", "Ctrl+Shift+C")).triggered.connect(self.copy_all_content)
-
-        menu.addAction(_fmt_sc("한/영 영타 오타 변환", "eng_kor_convert", "Ctrl+Alt+E")).triggered.connect(self.convert_selected_eng_kor)
-
-        menu.addSeparator()
-
-        is_auto_convert = s.get("auto_eng_kor_convert", True)
-        auto_convert_action = menu.addAction(f"한/영 자동 변환기 [{ 'ON' if is_auto_convert else 'OFF' }]")
-        auto_convert_action.setCheckable(True)
-        auto_convert_action.setChecked(is_auto_convert)
-        auto_convert_action.triggered.connect(self.toggle_auto_eng_kor_setting)
-
-        menu.addSeparator()
-        menu.addAction(_fmt_sc("메모 탐색기 열기", "open_explorer", "Ctrl+E")).triggered.connect(self.ui_manager.open_memo_explorer)
-        menu.addAction(_fmt_sc("저장", "save", "Ctrl+S")).triggered.connect(self.manual_save)
-        menu.addAction(_fmt_sc("검색", "search", "Ctrl+F")).triggered.connect(self.show_search_only)
-        menu.addAction(_fmt_sc("바꾸기", "replace", "Ctrl+H")).triggered.connect(self.show_search_and_replace)
-        menu.addAction(_fmt_sc("화면 고정 토글", "toggle_pin", "Ctrl+P")).triggered.connect(self.toggle_pin)
-        menu.addAction(_fmt_sc("메모 창 접기", "toggle_rollup", "Ctrl+M")).triggered.connect(self.toggle_rollup)
-
-        ln_action = menu.addAction("행번호 표시")
-        ln_action.setCheckable(True)
-        ln_action.setChecked(self.memo_data.get('show_line_numbers', False))
-        ln_action.triggered.connect(self.toggle_line_numbers)
-
-        bg_action = menu.addAction("줄노트 배경")
-        bg_action.setCheckable(True)
-        bg_action.setChecked(self.memo_data.get('show_line_bg', False))
-        bg_action.triggered.connect(self.toggle_line_bg)
-
-        if not is_code:
-            menu.addSeparator()
-            cm = menu.addMenu("창 배경색 변경")
-            for n, c in {"다크그레이": "#2E3440", "하늘색": "#E0F2FE", "연두색": "#DCFCE7", "노란색": "#FEF9C3", "분홍색": "#FCE7F3", "흰색": "#FFFFFF"}.items():
-                cm.addAction(n).triggered.connect(lambda checked, code=c: self.change_color(code))
-
-        menu.addSeparator()
-        menu.addAction(_fmt_sc("체크리스트 켜기/끄기", "toggle_checklist", "Alt+K")).triggered.connect(self.toggle_checklist)
-        has_reminder = bool(reminders.normalize(self.memo_data.get('reminder')))
-        menu.addAction(_fmt_sc("⏰ 알림 바꾸기…" if has_reminder else "⏰ 알림 설정…", "set_reminder", "Ctrl+R")).triggered.connect(self.edit_reminder)
-        menu.addAction(_fmt_sc("이전 내용 보기…", "show_history", "Ctrl+Shift+H")).triggered.connect(self.show_history)
-
-        menu.addSeparator()
-        if self.memo_data.get('_locked'):
-            menu.addAction("🔓 잠금 해제 (암호 입력)").triggered.connect(self.prompt_unlock)
-            sm_lock = self._sync_manager()
-            if sm_lock and sm_lock.memo_has_master_recovery(self.memo_data.get('id', '')):
-                menu.addAction("관리자 키로 복구…").triggered.connect(self.recover_with_master_key)
-        elif self.memo_data.get('is_locked'):
-            menu.addAction("🔒 지금 잠그기").triggered.connect(self.lock_now)
-            menu.addAction("암호 변경").triggered.connect(self.set_memo_password)
-            menu.addAction("암호 제거 (일반 메모로)").triggered.connect(self.remove_memo_password)
-        elif not self.memo_data.get('_unreadable'):
-            menu.addAction("🔒 이 메모에 암호 걸기").triggered.connect(self.set_memo_password)
-
-        menu.addSeparator()
-        # 🔆 투명도 슬라이더 서브메뉴
-        opacity_menu = menu.addMenu("창 투명도 조절")
-        opacity_widget = QWidget()
-        opacity_layout = QHBoxLayout(opacity_widget)
-        opacity_layout.setContentsMargins(12, 6, 12, 6)
-        opacity_layout.setSpacing(8)
-        cur_opacity_pct = int(round(float(self.memo_data.get('opacity', 1.0)) * 100))
-        opa_label = QLabel(f"불투명도: {cur_opacity_pct}%")
-        opa_label.setStyleSheet("color: #007AFF; font-weight: bold; font-size: 9pt; min-width: 90px;")
-        opa_slider = QSlider(Qt.Orientation.Horizontal)
-        opa_slider.setRange(20, 100)
-        opa_slider.setValue(cur_opacity_pct)
-        opa_slider.setFixedWidth(160)
-        opa_slider.setStyleSheet("""
-            QSlider::groove:horizontal { height: 4px; background: #C7C7CC; }
-            QSlider::handle:horizontal { width: 12px; height: 18px; margin: -7px 0; background: #007AFF; }
-            QSlider::sub-page:horizontal { background: #007AFF; }
-        """)
-        def _update_opacity(val: int) -> None:
-            opa_label.setText(f"불투명도: {val}%")
-            self.memo_data['opacity'] = round(val / 100.0, 2)
-            self.setWindowOpacity(self.memo_data['opacity'])
-            self._schedule_auto_save()
-        opa_slider.valueChanged.connect(_update_opacity)
-        opacity_layout.addWidget(opa_label)
-        opacity_layout.addWidget(opa_slider)
-        opa_action = QWidgetAction(opacity_menu)
-        opa_action.setDefaultWidget(opacity_widget)
-        opacity_menu.addAction(opa_action)
-        opacity_menu.addSeparator()
-        opacity_menu.addAction("100% (완전 불투명)").triggered.connect(lambda: opa_slider.setValue(100))
-        opacity_menu.addAction("80% (약간 투명)").triggered.connect(lambda: opa_slider.setValue(80))
-        opacity_menu.addAction("60% (반투명)").triggered.connect(lambda: opa_slider.setValue(60))
-        opacity_menu.addAction("40% (많이 투명)").triggered.connect(lambda: opa_slider.setValue(40))
-
-        menu.addSeparator()
-        menu.addAction(_fmt_sc("메모 삭제", "delete_memo", "Ctrl+D")).triggered.connect(lambda: self.delete_callback(self))
-        menu.exec(self.sender().mapToGlobal(pos))
-
-    def toggle_auto_eng_kor_setting(self) -> None:
-        sm = getattr(self.close_callback, '__self__', None).sync_manager
-        cur = sm.settings.get("auto_eng_kor_convert", True)
-        sm.settings["auto_eng_kor_convert"] = not cur
-        sm.save_settings(sm.settings)
-        self.show_toast(f"🔤 한/영 자동 변환기: {'ON' if not cur else 'OFF'}")
-
-    def convert_selected_eng_kor(self) -> None:
-        cursor = self.text_edit.textCursor()
-        if cursor.hasSelection():
-            txt = cursor.selectedText()
-            converted = convert_eng_kor_smart(txt)
-            cursor.insertText(converted)
-        else:
-            txt = self.text_edit.toPlainText()
-            converted = convert_eng_kor_smart(txt)
-            self.text_edit.setPlainText(converted)
-            self.text_edit.document().setModified(True)      # 본문을 바꾼 것이므로 '고침'으로 표시
-        self._mark_edited()
-        self.show_toast("🔤 한/영 영타 변환 완료")
-
-    def copy_all_content(self) -> None:
-        if self.memo_data.get('is_code_memo', False):
-            plain_text = self.text_edit.toPlainText()
-        else:
-            plain_text = clean_plain_text(self.text_edit.toHtml())
-        cb = QApplication.clipboard()
-        cb.setText(plain_text)
-        self.show_toast("📋 클립보드에 복사되었습니다.")
-
-    def show_search_only(self) -> None:
-        self.r_in.hide()
-        self.r_btn.hide()
-        self.search_bar.show()
-        self.s_in.setFocus()
-        self.s_in.selectAll()
-
-    def show_search_and_replace(self) -> None:
-        self.r_in.show()
-        self.r_btn.show()
-        self.search_bar.show()
-        self.s_in.setFocus()
-        self.s_in.selectAll()
-
-    def do_find(self, backward: bool = False) -> None:
-        search_text = self.s_in.text()
-        if not search_text:
-            self.s_count.setText("0/0")
-            return
-
-        p = self.text_edit.palette()
-        p.setColor(QPalette.ColorRole.Highlight, QColor("#007AFF"))
-        p.setColor(QPalette.ColorRole.HighlightedText, QColor("#FFFFFF"))
-        self.text_edit.setPalette(p)
-
-        if backward:
-            found = self.text_edit.find(search_text, QTextDocument.FindFlag.FindBackward)
-        else:
-            found = self.text_edit.find(search_text)
-
-        if not found:
-            c = self.text_edit.textCursor()
-            c.movePosition(QTextCursor.MoveOperation.End if backward else QTextCursor.MoveOperation.Start)
-            self.text_edit.setTextCursor(c)
-            found = self.text_edit.find(search_text, QTextDocument.FindFlag.FindBackward if backward else QTextDocument.FindFlag(0))
-
-        if found:
-            text = self.text_edit.toPlainText().lower()
-            st_low = search_text.lower()
-            total = text.count(st_low)
-            cursor_pos = self.text_edit.textCursor().position()
-            current = text[:cursor_pos].count(st_low)
-            if backward and current == 0 and total > 0: current = 1
-            self.s_count.setText(f"{current}/{total}")
-        else:
-            self.s_count.setText("0/0")
-
-    def do_replace(self) -> None:
-        c = self.text_edit.textCursor()
-        if c.hasSelection() and c.selectedText().lower() == self.s_in.text().lower():
-            c.insertText(self.r_in.text())
-            self._mark_edited()
-        self.do_find(backward=False)
-
-    def _mark_edited(self) -> None:
-        """서식 변경 등으로 본문이 바뀌었음을 표시합니다. 저장은 자동 저장(마지막 입력 후 대기)에 맡깁니다."""
-        if self.is_sealed():
-            return
-        # 본문 글자가 아니라 메모 속성(코드 테마, 기본 글꼴 등)만 바뀐 경우를 위해 표시해 둡니다.
-        self._meta_dirty = True
-        self._schedule_auto_save()
-        self.restart_relock_timer()
-
-    def _get_rolled_height(self) -> int:
-        """settings의 default_rolled_height 값을 우선 읽고, 없으면 53을 반환합니다."""
-        if getattr(self, 'ui_manager', None):
-            h = self.ui_manager.sync_manager.settings.get('default_rolled_height', 53)
-        else:
-            h = 53
-        return max(36, int(h))
 
     def _title_color_stylesheet(self, font_size_pt: float = 12.0) -> str:
         """현재 메모 테마 팔레트 기준으로 title_edit에 적용할 stylesheet를 반환합니다.
@@ -1010,211 +747,16 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             f"font-weight:bold; font-size:{font_size_pt}pt; font-family:{modern_style.UI_FONT};"
         )
 
-    def _apply_rolled_ui(self, rolled_h: int) -> None:
-        """접힌 상태일 때 타이틀바 높이·버튼 크기·폰트를 rolled_h에 비례하여 동적 조절합니다.
-
-        제목 색상은 메모 테마 팔레트를 따르며 하드코딩 없이 통일됩니다.
-        """
-        # 버튼 크기: rolled_h 기준 비율 계산 (최소 18, 최대 32)
-        btn_h = max(18, min(32, int(rolled_h * 0.55)))
-        for btn in [self.btn_pin, self.btn_min, self.btn_close]:
-            btn.setFixedSize(btn_h + 2, btn_h)
-        # 타이틀 폰트 크기: rolled_h 기준 비율 계산 (최소 8pt, 최대 13pt)
-        title_pt = max(8.0, min(13.0, rolled_h * 0.22))
-        # 제목 색상 → 메모 테마 팔레트 색상으로 통일 (하드코딩 없음)
-        self.title_edit.setStyleSheet(self._title_color_stylesheet(title_pt))
-        # 타이틀바 여백 최소화
-        if hasattr(self, 'bg_layout'):
-            margin_v = max(2, int((rolled_h - btn_h) / 2) - 1)
-            self.bg_layout.setContentsMargins(10, margin_v, 10, margin_v)
-
-    def _restore_normal_ui(self) -> None:
-        """펼친 상태로 복원 시 타이틀바/버튼 크기를 기본값으로 되돌리고
-        제목 색상도 테마 팔레트로 통일합니다.
-        """
-        for btn in [self.btn_pin, self.btn_min, self.btn_close]:
-            btn.setFixedSize(28, 26)
-        if hasattr(self, 'btn_max'):
-            self.btn_max.setFixedSize(28, 26)
-        # 제목 색상 → 메모 테마 팔레트 색상으로 통일 (하드코딩 없음)
-        self.title_edit.setStyleSheet(self._title_color_stylesheet(12.0))
-        if hasattr(self, 'bg_layout'):
-            self.bg_layout.setContentsMargins(14, 10, 14, 14)
-
-    @staticmethod
-    def _clamp_to_screen(scr_geom: Any, x: int, y: int, w: int, h: int) -> tuple:
-        """창이 화면 작업 영역 밖으로 나가지 않도록 좌표를 당깁니다."""
-        return memo_geometry.clamp(scr_geom, x, y, w, h)
-
-    def _screen_area_for(self, x: int, y: int, w: int, h: int) -> Any:
-        """(x, y, w, h) 자리에 놓을 창이 속할 모니터의 작업 영역.
-
-        그 자리가 어느 모니터에도 없으면(모니터를 뗀 경우 등) 지금 창이 있는 모니터, 그것도 없으면 주 모니터입니다.
-        기억해 둔 자리가 다른 모니터에 있어도 지금 모니터 안으로 끌려오지 않게 하려고 씁니다.
-        """
-        screen = (QApplication.screenAt(QRect(x, y, w, h).center()) or QApplication.screenAt(self.geometry().center())
-                  or QApplication.primaryScreen())
-        return screen.availableGeometry()
-
-    def _apply_fold_state(self, rolled: bool, x: int, y: int, w: int, h: int) -> None:
-        """접힘/펼침 상태로 바꾸고 창 크기·내용 영역·제목 줄 버튼을 그 상태에 맞춥니다."""
-        self._is_rolled_up = rolled
-        self.memo_data['is_rolled_up'] = rolled
-        # 아래에서 창 크기를 바꾸는 동안 지나가는 크기를 '사용자가 정한 크기'로 기억하지 않게 합니다.
-        # (예: 잠긴 메모를 폈다 접을 때 암호 입력용 크기가 접은 메모의 너비로 남지 않도록)
-        self._applying_geometry = True
-        try:
-            if rolled:
-                self.content_container.hide()      # 내용을 먼저 숨겨야 창을 제목 줄 높이까지 줄일 수 있습니다.
-            self.window_layout.setContentsMargins(0, 0, 0, 0)
-            self.setMinimumSize(0, 0) if rolled else self.setMinimumSize(200, 150)
-            self.setMaximumSize(16777215, 16777215)
-            self.setGeometry(x, y, w, h)
-            if rolled:
-                self.setMinimumHeight(h)
-                self.setMaximumHeight(h)
-                self._apply_rolled_ui(h)
-            else:
-                self.content_container.show()
-                self._restore_normal_ui()
-            if self.width() != w or (not rolled and self.height() != h):
-                self.setGeometry(x, y, w, h)       # 내용을 다시 보이는 동안 크기가 달라졌으면 바로잡음
-        finally:
-            self._applying_geometry = False
-        self.remember_geometry()
-        # 본문 영역이 제자리를 잡은 뒤에 가림막(잠긴 메모의 암호 칸)을 그 위에 맞춥니다.
-        for holder in (self.bg, self):
-            if holder.layout():
-                holder.layout().activate()
-        if hasattr(self, 'lock_overlay'):
-            self.lock_overlay.refresh()
-            QTimer.singleShot(0, self.lock_overlay.refresh)
-        self.btn_min.setToolTip("펼치기 (Ctrl+M)" if rolled else "접기 (Ctrl+M)")
-        self.btn_max.setVisible(not rolled)
-        show_code_controls = not rolled and bool(self.memo_data.get('is_code_memo', False))
-        for control in (self.btn_code_theme, self.code_lang_box, self.btn_format_code, self.btn_lang_icon):
-            control.setVisible(show_code_controls)
-        if hasattr(self, 'btn_reminder'):
-            self.refresh_reminder_badge()
 
     # ── 위치와 크기 기억 ─────────────────────────────────────────────────────
     # 어디에 어떤 크기로 놓을지의 규칙은 ui/memo_geometry.py 에 있습니다. (창 없이 숫자만으로 따질 수 있게 따로 둠)
     # 여기서는 지금 창의 상태를 넘겨주고, 돌려받은 자리에 창을 놓습니다.
     LOCKED_SIZE = memo_geometry.LOCKED_SIZE
 
-    def _box(self) -> tuple:
-        return self.x(), self.y(), self.width(), self.height()
-
-    def is_locked_compact(self) -> bool:
-        """잠겨 있어서 암호 입력용 작은 크기로 떠 있는지. (이때의 크기는 메모의 크기로 기억하지 않음)"""
-        return memo_geometry.is_locked_compact(self.memo_data, self._is_rolled_up)
-
-    def remember_geometry(self) -> None:
-        """지금 상태(접힘/펼침)의 위치와 크기를 그 상태의 것으로 기억합니다."""
-        memo_geometry.remember(self.memo_data, self._is_rolled_up, self._box())
-
-    def _saved_unrolled_size(self) -> tuple:
-        """기억해 둔 펼친 크기. (잠겨 있든 아니든 메모 본래의 크기)"""
-        return memo_geometry.saved_unrolled_size(self.memo_data, getattr(self, '_normal_height', 300))
-
-    def _unrolled_size(self) -> tuple:
-        """펼쳤을 때의 크기. 잠긴 메모는 암호를 풀기 전까지 암호 입력용 작은 크기로 뜹니다."""
-        return memo_geometry.unrolled_size(self.memo_data, getattr(self, '_normal_height', 300))
-
-    def _covers_rolled_memo(self, rect: QRect) -> bool:
-        """rect 에 펼치면 다른 접은 메모를 가리게 되는지."""
-        manager = getattr(self, 'ui_manager', None)
-        if not manager:
-            return False
-        return any(other is not self and other.isVisible() and other._is_rolled_up and rect.intersects(other.geometry())
-                   for other in manager.memo_windows.values())
-
-    def _rolled_stack_span(self) -> Optional[tuple]:
-        """이 접은 메모가 다른 접은 메모들과 한 줄로 쌓여 있으면 그 줄의 (왼쪽 끝, 오른쪽 끝)을, 아니면 None 을 돌려줍니다."""
-        manager = getattr(self, 'ui_manager', None)
-        if not manager:
-            return None
-        left, right, found = self.x(), self.x() + self.width(), False
-        for other in manager.memo_windows.values():
-            if other is self or not other.isVisible() or not other._is_rolled_up:
-                continue
-            overlap = min(right, other.x() + other.width()) - max(left, other.x())
-            if overlap >= min(self.width(), other.width()) / 2:      # 가로로 절반 넘게 겹치면 같은 줄
-                left, right, found = min(left, other.x()), max(right, other.x() + other.width()), True
-        return (left, right) if found else None
-
-    def toggle_rollup(self) -> None:
-        """접거나 폅니다. 접힌 상태와 펼친 상태는 저마다 기억해 둔 위치와 크기로 돌아갑니다."""
-        screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
-        scr_geom = screen.availableGeometry()
-        data = self.memo_data
-        default_height = getattr(self, '_normal_height', 300)
-        self.remember_geometry()                      # 떠나는 상태의 위치·크기를 먼저 기억
-
-        if not self._is_rolled_up:
-            self._normal_height = memo_geometry.own_size(data, False, self._box(), default_height)[1]
-            data['rolled_height'] = self._get_rolled_height()
-            new_left_x, new_top_y, target_w, target_h = memo_geometry.fold_target(
-                data, self._box(), data['rolled_height'], scr_geom, default_height)
-        else:
-            new_left_x, new_top_y, target_w, target_h = memo_geometry.unfold_target(
-                data, self._box(), scr_geom,
-                area_for=lambda box: self._screen_area_for(*box),
-                stack=self._rolled_stack_span(),
-                covers=lambda box: self._covers_rolled_memo(QRect(*box)),
-                default_height=default_height)
-        new_left_x, new_top_y = self._clamp_to_screen(
-            self._screen_area_for(new_left_x, new_top_y, target_w, target_h), new_left_x, new_top_y, target_w, target_h)
-        self._apply_fold_state(not self._is_rolled_up, new_left_x, new_top_y, target_w, target_h)
-
-        if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
-            is_dark_bg = self.is_dark_bg()
-            icon_name = "maximize.svg" if self._is_rolled_up else "rollup.svg"
-            self.btn_min.setIcon(self.ui_manager.get_theme_icon(
-                icon_name, is_dark_bg, override_color="#FFFFFF" if is_dark_bg else "#1C1C1E"))
-
-        self.btn_min.style().unpolish(self.btn_min)
-        self.btn_min.style().polish(self.btn_min)
-        self.btn_min.update()
-        self.btn_min.repaint()
-        if hasattr(self, 'bg'):
-            self.bg.update()
-            self.bg.repaint()
-        QApplication.processEvents()
-
-        self.save_callback(self.memo_data)
-
-    def update_content(self) -> None:
-        if getattr(self, '_is_updating_from_explorer', False) or getattr(self, '_is_applying_data', False): return
-        if self.is_sealed(): return
-        self._schedule_auto_save()
-        self.restart_relock_timer()
 
     # 쉬지 않고 계속 입력하는 동안에도 최소한 이 간격으로는 저장합니다.
     MAX_UNSAVED_SEC = 600
 
-    def _schedule_auto_save(self) -> None:
-        """마지막 입력 후 환경설정의 대기 시간이 지나면 저장하도록 예약합니다.
-
-        입력이 이어지면 예약을 뒤로 미루되, 첫 미저장 입력 후 MAX_UNSAVED_SEC를 넘기지는 않습니다.
-        """
-        import time
-        try:
-            idle = int(self.memo_window_get_settings().get("auto_save_idle_sec", 60))
-        except (TypeError, ValueError):
-            idle = 60
-        now = time.monotonic()
-        if self._dirty_since is None or not self._auto_save_timer.isActive():
-            self._dirty_since = now
-        remaining_cap = self.MAX_UNSAVED_SEC - (now - self._dirty_since)
-        delay = max(0.0, min(float(max(1, idle)), remaining_cap))
-        self._auto_save_timer.start(int(delay * 1000))
-
-    def flush_auto_save(self) -> None:
-        """예약된 자동 저장이 남아 있으면 지금 바로 저장합니다. (닫기·숨기기·앱 종료 시)"""
-        if self._auto_save_timer.isActive():
-            self._auto_save_timer.stop()
-            self.execute_auto_save()
 
     def hideEvent(self, e: Any) -> None:
         if hasattr(self, 'lock_overlay'):
@@ -1223,45 +765,6 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             self.flush_auto_save()
         super().hideEvent(e)
 
-    def execute_auto_save(self) -> None:
-        self._dirty_since = None
-        if self.is_sealed():
-            # 잠긴 상태의 빈 편집기를 본문으로 저장하면 안 됩니다.
-            return
-        self.memo_data['content'] = self.current_content()
-        # 수정일시는 본문을 실제로 고쳤을 때만 바꿉니다. (고친 것 없이 저장만 한 경우에는 그대로)
-        # 본문은 그대로이고 속성만 바뀐 경우에는 다른 기기에 전해지도록 '속성 수정 시각'만 갱신합니다.
-        document = self.text_edit.document()
-        now = datetime.datetime.now().isoformat()
-        if document.isModified():
-            self.memo_data['updated_at'] = now
-        elif getattr(self, '_meta_dirty', False):
-            self.memo_data['meta_updated_at'] = now
-        document.setModified(False)
-        self._meta_dirty = False
-
-        plain = clean_plain_text(self.memo_data['content'])
-
-        if self.memo_data.get('is_draft'):
-            if plain:
-                self.memo_data['is_draft'] = False
-                self.save_callback(self.memo_data)
-                self.show_toast("✓ 저장됨")
-        else:
-            self.save_callback(self.memo_data)
-            self.show_toast("✓ 저장됨")
-
-    def manual_save(self) -> None:
-        plain = clean_plain_text(self.text_edit.toHtml())
-        if plain:
-            self.memo_data['is_manually_saved'] = True
-            self.memo_data['is_draft'] = False
-            self._auto_save_timer.stop()
-            self.execute_auto_save()
-        else:
-            # 내용이 없으면 draft 상태 유지, 저장은 수행하되 목록에는 추가 안되게 처리
-            self._auto_save_timer.stop()
-            self.execute_auto_save()
 
     def apply_data(self) -> None:
         if getattr(self, '_is_applying_data', False):
@@ -1452,42 +955,6 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
                 sm.relock_memo(self.memo_data.get('id', ''))
         super().closeEvent(e)
 
-    def enable_rename(self) -> None:
-        self.title_edit.setReadOnly(False)
-        pal = self._memo_theme_palette()
-        is_rolled = getattr(self, '_is_rolled_up', False)
-        rolled_h = self._get_rolled_height()
-        title_pt = max(8.0, min(13.0, rolled_h * 0.22)) if is_rolled else 12.0
-        self.title_edit.setStyleSheet(f"border:1px solid {pal['accent']}; background:transparent; color:{pal['text']}; font-weight:bold; font-size:{title_pt}pt; border-radius:0px; font-family: {modern_style.UI_FONT};")
-        self.title_edit.setFocus()
-        self.title_edit.setCursorPosition(len(self.title_edit.text()))
-
-    def handle_rename(self) -> None:
-        self.title_edit.setReadOnly(True)
-        self._do_title_save()
-
-    def _do_title_save(self) -> None:
-        nt = re.sub(r'[\\/*?:"<>|]', "", self.title_edit.text().strip())
-        ot = self.memo_data.get('title','')
-        if not nt or nt == ot:
-            self.title_edit.setText(ot)
-        else:
-            if self.rename_callback(ot, nt, self.memo_data):
-                self.memo_data['title'] = nt
-                self.memo_data['updated_at'] = datetime.datetime.now().isoformat()     # 제목을 고친 것도 수정
-                self.save_callback(self.memo_data)
-            else:
-                self.show_toast(f"'{nt}' 제목의 메모가 이미 있습니다.", warn=True)
-                self.title_edit.setText(ot)
-
-        is_rolled = getattr(self, '_is_rolled_up', False)
-        rolled_h = self._get_rolled_height()
-        title_pt = max(8.0, min(13.0, rolled_h * 0.22)) if is_rolled else 12.0
-        self.title_edit.setStyleSheet(self._title_color_stylesheet(title_pt))
-        self.title_edit.setCursorPosition(0)
-        self.title_edit.deselect()
-        if getattr(self, 'ui_manager', None) and self.ui_manager.explorer_window and self.ui_manager.explorer_window.isVisible():
-            self.ui_manager.explorer_window.update_table()
 
     def toggle_pin(self) -> None:
         self.memo_data['is_pinned'] = not self.memo_data.get('is_pinned', False)
