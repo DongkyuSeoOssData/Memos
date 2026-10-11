@@ -571,6 +571,7 @@ python tools/mobile_dev_server.py
 - **메모 창의 위치·크기 규칙을 따로.** 접고 펼 때의 자리 계산을 `memo_geometry.py`로 옮겨, 창을 띄우지 않고 숫자만으로 테스트할 수 있게 했습니다.
 - **메모 탐색기를 역할별로 나눔.** 2천 줄 가까이 되던 `memo_explorer.py`에서 폴더, 창 크기·옆 패널, 미리보기, 여러 메모 고르기를 각각 `explorer_folders.py`, `explorer_panels.py`, `explorer_preview.py`, `explorer_selection.py`로 옮겼습니다. 폴더 사이드바와 환경설정 패널을 열 때 창을 옆으로 늘리던 같은 코드 두 벌도 하나로 합쳤습니다.
 - **창 안 입력 쪽 모듈의 경계 정리.** 대화상자와 가림막이 서로를 불러 쓰던 것을 한 방향(`live_settings` → `input_panels` → `overlay` → `themed_dialog`)으로 풀었습니다. 입력 화면(여러 칸 입력·버튼 고르기·색 고르기)은 `input_panels.py`로, 설정을 읽는 통로는 `live_settings.py`로 옮기고, 탐색기의 가림막까지 담고 있어 이름이 맞지 않던 `lock_overlay.py`는 `overlay.py`로 바꿨습니다.
+- **환경설정의 불러오기·모으기를 표 하나로.** 화면의 칸 하나가 설정값 하나와 그대로 짝지어지는 설정 21가지를 `SettingsWindow.FIELDS` 표에 모아, 불러올 때와 저장할 때 같은 표를 쓰게 했습니다. 이런 설정을 새로 넣을 때 두 곳을 따로 고치다 한쪽을 빠뜨리는 일이 없어집니다. 저장된 값이 고를 수 있는 항목에 없으면 기본값을 고릅니다.
 
 ### 올릴 때 할 일
 

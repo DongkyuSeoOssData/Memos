@@ -1657,6 +1657,43 @@ class UnsavedSettingsTest(test_ui.UiTestCase):
         self.assertTrue(self.ex.settings_open())
 
 
+class SettingsFieldTableTest(test_ui.UiTestCase):
+    """칸 하나가 설정값 하나와 그대로 짝지어지는 설정은 표(FIELDS) 하나로 불러오고 모읍니다."""
+
+    def window(self, **saved):
+        self.sm.settings.update(saved)
+        win = test_ui.sw.SettingsWindow(self.sm)
+        self.addCleanup(win.close)
+        return win
+
+    def test_every_field_is_loaded_and_collected(self) -> None:
+        win = self.window()
+        keys = [key for key, _, _ in win.FIELDS]
+        self.assertEqual(len(keys), len(set(keys)))
+        got = win.collect()
+        for key, name, default in win.FIELDS:
+            self.assertTrue(hasattr(win, name), name)
+            self.assertEqual(got[key], self.sm.settings.get(key, default), key)     # 저장된 값이 없으면 기본값
+        self.assertFalse(win.is_dirty())
+
+    def test_saved_values_round_trip(self) -> None:
+        saved = {"use_sync": True, "drive_folder_id": "https://x/exec", "locked_memo_relock_min": 9, "default_font_size": 14,
+                 "auto_eng_kor_convert": False, "default_memo_width": 410, "default_rolled_height": 60, "ui_style": "neo",
+                 "auto_save_idle_sec": 300, "explorer_fixed_size": True, "folder_ui": "sidebar", "global_hotkeys": False}
+        win = self.window(**saved)
+        got = win.collect()
+        self.assertEqual({key: got[key] for key in saved}, saved)
+        self.assertFalse(win.is_dirty())
+        win.spin_relock_min.setValue(3)
+        self.assertTrue(win.is_dirty())
+        self.assertEqual(win.collect()["locked_memo_relock_min"], 3)
+
+    def test_unknown_saved_choice_falls_back_to_the_default(self) -> None:
+        got = self.window(ui_style="zzz", auto_save_idle_sec=7, folder_ui="zzz", dark_theme_mode="zzz").collect()
+        self.assertEqual((got["ui_style"], got["auto_save_idle_sec"], got["folder_ui"], got["dark_theme_mode"]),
+                         ("modern", 60, "tabs", "dark"))
+
+
 class LockedHistoryTest(test_ui.UiTestCase):
     """암호 메모의 내용은 변경 기록에도 평문으로 남지 않고, 되돌려도 잠금 상태가 바뀌지 않습니다."""
 

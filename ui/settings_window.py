@@ -911,6 +911,60 @@ class SettingsWindow(QWidget):
         for box in (self.url_input, self.token_input, self.path_input):
             box.textChanged.connect(self._refresh_dirty)
 
+    # 화면의 칸 하나가 설정값 하나와 그대로 짝지어지는 것들: (설정 키, 칸의 이름, 기본값)
+    # 불러오기(_load_form)와 모으기(collect)가 이 표를 함께 쓰므로, 이런 설정을 더할 때는 칸을 만들고 여기에 한 줄만 넣습니다.
+    # 읽고 쓰는 법은 칸의 종류로 정해집니다: 체크 상자 = 켬/끔, 숫자 칸 = 숫자, 글자 칸 = 글자, 고르는 칸 = 항목에 심어 둔 값.
+    # 값을 바꿔서 담는 것(색, 글꼴, 휴지통 보관 기간, 탐색기 크기 등)은 표에 넣지 않고 두 함수에 따로 적습니다.
+    FIELDS = (
+        ("use_sync", "sync_cb", False),
+        ("drive_folder_id", "url_input", ""),
+        ("drive_access_token", "token_input", ""),
+        ("locked_memo_relock_min", "spin_relock_min", 5),
+        ("default_font_size", "default_font_size_spin", 11),
+        ("auto_eng_kor_convert", "cb_auto_eng_kor", True),
+        ("default_code_line_numbers", "cb_code_line_num", True),
+        ("default_code_line_bg", "cb_code_line_bg", False),
+        ("default_is_pinned", "cb_default_pin", False),
+        ("dark_theme_mode", "dark_theme_box", "dark"),
+        ("light_theme_mode", "light_theme_box", "white"),
+        ("default_memo_width", "spin_memo_width", 350),
+        ("default_memo_height", "spin_memo_height", 380),
+        ("default_code_memo_width", "spin_code_memo_width", 500),
+        ("default_code_memo_height", "spin_code_memo_height", 380),
+        ("default_rolled_height", "spin_rolled_height", 53),
+        ("ui_style", "ui_style_box", modern_style.DEFAULT_STYLE),
+        ("auto_save_idle_sec", "auto_save_interval_box", 60),
+        ("explorer_fixed_size", "cb_explorer_fixed", False),
+        ("folder_ui", "folder_ui_box", "tabs"),
+        ("global_hotkeys", "cb_global_hotkeys", True),
+    )
+    _SET_QUIETLY = ("dark_theme_box", "light_theme_box")      # 불러올 때 '바뀜' 신호를 내지 않는 칸 (미리보기가 돌지 않게)
+
+    @staticmethod
+    def _read_field(box: Any) -> Any:
+        if isinstance(box, QCheckBox):
+            return box.isChecked()
+        if isinstance(box, QComboBox):
+            return box.currentData()
+        if isinstance(box, QLineEdit):
+            return box.text().strip()
+        return box.value()
+
+    @staticmethod
+    def _write_field(box: Any, value: Any, default: Any) -> None:
+        if isinstance(box, QCheckBox):
+            box.setChecked(bool(value))
+        elif isinstance(box, QComboBox):
+            index = box.findData(value)
+            if index < 0:                                  # 모르는 값이 저장돼 있으면 기본값으로
+                index = box.findData(default)
+            if index >= 0:
+                box.setCurrentIndex(index)
+        elif isinstance(box, QLineEdit):
+            box.setText(str(value))
+        else:
+            box.setValue(int(value))
+
     def collect(self) -> dict:
         """화면의 값을 설정 형식으로 모읍니다. (저장하지는 않음)"""
         auto_start_now = self.auto_start_cb.isChecked()
@@ -924,50 +978,29 @@ class SettingsWindow(QWidget):
         # 0: 자동 삭제 안 함, -1: 즉시 삭제, 그 외: 보관 일수
         trash_days_map = {0: 0, 1: -1, 2: 15, 3: 30}
 
-        ns = {
-            "use_sync": self.sync_cb.isChecked(),
-            "drive_folder_id": self.url_input.text().strip(),
-            "drive_access_token": self.token_input.text().strip(),
+        ns = {key: self._read_field(getattr(self, name)) for key, name, _ in self.FIELDS}
+        ns.update({
             "local_memo_path": self.path_input.text().strip(),
             "sync_interval_index": self.sync_interval_combo.currentIndex(),
             "auto_start": auto_start_now,
-            "locked_memo_relock_min": self.spin_relock_min.value(),
             "reminder_quick_minutes": [spin.value() for spin in self.quick_minute_spins],
             "default_memo_color": list(self.colors.values())[self.default_color_combo.currentIndex()],
             "default_font_family": self.default_font_box.currentFont().family(),
             "default_code_font_family": self.default_code_font_box.currentFont().family(),
-            "default_font_size": self.default_font_size_spin.value(),
             "default_code_lang": self.default_code_lang_box.currentText(),
             "default_code_theme": "dark" if self.default_code_theme_box.currentIndex() == 0 else "light",
-            "auto_eng_kor_convert": self.cb_auto_eng_kor.isChecked(),
             "default_gen_line_numbers": self.cb_gen_line_num.isChecked(),
             "default_gen_line_bg": self.cb_gen_line_bg.isChecked(),
-            "default_code_line_numbers": self.cb_code_line_num.isChecked(),
-            "default_code_line_bg": self.cb_code_line_bg.isChecked(),
             "default_show_line_numbers": self.cb_gen_line_num.isChecked(),
             "default_show_line_bg": self.cb_gen_line_bg.isChecked(),
-            "default_is_pinned": self.cb_default_pin.isChecked(),
             "trash_auto_delete_days": trash_days_map.get(self.trash_auto_delete_box.currentIndex(), 0),
             "app_theme": self.sm.settings.get("app_theme", "white"),
-            "dark_theme_mode": self.dark_theme_box.currentData(),
-            "light_theme_mode": self.light_theme_box.currentData(),
             "default_memo_opacity": round(self.opacity_slider.value() / 100.0, 2),
-            "default_memo_width": self.spin_memo_width.value(),
-            "default_memo_height": self.spin_memo_height.value(),
-            "default_code_memo_width": self.spin_code_memo_width.value(),
-            "default_code_memo_height": self.spin_code_memo_height.value(),
-            "default_rolled_height": self.spin_rolled_height.value(),
-            "ui_style": self.ui_style_box.currentData(),
-            "auto_save_idle_sec": self.auto_save_interval_box.currentData(),
-            "explorer_fixed_size": self.cb_explorer_fixed.isChecked(),
-            "folder_ui": self.folder_ui_box.currentData(),
             "explorer_geom": self._explorer_geom_from_inputs(),
             "settings_window_font_pt": self.ui_font_pt,
             "shortcuts": shortcuts_dict,
-            "global_hotkeys": self.cb_global_hotkeys.isChecked(),
-        }
+        })
         return ns
-
 
     def sel(self) -> None:
         p = QFileDialog.getExistingDirectory(self, "선택", self.path_input.text())
@@ -984,76 +1017,49 @@ class SettingsWindow(QWidget):
 
     def _load_form(self) -> None:
         s = self.sm.settings
-        self.sync_cb.setChecked(s.get("use_sync", False))
-        self.url_input.setText(s.get("drive_folder_id",""))
-        self.token_input.setText(s.get("drive_access_token", ""))
+        self._loading_settings = True                      # 화면 스타일을 '고른' 것이 아니라 불러오는 중임을 알림
+        try:
+            for key, name, default in self.FIELDS:
+                box = getattr(self, name)
+                quiet = name in self._SET_QUIETLY
+                if quiet:
+                    box.blockSignals(True)
+                self._write_field(box, s.get(key, default), default)
+                if quiet:
+                    box.blockSignals(False)
+        finally:
+            self._loading_settings = False
         self.path_input.setText(str(self.sm.local_path))
         self.sync_interval_combo.setCurrentIndex(s.get("sync_interval_index", 0))
         # 설정 파일이 아니라 레지스트리의 실제 등록 상태를 보여줍니다.
         self.auto_start_cb.setChecked(is_auto_start_enabled())
-        self.spin_relock_min.setValue(int(s.get("locked_memo_relock_min", 5)))
         for spin, minutes in zip(self.quick_minute_spins, (quick_minutes(s) + list(DEFAULT_QUICK_MINUTES))[:3]):
             spin.setValue(minutes)
-        self.cb_default_pin.setChecked(s.get("default_is_pinned", False))
-        self.cb_auto_eng_kor.setChecked(s.get("auto_eng_kor_convert", True))
         # 투명도 슬라이더 로드
         saved_opacity = s.get("default_memo_opacity", 1.0)
         self.opacity_slider.setValue(int(round(saved_opacity * 100)))
 
-        self.spin_memo_width.setValue(s.get("default_memo_width", 350))
-        self.spin_memo_height.setValue(s.get("default_memo_height", 380))
-        self.spin_code_memo_width.setValue(s.get("default_code_memo_width", 500))
-        self.spin_code_memo_height.setValue(s.get("default_code_memo_height", 380))
-        self.spin_rolled_height.setValue(s.get("default_rolled_height", 53))
-        style_idx = self.ui_style_box.findData(s.get("ui_style", modern_style.DEFAULT_STYLE))
-        self._loading_settings = True
-        self.ui_style_box.setCurrentIndex(style_idx if style_idx >= 0 else self.ui_style_box.findData("modern"))
-        self._loading_settings = False
-
-        idx = self.auto_save_interval_box.findData(s.get("auto_save_idle_sec", 60))
-        self.auto_save_interval_box.setCurrentIndex(idx if idx >= 0 else self.auto_save_interval_box.findData(60))
 
         ex_w, ex_h = self._current_explorer_size()
         self.spin_explorer_width.setValue(ex_w)
         self.spin_explorer_height.setValue(ex_h)
-        self.cb_explorer_fixed.setChecked(s.get("explorer_fixed_size", False))
         # 탐색기 크기는 탐색기가 놓인 모니터의 작업 영역보다 크게 넣을 수 없습니다.
         area = screen_bounds.work_area(self._explorer_window() or self)
         if area is not None:
             self.spin_explorer_width.setMaximum(max(580, area.width()))
             self.spin_explorer_height.setMaximum(max(440, area.height()))
-        self.folder_ui_box.setCurrentIndex(max(0, self.folder_ui_box.findData(s.get("folder_ui", "tabs"))))
 
         self.cb_gen_line_num.setChecked(s.get("default_gen_line_numbers", s.get("default_show_line_numbers", False)))
         self.cb_gen_line_bg.setChecked(s.get("default_gen_line_bg", s.get("default_show_line_bg", False)))
-        self.cb_code_line_num.setChecked(s.get("default_code_line_numbers", True))
-        self.cb_code_line_bg.setChecked(s.get("default_code_line_bg", False))
 
         def_font = s.get("default_font_family", "D2Coding")
         def_code_font = s.get("default_code_font_family", "D2Coding")
 
         self.default_font_box.setCurrentFont(QFont(def_font))
         self.default_code_font_box.setCurrentFont(QFont(def_code_font))
-        self.default_font_size_spin.setValue(s.get("default_font_size", 11))
 
         self.default_code_lang_box.setCurrentText(s.get("default_code_lang", "JSON"))
         self.default_code_theme_box.setCurrentIndex(0 if s.get("default_code_theme", "dark") == "dark" else 1)
-
-        dark_mode_val = s.get("dark_theme_mode", "dark")
-        self.dark_theme_box.blockSignals(True)
-        for i in range(self.dark_theme_box.count()):
-            if self.dark_theme_box.itemData(i) == dark_mode_val:
-                self.dark_theme_box.setCurrentIndex(i)
-                break
-        self.dark_theme_box.blockSignals(False)
-
-        light_mode_val = s.get("light_theme_mode", "white")
-        self.light_theme_box.blockSignals(True)
-        for i in range(self.light_theme_box.count()):
-            if self.light_theme_box.itemData(i) == light_mode_val:
-                self.light_theme_box.setCurrentIndex(i)
-                break
-        self.light_theme_box.blockSignals(False)
 
         curr = s.get("default_memo_color", "#FFFFFF")
         for i, (n, c) in enumerate(self.colors.items()):
@@ -1068,7 +1074,6 @@ class SettingsWindow(QWidget):
         else: self.trash_auto_delete_box.setCurrentIndex(0)
 
         self._fill_shortcut_table(s.get("shortcuts", {}))
-        self.cb_global_hotkeys.setChecked(bool(s.get("global_hotkeys", True)))
 
     # (표시 이름, 초) — 마지막 입력 후 자동 저장까지 기다리는 시간
     AUTO_SAVE_INTERVALS = [
