@@ -575,6 +575,7 @@ python tools/mobile_dev_server.py
 - **테스트를 주제별 파일로.** 2,500줄짜리 `test_features.py`를 알림·체크리스트·이전 내용·암호 메모·탐색기·환경설정·대화상자·메모 창·사용 안내·빠른 검색 파일로 나누고, 작업한 순서대로 묶여 주제가 섞여 있던 테스트를 주제에 맞는 묶음으로 옮겼습니다. 공용 준비는 `tests/support.py`로 뺐고, 파일 하나만 따로 돌릴 수도 있습니다(`python tests/test_reminders.py`).
 - **동기화가 화면을 직접 부르지 않게.** 동기화 쪽(`core`)이 탐색기 토스트와 트레이 알림을 직접 띄우고, 안내 문구에 "동기화 완료"가 들어 있는지로 목록을 새로 고칠지 정하던 것을 고쳤습니다. 이제 동기화는 결과 값(바뀜·바뀐 것 없음·끝내지 못함)만 넘기고, 어떻게 보여 줄지는 `UIManager.show_sync_result`가 정합니다.
 - **화면을 만드는 긴 함수를 구역별로.** 환경설정(594줄), 탐색기(287줄), 메모 창(275줄), 알림 설정(153줄)의 화면을 한 함수에서 만들던 것을 탭·줄·묶음별 함수(`_build_general_tab`, `_build_header`, `_build_title_row` 등)로 나눴습니다. 내용은 그대로 옮기기만 했습니다.
+- **`SyncManager`를 역할별로 나눔.** 1,100줄 가까이 되던 `sync_manager.py`에서 암호 메모, 이전 내용, 휴지통을 각각 `memo_password.py`, `memo_history.py`, `memo_trash.py`로 옮겼습니다. `sync_manager.py`에는 설정, 메모 파일 읽고 쓰기, 알림 목록, 동기화 실행이 남습니다.
 
 ### 올릴 때 할 일
 
@@ -763,7 +764,10 @@ python tools/mobile_dev_server.py
  ┣ 📜 Memos.spec               # PyInstaller 빌드 설정
  ┣ 📜 requirements.txt         # 필요한 패키지
  ┣ 📂 core
- ┃ ┣ 📜 sync_manager.py        # 설정, 메모 파일 입출력, 암호 메모, 휴지통, 동기화 실행
+ ┃ ┣ 📜 sync_manager.py        # 설정, 메모 파일 입출력, 알림 목록, 동기화 실행
+ ┃ ┣ 📜 memo_password.py       # 암호 메모 (걸기·풀기·없애기, 관리자 키로 복구)
+ ┃ ┣ 📜 memo_history.py        # 이전 내용 (기록 남기기·보기·되돌리기, 암호 메모의 기록 잠그기)
+ ┃ ┣ 📜 memo_trash.py          # 휴지통 (보관·복원·비우기, 보관 기간, 드라이브 삭제 대기열)
  ┃ ┣ 📜 sync_worker.py         # 백그라운드 동기화 (증분·충돌·삭제 반영)
  ┃ ┣ 📜 shared_settings.py     # 기기끼리 함께 쓰는 설정 (드라이브의 _settings.json)
  ┃ ┣ 📜 folders.py             # 폴더 규칙 (하위 폴더, 순서, 목록 만들기)
