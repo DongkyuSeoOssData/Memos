@@ -57,7 +57,7 @@ def _parse_dt(value: str) -> datetime:
 SYNC_CHANGED = "changed"            # 가져오거나 올린 메모가 있음
 SYNC_UNCHANGED = "unchanged"        # 끝까지 돌았지만 바뀐 것이 없음
 SYNC_NOT_DONE = ""                  # 돌지 못했거나 오류로 끝남
-SYNC_OFFLINE = "offline"            # 드라이브에 닿지 못함 (인터넷이 끊겼거나 주소가 틀림)
+SYNC_OFFLINE = "offline"            # 드라이브에 닿지 못함 (인터넷이 끊겼거나, 주소가 틀렸거나 비어 있음)
 
 
 class SyncWorker(QObject):
@@ -167,7 +167,7 @@ class SyncWorker(QObject):
 
     def _check_available(self) -> bool:
         if not self.sm.drive_api.is_available():
-            self.finished.emit(False, "환경설정에서 GAS URL을 먼저 입력해주세요.", SYNC_NOT_DONE)
+            self.finished.emit(False, "환경설정에서 GAS URL을 먼저 입력해주세요.", SYNC_OFFLINE)
             return False
         return True
 

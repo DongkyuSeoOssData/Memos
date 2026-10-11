@@ -47,11 +47,18 @@ class UIManager:
         self.quick_search: Optional[QuickSearch] = None
         # 알림: 가장 가까운 알림 시각에 맞춰 한 번만 깨어나는 타이머 (주기적으로 훑지 않음)
         self._reminder_popups: List[ReminderPopup] = []
+        self._rung: Dict[str, str] = {}         # 메모 id → 이미 울린 알림의 시각 (같은 알림을 두 번 울리지 않기 위해)
         self._reminder_timer = QTimer()
         self._reminder_timer.setSingleShot(True)
         self._reminder_timer.timeout.connect(self.check_reminders)
         # 동기화 작업 스레드에서 알림 목록이 바뀌어도, 타이머는 항상 화면 스레드에서 다룹니다.
         self.sync_manager.reminders_changed.connect(self.schedule_reminders, Qt.ConnectionType.QueuedConnection)
+        # 동기화를 쓰는 PC에서는 첫 알림 확인을 시작 직후의 동기화 뒤로 미룹니다. 이 PC가 꺼져 있는 동안 다른 기기에서
+        # 이미 울리고 지운 알림이, 그 사실을 받기도 전에 '지나간 알림'으로 다시 뜨지 않게 하려는 것입니다.
+        self._reminders_on_hold = self.sync_manager.startup_sync_expected()
+        if self._reminders_on_hold:
+            self.sync_manager.sync_cycle_finished.connect(self.release_reminders, Qt.ConnectionType.QueuedConnection)
+            QTimer.singleShot(self.REMINDER_HOLD_MS, self.release_reminders)     # 동기화가 늦어도 이만큼만 기다림
         self.schedule_reminders()               # 이미 읽어 둔 알림이 있으면 바로 예약
         self.sync_manager.set_ui_manager(self)
         self.setup_tray()
@@ -271,10 +278,20 @@ class UIManager:
 
     # ── 알림 ─────────────────────────────────────────────────────────────────
     MAX_REMINDER_WAIT_MS = 60 * 60 * 1000       # PC 절전·시계 변경에 대비해 길어도 1시간마다는 다시 계산
+    REMINDER_HOLD_MS = 20 * 1000                # 앱을 켠 뒤 시작 동기화를 기다려 주는 가장 긴 시간
+
+    def release_reminders(self) -> None:
+        """미뤄 둔 첫 알림 확인을 시작합니다. (시작 직후의 동기화가 끝났거나, 기다릴 만큼 기다렸을 때)"""
+        if self._reminders_on_hold:
+            self._reminders_on_hold = False
+            self.schedule_reminders()
 
     def schedule_reminders(self) -> None:
         """가장 가까운 알림 시각에 맞춰 타이머를 겁니다. 알림이 하나도 없으면 타이머를 끕니다."""
-        due = [d for d in (reminders.due_at(r) for r in list(self.sync_manager.reminders.values())) if d is not None]
+        if getattr(self, '_reminders_on_hold', False):
+            return
+        waiting = [r for memo_id, r in list(self.sync_manager.reminders.items()) if not self._already_rung(memo_id, r)]
+        due = [d for d in (reminders.due_at(r) for r in waiting) if d is not None]
         if not due:
             self._reminder_timer.stop()
             return
@@ -284,11 +301,26 @@ class UIManager:
     def check_reminders(self) -> None:
         """시각이 된 알림을 울립니다. (앱이 꺼져 있던 동안 지나간 알림도 여기서 한 번 울립니다)"""
         now = datetime.datetime.now()
-        for memo_id, reminder in list(self.sync_manager.reminders.items()):
-            due = reminders.due_at(reminder)
-            if due is not None and due <= now:
-                self.fire_reminder(memo_id, reminder, now)
+        current = self.sync_manager.reminders
+        self._rung = {memo_id: at for memo_id, at in self._rung.items() if memo_id in current}
+        for memo_id, reminder in list(current.items()):
+            if self._already_rung(memo_id, reminder):
+                continue
+            try:
+                due = reminders.due_at(reminder)
+                if due is not None and due <= now:
+                    # 울리기 전에 적어 둡니다. 울린 뒤 다음 시각으로 넘겨 저장하지 못했거나 도중에 오류가 나도,
+                    # 같은 시각의 알림이 되풀이해 울리지 않습니다. (저장되면 시각이 바뀌므로 자연히 풀림)
+                    self._rung[memo_id] = str(reminder.get("at", ""))
+                    self.fire_reminder(memo_id, reminder, now)
+            except Exception as e:
+                # 알림 하나가 잘못돼도 나머지 알림과 다음 예약은 그대로 갑니다.
+                self.sync_manager.log_error(f"알림을 울리지 못함 ({memo_id}): {e}", e)
         self.schedule_reminders()
+
+    def _already_rung(self, memo_id: str, reminder: Dict[str, Any]) -> bool:
+        """이 시각의 알림을 이미 울렸는지."""
+        return self._rung.get(memo_id) == str(reminder.get("at", ""))
 
     def _memo_for(self, memo_id: str) -> Optional[Dict[str, Any]]:
         """메모 데이터. 창이 열려 있으면 창이 들고 있는 것을 써서, 창이 나중에 예전 값으로 덮어쓰지 않게 합니다."""
@@ -432,6 +464,11 @@ class UIManager:
     def _toast(self, text: str) -> None:
         if self.explorer_window and self.explorer_window.isVisible():
             self.explorer_window.show_toast(text)
+
+    def show_error_notice(self) -> None:
+        """처리하지 못한 오류가 났음을 트레이로 알립니다. (자세한 내용은 error.log 에)"""
+        self.tray_icon.showMessage("Memos", "방금 한 동작에서 오류가 나서 기록해 두었습니다. (error.log)",
+                                   QSystemTrayIcon.MessageIcon.Warning, 4000)
 
     def show_sync_result(self, success: bool, message: str, completed: bool) -> None:
         """동기화 결과를 알립니다. 탐색기가 보이면 그 토스트로, 아니면 실패했을 때만 트레이 알림으로.

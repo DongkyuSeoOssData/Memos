@@ -15,6 +15,7 @@
  *  PC 앱에서 처리하지 못한 오류가 나면 이 스크립트가 메일로 알립니다.
  *  받는 주소는 스크립트 속성 ERROR_MAIL_TO 이고, 없으면 이 스크립트 주인의 구글 계정 주소입니다.
  *  받는 주소를 요청에서 받지 않으므로, 주소를 아는 사람이 이 스크립트로 다른 곳에 메일을 보낼 수는 없습니다.
+ *  ACCESS_TOKEN 을 설정해 둔 경우에만 받고, 한 시간에 REPORTS_PER_HOUR 통까지만 보냅니다.
  */
 const MAIN_FOLDER = "Memos";
 const TRASH_FOLDER = "trash_bin";
@@ -68,9 +69,18 @@ function json_(obj) {
 }
 
 // ── 오류 보고 메일 ───────────────────────────────────────────────────────────
+const REPORTS_PER_HOUR = 10;
+
 function sendReport_(data) {
-  const to = PropertiesService.getScriptProperties().getProperty("ERROR_MAIL_TO")
-    || Session.getEffectiveUser().getEmail();
+  const props = PropertiesService.getScriptProperties();
+  // 접근 암호 없이 열어 둔 주소로는 받지 않습니다. (주소만 알면 누구나 메일을 보내게 할 수 있게 되므로)
+  if (!props.getProperty("ACCESS_TOKEN")) return "Token required";
+  // 앱 쪽에서도 수를 제한하지만, 여기서도 한 시간에 보내는 수를 막아 둡니다.
+  const cache = CacheService.getScriptCache();
+  const sent = Number(cache.get("report_count") || 0);
+  if (sent >= REPORTS_PER_HOUR) return "Too many";
+  cache.put("report_count", String(sent + 1), 3600);
+  const to = props.getProperty("ERROR_MAIL_TO") || Session.getEffectiveUser().getEmail();
   if (!to) return "No recipient";
   if (MailApp.getRemainingDailyQuota() < 1) return "Quota exceeded";
   const subject = String(data.subject || "Memos 오류").slice(0, 150);

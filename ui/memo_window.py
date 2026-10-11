@@ -213,8 +213,9 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
 
         self._build_font_bar()
 
-        cc_layout.addLayout(self.fmt_bar)
+        # 글꼴 줄은 서식 줄 위에 엽니다. 아래에 열면 서식 줄의 버튼들이 위로 밀려 올라가 자리가 바뀝니다.
         cc_layout.addWidget(self.sub_fmt_widget)
+        cc_layout.addLayout(self.fmt_bar)
 
         self.update_toolbar_button_states()
         bg_l.addWidget(self.content_container)
@@ -346,7 +347,7 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
         self.btn_format_code.hide()
         self.fmt_bar.addWidget(self.btn_format_code)
 
-        self.btn_toggle_sub_fmt = QPushButton("Aa ▾")
+        self.btn_toggle_sub_fmt = QPushButton("Aa ▴")
         self.btn_toggle_sub_fmt.setFixedHeight(24)
         self.btn_toggle_sub_fmt.clicked.connect(self.toggle_sub_fmt_panel)
         self.btn_toggle_sub_fmt.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -560,7 +561,7 @@ class MemoWindow(MemoRollupMixin, MemoSavingMixin, MemoFindMixin, MemoMenuMixin,
     def toggle_sub_fmt_panel(self) -> None:
         is_vis = self.sub_fmt_widget.isVisible()
         self.sub_fmt_widget.setVisible(not is_vis)
-        self.btn_toggle_sub_fmt.setText("Aa ▴" if not is_vis else "Aa ▾")
+        self.btn_toggle_sub_fmt.setText("Aa ▾" if not is_vis else "Aa ▴")      # 위로 열리고(▴) 아래로 닫힘(▾)
         if is_vis:
             self.title_edit.deselect()
             self.text_edit.setFocus()                   # 닫으면 본문으로 돌아감

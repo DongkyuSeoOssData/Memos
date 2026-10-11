@@ -9,7 +9,7 @@ from ui import modern_style
 import datetime
 from typing import List, Dict, Any, Optional
 from PyQt6.QtWidgets import QMenu
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtCore import QEvent, Qt, QPoint
 from PyQt6.QtGui import QTextCursor, QTextDocument
 from utils.text_utils import clean_plain_text, is_html_content
 
@@ -136,6 +136,22 @@ class ExplorerPreviewMixin:
 
     def _preview_check_colors(self) -> Dict[str, Any]:
         return modern_style.check_colors(modern_style.app_colors(self.ui_manager.sync_manager.settings))
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:
+        if obj is getattr(self, 'pv', None) and event.type() == QEvent.Type.FocusIn:
+            self._save_window_typing_first()
+        return super().eventFilter(obj, event)
+
+    def _save_window_typing_first(self) -> None:
+        """미리보기에서 고치기 시작할 때, 같은 메모의 창에서 쓰고 아직 저장되지 않은 글을 먼저 저장합니다.
+
+        미리보기는 저장된 내용을 보여 주므로, 그대로 고치면 창에서 쓰던 글을 예전 내용으로 덮어 버립니다.
+        저장하면 목록이 다시 그려지면서 미리보기도 방금 쓴 글로 바뀝니다.
+        """
+        m = self._preview_memo()
+        w = self.ui_manager.memo_windows.get(m.get('id', '')) if m else None
+        if w is not None and w._auto_save_timer.isActive():
+            self.on_cell_click(self.table.currentRow(), 2)       # 창의 글을 저장하고 미리보기를 다시 채움
 
     def on_preview_changed(self) -> None:
         if self._is_loading_preview or self.is_trash_mode:

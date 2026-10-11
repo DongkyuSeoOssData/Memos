@@ -72,6 +72,8 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
     HISTORY_MIN_GAP_SEC = 10 * 60
     # 메모의 알림이 바뀌었음을 알립니다. (화면 쪽에서 다음 알림 시각을 다시 잡음)
     reminders_changed = pyqtSignal()
+    # 동기화 한 바퀴가 (성공이든 실패든) 끝났음을 알립니다.
+    sync_cycle_finished = pyqtSignal()
     DEFAULT_SETTINGS: Dict[str, Any] = {
         "use_sync": False,
         "drive_folder_id": "",
@@ -399,7 +401,12 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         else:
             memo['reminder'] = normal
         memo['meta_updated_at'] = datetime.now().isoformat()
-        return self.save_memo_locally(memo)
+        saved = self.save_memo_locally(memo)
+        if not saved and memo.get('id'):
+            # 저장하지 못했더라도 메모리의 알림 목록은 넘겨 둡니다.
+            # (안 그러면 방금 울린 알림이 '시각이 지난 알림'으로 남아 끝없이 다시 울림)
+            self._note_reminder(memo['id'], normal)
+        return saved
 
 
     def save_memo_locally(self, data: Dict[str, Any]) -> bool:
@@ -520,6 +527,10 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         self._full_scan_pending = True
         self._start_sync()
 
+    def startup_sync_expected(self) -> bool:
+        """앱을 켠 직후의 동기화가 돌 예정인지. (동기화를 쓰고 주소도 넣어 둔 경우)"""
+        return bool(self.settings.get("use_sync", False)) and bool(self.drive_api.is_available())
+
     def _start_sync(self) -> None:
         if not self.settings.get("use_sync", False):
             return
@@ -559,6 +570,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
             QTimer.singleShot(0, self._start_sync)
         elif self._dirty_ids:
             self._arm_push_timer()
+        self.sync_cycle_finished.emit()
 
     def apply_remote_settings(self, remote: Dict[str, Any]) -> None:
         """다른 기기에서 바꾼 공유 설정을 이 PC에 반영합니다. (드라이브에서 받은 것이 더 최신일 때 호출)"""

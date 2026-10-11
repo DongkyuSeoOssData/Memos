@@ -9,6 +9,7 @@
    없으면 스크립트 주인의 구글 계정 주소입니다. (받는 주소를 앱이 정하지 않으므로 앱에는 주소가 들어 있지 않음)
  - 보내는 내용은 앱 버전, 시각, Windows·Python 버전, 오류의 종류와 호출 경로(traceback)입니다. 메모의 제목·본문은 넣지 않습니다.
  - 같은 오류는 한 번만, 한 번 실행하는 동안 MAX_PER_RUN 통까지만, MIN_GAP_SEC 초에 한 통씩만 보냅니다.
+ - 스크립트는 접근 암호(ACCESS_TOKEN)를 설정해 둔 경우에만 보고 메일을 받습니다.
 """
 import hashlib
 import platform
@@ -33,6 +34,9 @@ class ErrorReporter:
         self._sent = 0
         self._last_sent_at: Optional[float] = None
         self._lock = threading.Lock()
+        # 오류가 났음을 화면에 알리는 함수. (앱이 화면을 만든 뒤 넣어 줍니다. 주 스레드에서만 부릅니다)
+        self.notify: Optional[Callable[[], None]] = None
+        self._last_notice_at: Optional[float] = None
 
     def enabled(self) -> bool:
         api = self.sm.drive_api
@@ -44,7 +48,21 @@ class ErrorReporter:
         try:
             trace = "".join(traceback.format_exception(exc_type, exc, tb))
             self.sm.log_error("처리하지 못한 오류" + chr(10) + trace)
+            self._tell_user()
             self.submit(f"{getattr(exc_type, '__name__', exc_type)}: {exc}", trace)
+        except Exception:
+            pass
+
+    def _tell_user(self) -> None:
+        """화면에도 한마디 알립니다. 같은 오류가 되풀이돼도 MIN_GAP_SEC 에 한 번만."""
+        if self.notify is None or threading.current_thread() is not threading.main_thread():
+            return
+        now = self._clock()
+        if self._last_notice_at is not None and now - self._last_notice_at < MIN_GAP_SEC:
+            return
+        self._last_notice_at = now
+        try:
+            self.notify()
         except Exception:
             pass
 

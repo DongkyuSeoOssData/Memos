@@ -504,6 +504,7 @@ class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPrev
         bg_l.addLayout(pv_head)
         # 미리보기에서도 체크 상자를 네모로 그리고, 눌러서 체크할 수 있습니다.
         self.pv = CheckEdit(self._preview_check_colors)
+        self.pv.installEventFilter(self)                 # 미리보기에 들어올 때를 알기 위해 (_save_window_typing_first)
         self.pv.setFixedHeight(100)
         self.pv.setReadOnly(False)
         bg_l.addWidget(self.pv)

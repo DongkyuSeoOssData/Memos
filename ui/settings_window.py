@@ -283,7 +283,8 @@ class SettingsWindow(QWidget):
         self.cb_error_report = QCheckBox("오류가 나면 보고 메일 보내기")
         g4_l.addWidget(self.cb_error_report)
         report_hint = QLabel("동기화 스크립트가 메일을 보냅니다. 받는 주소는 스크립트 속성 ERROR_MAIL_TO 이고, 없으면 스크립트 주인의 "
-                             "구글 계정입니다. 오류의 종류와 발생 위치만 보내며 메모의 제목·본문은 보내지 않습니다.")
+                             "구글 계정입니다. 스크립트에 접근 암호(ACCESS_TOKEN)를 넣어 둔 경우에만 보냅니다. "
+                             "오류의 종류와 발생 위치만 보내며 메모의 제목·본문은 보내지 않습니다.")
         report_hint.setProperty("role", "hint")
         report_hint.setWordWrap(True)
         g4_l.addWidget(report_hint)
