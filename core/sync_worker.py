@@ -57,6 +57,7 @@ def _parse_dt(value: str) -> datetime:
 SYNC_CHANGED = "changed"            # 가져오거나 올린 메모가 있음
 SYNC_UNCHANGED = "unchanged"        # 끝까지 돌았지만 바뀐 것이 없음
 SYNC_NOT_DONE = ""                  # 돌지 못했거나 오류로 끝남
+SYNC_OFFLINE = "offline"            # 드라이브에 닿지 못함 (인터넷이 끊겼거나 주소가 틀림)
 
 
 class SyncWorker(QObject):
@@ -138,7 +139,10 @@ class SyncWorker(QObject):
         copy_memo["id"] = str(uuid.uuid4())
         copy_memo["title"] = f"{local_memo.get('title', '')} (충돌 사본)"
         copy_memo["is_visible"] = False
+        copy_memo.pop("reminder", None)             # 알림까지 복사하면 같은 알림이 두 번 울립니다.
         self._write_local(copy_memo["id"], copy_memo)
+        if self.push_ids is not None:
+            self.push_ids.add(copy_memo["id"])      # 바뀐 메모만 올리는 동기화에서도 이 사본은 함께 올립니다.
 
     # ── 실행 단위 ────────────────────────────────────────────────────────────
     def run_sync(self) -> None:
@@ -147,6 +151,11 @@ class SyncWorker(QObject):
         self._load_state()
         self._flush_pending_deletes()
         files = self.sm.drive_api.list_files()
+        if files is None:
+            # 목록조차 받지 못했으면 올리기도 될 리 없습니다. 성공으로 알리지 않고, 올릴 것은 다음에 다시 시도합니다.
+            self._save_state()
+            self.finished.emit(False, "드라이브에 연결하지 못했습니다. 인터넷 연결과 동기화 주소를 확인하세요.", SYNC_OFFLINE)
+            return
         pulled = self._pull(files)
         pushed = self._push()
         self._sync_settings(files)
@@ -199,7 +208,8 @@ class SyncWorker(QObject):
             self.sm.log_error(f"원격에서 사라진 메모가 {len(candidates)}개로 너무 많아 삭제 반영을 건너뜀")
             return
         for memo_id in candidates:
-            self.sm.delete_memo_locally(memo_id)
+            # 여기는 동기화 스레드입니다. 파일만 옮기고, 알림 목록·암호 키 정리는 removed 신호를 받는 주 스레드가 합니다.
+            self.sm.move_to_trash(memo_id)
             self.state.pop(memo_id, None)
         self.removed.emit(candidates)
 

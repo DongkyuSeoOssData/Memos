@@ -2,7 +2,6 @@ from PyQt6.QtCore import QMetaObject
 
 from ui.memo_window import MemoWindow
 from ui.memo_explorer import MemoExplorerWindow
-from ui.settings_window import SettingsWindow
 from ui.global_hotkeys import GlobalHotkeys
 import sys
 import re
@@ -275,7 +274,7 @@ class UIManager:
 
     def schedule_reminders(self) -> None:
         """가장 가까운 알림 시각에 맞춰 타이머를 겁니다. 알림이 하나도 없으면 타이머를 끕니다."""
-        due = [d for d in (reminders.due_at(r) for r in self.sync_manager.reminders.values()) if d is not None]
+        due = [d for d in (reminders.due_at(r) for r in list(self.sync_manager.reminders.values())) if d is not None]
         if not due:
             self._reminder_timer.stop()
             return
@@ -438,7 +437,7 @@ class UIManager:
         """
         explorer = self.explorer_window
         if explorer and explorer.isVisible():
-            explorer.show_toast(message)
+            explorer.show_toast(message, warn=not success)
         elif not success:
             self.tray_icon.showMessage("Memos 동기화 오류", message, QSystemTrayIcon.MessageIcon.Warning, 3000)
         if completed and explorer:

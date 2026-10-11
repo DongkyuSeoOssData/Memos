@@ -52,12 +52,20 @@ class MemoTrashMixin:
             self.log_error(f"로컬 메모 복구 실패 ({memo_id}): {e}", e)
         return False
 
-    def delete_memo_locally(self, memo_id: str, title: Optional[str] = None) -> None:
+    def move_to_trash(self, memo_id: str) -> None:
+        """메모 파일을 휴지통으로 옮깁니다. 파일만 다루므로 동기화 스레드에서 불러도 됩니다."""
         with MEMO_IO_LOCK:
             self._delete_memo_locally(memo_id)
             self._stamp_deleted(self.trash_path / f"{memo_id}.json")
+
+    def forget_deleted(self, memo_id: str) -> None:
+        """지운 메모의 암호 키와 알림을 메모리에서 뺍니다. (주 스레드에서만 부름)"""
         self.relock_memo(memo_id)
         self._note_reminder(memo_id, None)
+
+    def delete_memo_locally(self, memo_id: str, title: Optional[str] = None) -> None:
+        self.move_to_trash(memo_id)
+        self.forget_deleted(memo_id)
         if self._trash_retention_days() < 0:
             self.purge_trash()
 

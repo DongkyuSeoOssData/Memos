@@ -114,7 +114,7 @@ class MemoSavingMixin:
                 self.memo_data['updated_at'] = datetime.datetime.now().isoformat()     # 제목을 고친 것도 수정
                 self.save_callback(self.memo_data)
             else:
-                self.show_toast(f"'{nt}' 제목의 메모가 이미 있습니다.", warn=True)
+                self.show_toast("제목을 바꾸지 못했습니다.", warn=True)
                 self.title_edit.setText(ot)
 
         is_rolled = getattr(self, '_is_rolled_up', False)

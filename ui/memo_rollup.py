@@ -119,14 +119,6 @@ class MemoRollupMixin:
         """지금 상태(접힘/펼침)의 위치와 크기를 그 상태의 것으로 기억합니다."""
         memo_geometry.remember(self.memo_data, self._is_rolled_up, self._box())
 
-    def _saved_unrolled_size(self) -> tuple:
-        """기억해 둔 펼친 크기. (잠겨 있든 아니든 메모 본래의 크기)"""
-        return memo_geometry.saved_unrolled_size(self.memo_data, getattr(self, '_normal_height', 300))
-
-    def _unrolled_size(self) -> tuple:
-        """펼쳤을 때의 크기. 잠긴 메모는 암호를 풀기 전까지 암호 입력용 작은 크기로 뜹니다."""
-        return memo_geometry.unrolled_size(self.memo_data, getattr(self, '_normal_height', 300))
-
     def _covers_rolled_memo(self, rect: QRect) -> bool:
         """rect 에 펼치면 다른 접은 메모를 가리게 되는지."""
         manager = getattr(self, 'ui_manager', None)

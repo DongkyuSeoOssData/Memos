@@ -1,6 +1,6 @@
 from utils.text_utils import clean_plain_text
 from utils.file_utils import MEMO_IO_LOCK, atomic_write_json, is_safe_memo_id
-from core.sync_worker import SYNC_CHANGED, SYNC_NOT_DONE, SYNC_UNCHANGED, SyncWorker, shared_hash
+from core.sync_worker import SYNC_CHANGED, SYNC_NOT_DONE, SYNC_OFFLINE, SYNC_UNCHANGED, SyncWorker, shared_hash
 from core.defaults import DEFAULT_SHORTCUTS
 from core.folders import DEFAULT_FOLDERS
 from core import shared_settings
@@ -259,7 +259,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
             self.sync_timer.timeout.disconnect()
         except Exception:
             pass
-        if not self.settings.get("use_sync", True):
+        if not self.settings.get("use_sync", False):
             self._push_timer.stop()
             return
         self.sync_timer.timeout.connect(self.check_remote)
@@ -283,7 +283,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
 
     def _arm_push_timer(self) -> None:
         """변경이 생긴 뒤 설정한 시간만큼 기다렸다가 동기화합니다. 이미 기다리는 중이면 그대로 둡니다."""
-        if self.settings.get("use_sync", True) and not self._push_timer.isActive():
+        if self.settings.get("use_sync", False) and not self._push_timer.isActive():
             self._push_timer.start(self.push_delay_sec() * 1000)
 
     def _sync_changes(self) -> None:
@@ -295,7 +295,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
 
     def check_remote_if_stale(self, max_age_sec: int = 60) -> None:
         """마지막 동기화가 오래됐으면 다른 기기의 변경을 확인합니다. (탐색기를 열 때 등)"""
-        if not self.settings.get("use_sync", True):
+        if not self.settings.get("use_sync", False):
             return
         if self._last_sync_at is None or (datetime.now() - self._last_sync_at).total_seconds() >= max_age_sec:
             self.check_remote()
@@ -429,7 +429,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
             memo_to_save['content'] = self.crypto.encrypt_locked(plain_content, entry[0], entry[1])
         else:
             # 미작성 빈 초안 메모(is_draft == True, 내용 없음, 수동저장 안함)는 디스크 저장을 차단하며 기존 파일이 있으면 파기
-            if data.get('is_draft') and not data.get('is_manually_saved') and not clean_plain_text(plain_content):
+            if self._is_blank_draft(data):
                 if f.exists():
                     try:
                         f.unlink()
@@ -470,18 +470,29 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
         return True
 
     def rename_memo_locally(self, ot: str, nt: str, data: Dict[str, Any]) -> bool:
+        """제목을 바꿔 저장합니다. 저장하지 못했으면 제목을 되돌리고 False."""
+        data['title'] = nt
         try:
-            data['title'] = nt
-            self.save_memo_locally(data)
-            return True
+            # 아직 파일로 남기지 않는 빈 초안은 저장할 것이 없으므로 제목만 바꿔 둡니다.
+            if self.save_memo_locally(data) or self._is_blank_draft(data):
+                return True
         except Exception as e:
             self.log_error(f"메모 제목 변경 실패 ({ot} -> {nt}): {e}", e)
+        data['title'] = ot
+        return False
+
+    @staticmethod
+    def _is_blank_draft(data: Dict[str, Any]) -> bool:
+        """내용 없이 열어만 둔 새 메모인지. (이런 메모는 파일로 남기지 않음)"""
+        if data.get('_locked') or data.get('_unreadable') or data.get('is_locked'):
             return False
+        return bool(data.get('is_draft')) and not data.get('is_manually_saved') \
+            and not clean_plain_text(str(data.get('content', '')))
 
 
     def delete_memos_cloud(self, ids: List[str]) -> None:
         self.add_pending_deletes(ids)
-        if not self.settings.get("use_sync", True): return
+        if not self.settings.get("use_sync", False): return
         if self._sync_running:
             self._resync_requested = True
         else:
@@ -489,7 +500,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
 
     def sync_all(self) -> None:
         """지금 바로 전부 동기화합니다. (동기화 버튼·트레이 메뉴·앱 시작 직후) 모든 메모를 훑어 빠진 것이 없게 합니다."""
-        if not self.settings.get("use_sync", True):
+        if not self.settings.get("use_sync", False):
             self.on_sync_finished(True, "로컬 모드로 작동 중입니다. (동기화 OFF)")
             return
         self._full_scan_pending = True
@@ -500,7 +511,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
             self._start_sync()
 
     def _start_sync(self) -> None:
-        if not self.settings.get("use_sync", True):
+        if not self.settings.get("use_sync", False):
             return
         # 이전 주기가 아직 돌고 있으면 건너뜁니다. (두 워커가 같은 파일을 동시에 올리고 받는 것 방지)
         if self._sync_running:
@@ -562,9 +573,11 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
     def on_memos_removed(self, memo_ids: List[str]) -> None:
         """다른 기기에서 삭제되어 로컬 휴지통으로 옮겨진 메모의 창을 닫습니다."""
         for memo_id in memo_ids:
-            self.relock_memo(memo_id)
+            self.forget_deleted(memo_id)
             if self.ui_manager:
                 self.ui_manager.close_memo_window_by_id(memo_id, is_deleting=True)
+        if memo_ids and self._trash_retention_days() < 0:
+            self.purge_trash()                  # 휴지통을 거치지 않고 바로 지우는 설정
 
     def _start_worker(self, worker: SyncWorker) -> None:
         thread = QThread()
@@ -591,7 +604,11 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, QObject):
             return
         print(f"[동기화 로그] 성공: {success}, 내용: {message}")
         # 뒤에서 조용히 돈 확인에서 바뀐 것이 없었다면 알리지 않습니다.
-        if success and outcome == SYNC_UNCHANGED and getattr(self, "_last_sync_quiet", False):
+        quiet = getattr(self, "_last_sync_quiet", False)
+        if success and outcome == SYNC_UNCHANGED and quiet:
+            return
+        # 뒤에서 돈 확인이 드라이브에 닿지 못한 것도 알리지 않습니다. (인터넷이 끊긴 동안 15분마다 경고가 뜨지 않게)
+        if outcome == SYNC_OFFLINE and quiet:
             return
         if self.ui_manager:
             completed = success and outcome in (SYNC_CHANGED, SYNC_UNCHANGED)

@@ -3,7 +3,7 @@ from typing import Dict, Iterable, List
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QTextEdit, QVBoxLayout, QHBoxLayout, QLabel, QDialogButtonBox,
-    QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSplitter, QWidget
+    QLineEdit, QListWidget, QListWidgetItem, QPushButton, QWidget
 )
 from ui.check_marks import CheckEdit
 from ui.themed_dialog import ThemedDialog

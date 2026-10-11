@@ -34,6 +34,33 @@ SHARED_KEYS = frozenset({
 })
 
 
+# 값의 형식. 여기에 없는 공유 설정은 글자입니다. 드라이브에서 받은 값이 이 형식이 아니면 버립니다.
+_BOOL_KEYS = frozenset({
+    "default_is_pinned", "default_gen_line_numbers", "default_gen_line_bg", "default_code_line_numbers",
+    "default_code_line_bg", "default_show_line_numbers", "default_show_line_bg", "auto_eng_kor_convert",
+})
+_NUMBER_KEYS = frozenset({
+    "default_font_size", "default_memo_opacity", "default_memo_width", "default_memo_height",
+    "default_code_memo_width", "default_code_memo_height", "default_rolled_height", "auto_save_idle_sec",
+    "locked_memo_relock_min", "trash_auto_delete_days", "sync_interval_index",
+})
+_LIST_KEYS = frozenset({"folders", "reminder_quick_minutes"})
+_DICT_KEYS = frozenset({"shortcuts"})
+
+
+def well_formed(key: str, value: Any) -> bool:
+    """공유 설정의 값이 그 설정에 맞는 형식인지."""
+    if key in _BOOL_KEYS:
+        return isinstance(value, bool)
+    if key in _NUMBER_KEYS:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if key in _LIST_KEYS:
+        return isinstance(value, list)
+    if key in _DICT_KEYS:
+        return isinstance(value, dict)
+    return isinstance(value, str)
+
+
 def shared_subset(settings: Dict[str, Any]) -> Dict[str, Any]:
     return {k: settings[k] for k in sorted(SHARED_KEYS) if k in settings}
 
@@ -44,8 +71,11 @@ def fingerprint(settings: Dict[str, Any]) -> str:
 
 
 def from_remote(remote: Any) -> Dict[str, Any]:
-    """드라이브에서 받은 내용 중 공유하기로 한 설정만 골라냅니다. (모르는 키나 기기별 설정이 섞여 와도 무시)"""
+    """드라이브에서 받은 내용 중 공유하기로 한 설정만 골라냅니다.
+
+    모르는 키나 기기별 설정이 섞여 와도 무시하고, 형식이 맞지 않는 값(숫자 자리에 글자 등)도 버립니다.
+    """
     settings = remote.get("settings") if isinstance(remote, dict) else None
     if not isinstance(settings, dict):
         return {}
-    return {k: v for k, v in settings.items() if k in SHARED_KEYS}
+    return {k: v for k, v in settings.items() if k in SHARED_KEYS and well_formed(k, v)}

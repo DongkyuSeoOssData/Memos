@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QFontComboBox, QTabWidget, QKeySequenceEdit, QGroupBox, QScrollArea, QSlider, QSpinBox, QAbstractSpinBox,
     QSizeGrip, QApplication
 )
-from PyQt6.QtCore import Qt, QTimer, QEvent, QPoint, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QGuiApplication, QColor, QKeySequence, QFont, QFontMetrics
 import threading
 
@@ -1037,6 +1037,7 @@ class SettingsWindow(QWidget):
 
     @staticmethod
     def _write_field(box: Any, value: Any, default: Any) -> None:
+        # 설정 파일을 손으로 고쳤거나 깨져서 형식이 맞지 않는 값이 들어 있으면 기본값으로 보여 줍니다.
         if isinstance(box, QCheckBox):
             box.setChecked(bool(value))
         elif isinstance(box, QComboBox):
@@ -1046,9 +1047,12 @@ class SettingsWindow(QWidget):
             if index >= 0:
                 box.setCurrentIndex(index)
         elif isinstance(box, QLineEdit):
-            box.setText(str(value))
+            box.setText(value if isinstance(value, str) else str(default))
         else:
-            box.setValue(int(value))
+            try:
+                box.setValue(int(value))
+            except (TypeError, ValueError):
+                box.setValue(int(default))
 
     def collect(self) -> dict:
         """화면의 값을 설정 형식으로 모읍니다. (저장하지는 않음)"""
