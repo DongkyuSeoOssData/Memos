@@ -276,71 +276,94 @@ class MemoTextEdit(QTextEdit):
         has_shift = bool(e.modifiers() & Qt.KeyboardModifier.ShiftModifier)
         is_multi_shortcut = (has_ctrl and has_alt) or (has_alt and has_shift) or (has_ctrl and has_shift)
 
-        if is_multi_shortcut and e.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
-            base_cursor = self.extra_cursors[-1] if self.extra_cursors else self.textCursor()
-            new_cursor = QTextCursor(base_cursor)
-            if e.key() == Qt.Key.Key_Down:
-                moved = new_cursor.movePosition(QTextCursor.MoveOperation.Down)
-            else:
-                moved = new_cursor.movePosition(QTextCursor.MoveOperation.Up)
-
-            if moved:
-                self.extra_cursors.append(new_cursor)
-                self.viewport().update()
-            e.accept()
+        if is_multi_shortcut and e.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down) and self._key_add_cursor(e):
             return
 
         # 멀티 커서 활성화 시 타이핑 / 백스페이스 / Delete 동기화 처리
-        if self.extra_cursors:
-            all_cursors = [self.textCursor()] + self.extra_cursors
-            pos_dict = {}
-            for c in all_cursors:
-                pos_dict[c.position()] = c
-            all_cursors = list(pos_dict.values())
-            all_cursors.sort(key=lambda c: c.position(), reverse=True)
-            key_text = e.text()
-
-            if e.key() == Qt.Key.Key_Backspace:
-                self.textCursor().beginEditBlock()
-                for c in all_cursors:
-                    if c.hasSelection():
-                        c.removeSelectedText()
-                    else:
-                        c.deletePreviousChar()
-                self.textCursor().endEditBlock()
-                self.setTextCursor(all_cursors[0])
-                self.extra_cursors = all_cursors[1:]
-                self.viewport().update()
-                e.accept()
-                return
-            elif e.key() == Qt.Key.Key_Delete:
-                self.textCursor().beginEditBlock()
-                for c in all_cursors:
-                    if c.hasSelection():
-                        c.removeSelectedText()
-                    else:
-                        c.deleteChar()
-                self.textCursor().endEditBlock()
-                self.setTextCursor(all_cursors[0])
-                self.extra_cursors = all_cursors[1:]
-                self.viewport().update()
-                e.accept()
-                return
-            elif key_text and (key_text.isprintable() or key_text in ('\r', '\n', '\t')):
-                if not (has_ctrl and not (has_alt or has_shift)):
-                    self.textCursor().beginEditBlock()
-                    for c in all_cursors:
-                        if c.hasSelection():
-                            c.removeSelectedText()
-                        c.insertText(key_text)
-                    self.textCursor().endEditBlock()
-                    self.setTextCursor(all_cursors[0])
-                    self.extra_cursors = all_cursors[1:]
-                    self.viewport().update()
-                    e.accept()
-                    return
+        if self.extra_cursors and self._key_multi_cursor_edit(e, has_ctrl, has_alt, has_shift):
+            return
 
         # VS Code 스타일 줄 상하 이동 (Alt+Up / Alt+Down)
+        if self._key_move_line(e):
+            return
+
+        # 코드 메모 전용 IDE 고급 기능: 자동 괄호/따옴표/스마트 딜리트/지속적 스마트 들여쓰기
+        if is_code and self._key_code_editing(e):
+            return
+
+        if self._key_indent(e):
+            return
+
+        super().keyPressEvent(e)
+
+    def _key_add_cursor(self, e: Any) -> bool:
+        """Ctrl+Alt / Alt+Shift / Ctrl+Shift + 위·아래: 그 줄에 커서를 하나 더 둡니다. 처리했으면 True."""
+        base_cursor = self.extra_cursors[-1] if self.extra_cursors else self.textCursor()
+        new_cursor = QTextCursor(base_cursor)
+        if e.key() == Qt.Key.Key_Down:
+            moved = new_cursor.movePosition(QTextCursor.MoveOperation.Down)
+        else:
+            moved = new_cursor.movePosition(QTextCursor.MoveOperation.Up)
+
+        if moved:
+            self.extra_cursors.append(new_cursor)
+            self.viewport().update()
+        e.accept()
+        return True
+
+    def _key_multi_cursor_edit(self, e: Any, has_ctrl: bool, has_alt: bool, has_shift: bool) -> bool:
+        """커서가 여러 개일 때: 글자 입력·Backspace·Delete 를 모든 커서에 똑같이 적용합니다. 처리했으면 True."""
+        all_cursors = [self.textCursor()] + self.extra_cursors
+        pos_dict = {}
+        for c in all_cursors:
+            pos_dict[c.position()] = c
+        all_cursors = list(pos_dict.values())
+        all_cursors.sort(key=lambda c: c.position(), reverse=True)
+        key_text = e.text()
+
+        if e.key() == Qt.Key.Key_Backspace:
+            self.textCursor().beginEditBlock()
+            for c in all_cursors:
+                if c.hasSelection():
+                    c.removeSelectedText()
+                else:
+                    c.deletePreviousChar()
+            self.textCursor().endEditBlock()
+            self.setTextCursor(all_cursors[0])
+            self.extra_cursors = all_cursors[1:]
+            self.viewport().update()
+            e.accept()
+            return True
+        elif e.key() == Qt.Key.Key_Delete:
+            self.textCursor().beginEditBlock()
+            for c in all_cursors:
+                if c.hasSelection():
+                    c.removeSelectedText()
+                else:
+                    c.deleteChar()
+            self.textCursor().endEditBlock()
+            self.setTextCursor(all_cursors[0])
+            self.extra_cursors = all_cursors[1:]
+            self.viewport().update()
+            e.accept()
+            return True
+        elif key_text and (key_text.isprintable() or key_text in ('\r', '\n', '\t')):
+            if not (has_ctrl and not (has_alt or has_shift)):
+                self.textCursor().beginEditBlock()
+                for c in all_cursors:
+                    if c.hasSelection():
+                        c.removeSelectedText()
+                    c.insertText(key_text)
+                self.textCursor().endEditBlock()
+                self.setTextCursor(all_cursors[0])
+                self.extra_cursors = all_cursors[1:]
+                self.viewport().update()
+                e.accept()
+                return True
+        return False
+
+    def _key_move_line(self, e: Any) -> bool:
+        """Alt + 위·아래: 지금 줄을 위아래로 옮깁니다. 처리했으면 True."""
         if (e.modifiers() == Qt.KeyboardModifier.AltModifier) and e.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
             cursor = self.textCursor()
             block = cursor.block()
@@ -364,89 +387,93 @@ class MemoTextEdit(QTextEdit):
                 cursor.insertText("\n" + line_text)
                 self.setTextCursor(cursor)
             e.accept()
-            return
+            return True
+        return False
 
-        # 코드 메모 전용 IDE 고급 기능: 자동 괄호/따옴표/스마트 딜리트/지속적 스마트 들여쓰기
-        if is_code:
-            cursor = self.textCursor()
-            key_text = e.text()
+    def _key_code_editing(self, e: Any) -> bool:
+        """코드 메모: 괄호·따옴표 짝 맞추기(넣기·덮어쓰기·함께 지우기)와 Enter 때 들여쓰기 유지. 처리했으면 True."""
+        cursor = self.textCursor()
+        key_text = e.text()
 
-            # 1. 백스페이스(Backspace) 연결 괄호 쌍 동시 삭제
-            if e.key() == Qt.Key.Key_Backspace and not cursor.hasSelection():
-                pos = cursor.position()
-                doc_text = self.toPlainText()
-                if 0 < pos < len(doc_text):
-                    prev_char = doc_text[pos - 1]
-                    next_char = doc_text[pos]
-                    pair_map = {'{': '}', '(': ')', '[': ']', '"': '"', "'": "'"}
-                    if prev_char in pair_map and pair_map[prev_char] == next_char:
-                        cursor.deletePreviousChar()
-                        cursor.deleteChar()
-                        self.setTextCursor(cursor)
-                        e.accept()
-                        return
-
-            # 2. 닫는 괄호/따옴표 덮어쓰기 (Overtyping)
-            if key_text in ('}', ')', ']', '"', "'") and not cursor.hasSelection():
-                pos = cursor.position()
-                doc_text = self.toPlainText()
-                if pos < len(doc_text) and doc_text[pos] == key_text:
-                    cursor.movePosition(QTextCursor.MoveOperation.Right)
+        # 1. 백스페이스(Backspace) 연결 괄호 쌍 동시 삭제
+        if e.key() == Qt.Key.Key_Backspace and not cursor.hasSelection():
+            pos = cursor.position()
+            doc_text = self.toPlainText()
+            if 0 < pos < len(doc_text):
+                prev_char = doc_text[pos - 1]
+                next_char = doc_text[pos]
+                pair_map = {'{': '}', '(': ')', '[': ']', '"': '"', "'": "'"}
+                if prev_char in pair_map and pair_map[prev_char] == next_char:
+                    cursor.deletePreviousChar()
+                    cursor.deleteChar()
                     self.setTextCursor(cursor)
                     e.accept()
-                    return
+                    return True
 
-            # 3. 여는 괄호/따옴표 자동 완성
-            pair_map = {'{': '}', '(': ')', '[': ']', '"': '"', "'": "'"}
-            if key_text in pair_map:
-                closing = pair_map[key_text]
-                if cursor.hasSelection():
-                    sel = cursor.selectedText()
-                    cursor.insertText(f"{key_text}{sel}{closing}")
-                else:
-                    cursor.insertText(f"{key_text}{closing}")
-                    cursor.movePosition(QTextCursor.MoveOperation.Left)
+        # 2. 닫는 괄호/따옴표 덮어쓰기 (Overtyping)
+        if key_text in ('}', ')', ']', '"', "'") and not cursor.hasSelection():
+            pos = cursor.position()
+            doc_text = self.toPlainText()
+            if pos < len(doc_text) and doc_text[pos] == key_text:
+                cursor.movePosition(QTextCursor.MoveOperation.Right)
                 self.setTextCursor(cursor)
                 e.accept()
-                return
+                return True
 
-            # 4. 지속적인 스마트 엔터 들여쓰기 유지 (Auto-Indentation Level Maintenance)
-            if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                pos = cursor.position()
-                doc_text = self.toPlainText()
+        # 3. 여는 괄호/따옴표 자동 완성
+        pair_map = {'{': '}', '(': ')', '[': ']', '"': '"', "'": "'"}
+        if key_text in pair_map:
+            closing = pair_map[key_text]
+            if cursor.hasSelection():
+                sel = cursor.selectedText()
+                cursor.insertText(f"{key_text}{sel}{closing}")
+            else:
+                cursor.insertText(f"{key_text}{closing}")
+                cursor.movePosition(QTextCursor.MoveOperation.Left)
+            self.setTextCursor(cursor)
+            e.accept()
+            return True
 
-                # (1) { | } 사이에서 Enter 누를 시 3줄 자동 형성 및 정밀 들여쓰기
-                if 0 < pos < len(doc_text) and doc_text[pos - 1] in ('{', '[', '(') and doc_text[pos] in ('}', ']', ')'):
-                    line_text = cursor.block().text()
-                    indent_str = line_text[:len(line_text) - len(line_text.lstrip())]
-                    cursor.insertText(f"\n{indent_str}    \n{indent_str}")
-                    cursor.movePosition(QTextCursor.MoveOperation.Up)
-                    cursor.movePosition(QTextCursor.MoveOperation.EndOfLine)
-                    self.setTextCursor(cursor)
-                    e.accept()
-                    return
+        # 4. 지속적인 스마트 엔터 들여쓰기 유지 (Auto-Indentation Level Maintenance)
+        if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            pos = cursor.position()
+            doc_text = self.toPlainText()
 
-                # (2) 일반 엔터 누를 시 이전 줄의 들여쓰기(공백)를 지속 유지 + 여는 기호 수용
+            # (1) { | } 사이에서 Enter 누를 시 3줄 자동 형성 및 정밀 들여쓰기
+            if 0 < pos < len(doc_text) and doc_text[pos - 1] in ('{', '[', '(') and doc_text[pos] in ('}', ']', ')'):
                 line_text = cursor.block().text()
                 indent_str = line_text[:len(line_text) - len(line_text.lstrip())]
-
-                stripped_line = line_text[:cursor.positionInBlock()].rstrip()
-                if stripped_line and stripped_line[-1] in ('{', '[', '(', ':'):
-                    indent_str += "    "
-
-                cursor.insertText(f"\n{indent_str}")
+                cursor.insertText(f"\n{indent_str}    \n{indent_str}")
+                cursor.movePosition(QTextCursor.MoveOperation.Up)
+                cursor.movePosition(QTextCursor.MoveOperation.EndOfLine)
                 self.setTextCursor(cursor)
                 e.accept()
-                return
+                return True
 
+            # (2) 일반 엔터 누를 시 이전 줄의 들여쓰기(공백)를 지속 유지 + 여는 기호 수용
+            line_text = cursor.block().text()
+            indent_str = line_text[:len(line_text) - len(line_text.lstrip())]
+
+            stripped_line = line_text[:cursor.positionInBlock()].rstrip()
+            if stripped_line and stripped_line[-1] in ('{', '[', '(', ':'):
+                indent_str += "    "
+
+            cursor.insertText(f"\n{indent_str}")
+            self.setTextCursor(cursor)
+            e.accept()
+            return True
+        return False
+
+    def _key_indent(self, e: Any) -> bool:
+        """Tab / Shift+Tab: 들여쓰기·내어쓰기. Enter: 다음 줄도 같은 들여쓰기로. 처리했으면 True."""
         if e.key() == Qt.Key.Key_Backtab or (e.key() == Qt.Key.Key_Tab and e.modifiers() & Qt.KeyboardModifier.ShiftModifier):
             self.memo_window.apply_outdent()
             e.accept()
-            return
+            return True
         elif e.key() == Qt.Key.Key_Tab:
             self.memo_window.apply_indent()
             e.accept()
-            return
+            return True
         elif e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             cursor = self.textCursor()
             current_indent = cursor.blockFormat().indent()
@@ -456,9 +483,8 @@ class MemoTextEdit(QTextEdit):
                 bf = new_cursor.blockFormat()
                 bf.setIndent(current_indent)
                 new_cursor.setBlockFormat(bf)
-            return
-
-        super().keyPressEvent(e)
+            return True
+        return False
 
     def paintEvent(self, event: Any) -> None:
         painter = QPainter(self.viewport())
