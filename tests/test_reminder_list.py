@@ -259,13 +259,13 @@ class ReminderListTest(support.UiTestCase):
 
     def test_open_and_edit_from_the_list(self) -> None:
         ex = self.explorer()
-        with mock.patch("ui.memo_explorer.ask_reminder_list", side_effect=[("open", "memo-0001")]):
+        with mock.patch("ui.explorer_actions.ask_reminder_list", side_effect=[("open", "memo-0001")]):
             ex.show_reminder_list()
         self.assertTrue(self.ui.memo_windows["memo-0001"].isVisible())
 
         new = reminders.make(self.now + dt.timedelta(days=9))
-        with mock.patch("ui.memo_explorer.ask_reminder_list", side_effect=[("edit", "memo-0000"), None]) as asked, \
-                mock.patch("ui.memo_explorer.ask_reminder", return_value=(True, new)):
+        with mock.patch("ui.explorer_actions.ask_reminder_list", side_effect=[("edit", "memo-0000"), None]) as asked, \
+                mock.patch("ui.explorer_actions.ask_reminder", return_value=(True, new)):
             ex.show_reminder_list()
         self.assertEqual(asked.call_count, 2)                               # 바꾼 뒤 목록으로 돌아옴
         self.assertEqual(self.disk("memo-0000")["reminder"]["at"], new["at"])

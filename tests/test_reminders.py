@@ -293,7 +293,7 @@ class ReminderUiTest(support.UiTestCase):
     def test_explorer_marks_and_edits_reminders(self) -> None:
         ex = self.explorer()
         memo = ex.table.item(self.row_of(ex, "memo-0001"), 2).data(Qt.ItemDataRole.UserRole)
-        with mock.patch("ui.memo_explorer.ask_reminder", return_value=(True, reminders.make(D.now() + dt.timedelta(days=1)))):
+        with mock.patch("ui.explorer_actions.ask_reminder", return_value=(True, reminders.make(D.now() + dt.timedelta(days=1)))):
             ex.edit_reminder(memo)
         cell = next(ex.table.item(self.row_of(ex, "memo-0001"), c) for c in range(ex.table.columnCount())
                     if ex.table.item(self.row_of(ex, "memo-0001"), c) and "⏰" in ex.table.item(self.row_of(ex, "memo-0001"), c).text())

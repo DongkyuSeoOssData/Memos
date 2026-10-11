@@ -211,7 +211,7 @@ class ExplorerDigestTest(support.UiTestCase):
     def test_unchanged_memos_are_not_cleaned_again_on_refresh(self) -> None:
         ex = self.explorer()
         ex.refresh()
-        with mock.patch("ui.memo_explorer.clean_plain_text", wraps=text_utils.clean_plain_text) as cleaner:
+        with mock.patch("ui.explorer_list.clean_plain_text", wraps=text_utils.clean_plain_text) as cleaner:
             ex.refresh()
             self.assertEqual(cleaner.call_count, 0)                              # 바뀐 메모가 없으면 다시 정리하지 않음
             w = self.open_window("memo-0000")
