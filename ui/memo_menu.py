@@ -97,6 +97,17 @@ class MemoMenuMixin:
         menu.addAction(_fmt_sc("이전 내용 보기…", "show_history", "Ctrl+Shift+H")).triggered.connect(self.show_history)
 
         menu.addSeparator()
+        self._add_lock_actions(menu)
+
+        menu.addSeparator()
+        self._add_opacity_menu(menu)
+
+        menu.addSeparator()
+        menu.addAction(_fmt_sc("메모 삭제", "delete_memo", "Alt+D")).triggered.connect(self.request_delete)
+        menu.exec(self.sender().mapToGlobal(pos))
+
+    def _add_lock_actions(self, menu: QMenu) -> None:
+        """암호 메모에 하는 일: 잠긴 메모면 풀기·복구, 열린 암호 메모면 잠그기·암호 바꾸기·없애기, 일반 메모면 암호 걸기."""
         if self.memo_data.get('_locked'):
             menu.addAction("🔓 잠금 해제 (암호 입력)").triggered.connect(self.prompt_unlock)
             sm_lock = self._sync_manager()
@@ -109,8 +120,8 @@ class MemoMenuMixin:
         elif not self.memo_data.get('_unreadable'):
             menu.addAction("🔒 이 메모에 암호 걸기").triggered.connect(self.set_memo_password)
 
-        menu.addSeparator()
-        # 🔆 투명도 슬라이더 서브메뉴
+    def _add_opacity_menu(self, menu: QMenu) -> None:
+        """창 투명도 하위 메뉴: 슬라이더와 자주 쓰는 값."""
         opacity_menu = menu.addMenu("창 투명도 조절")
         opacity_widget = QWidget()
         opacity_layout = QHBoxLayout(opacity_widget)
@@ -144,10 +155,6 @@ class MemoMenuMixin:
         opacity_menu.addAction("80% (약간 투명)").triggered.connect(lambda: opa_slider.setValue(80))
         opacity_menu.addAction("60% (반투명)").triggered.connect(lambda: opa_slider.setValue(60))
         opacity_menu.addAction("40% (많이 투명)").triggered.connect(lambda: opa_slider.setValue(40))
-
-        menu.addSeparator()
-        menu.addAction(_fmt_sc("메모 삭제", "delete_memo", "Alt+D")).triggered.connect(self.request_delete)
-        menu.exec(self.sender().mapToGlobal(pos))
 
     def toggle_auto_eng_kor_setting(self) -> None:
         sm = getattr(self.close_callback, '__self__', None).sync_manager
