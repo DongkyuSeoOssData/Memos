@@ -569,6 +569,7 @@ python tools/mobile_dev_server.py
 
 - **색을 정하는 곳을 한곳으로.** 체크 상자, 암호 입력 가림막, 메모 옆 패널, 미리보기가 저마다 색을 계산하던 것을 `modern_style`의 색 묶음에서 받아 쓰도록 바꿨습니다.
 - **메모 창의 위치·크기 규칙을 따로.** 접고 펼 때의 자리 계산을 `memo_geometry.py`로 옮겨, 창을 띄우지 않고 숫자만으로 테스트할 수 있게 했습니다.
+- **메모 탐색기를 역할별로 나눔.** 2천 줄 가까이 되던 `memo_explorer.py`에서 폴더, 창 크기·옆 패널, 미리보기, 여러 메모 고르기를 각각 `explorer_folders.py`, `explorer_panels.py`, `explorer_preview.py`, `explorer_selection.py`로 옮겼습니다. 폴더 사이드바와 환경설정 패널을 열 때 창을 옆으로 늘리던 같은 코드 두 벌도 하나로 합쳤습니다.
 
 ### 올릴 때 할 일
 
@@ -772,7 +773,11 @@ python tools/mobile_dev_server.py
  ┃ ┣ 📜 memo_geometry.py       # 메모 창의 위치·크기 규칙 (접힌/펼친 자리 기억, 잠긴 크기, 모니터 경계)
  ┃ ┣ 📜 memo_format.py         # 메모 창의 서식 기능
  ┃ ┣ 📜 memo_editor.py         # 본문 편집기, 행 번호, 문법 강조
- ┃ ┣ 📜 memo_explorer.py       # 메모 탐색기
+ ┃ ┣ 📜 memo_explorer.py       # 메모 탐색기 (화면 구성, 메모 목록, 우클릭 메뉴)
+ ┃ ┣ 📜 explorer_folders.py    # 탐색기의 폴더 화면 (탭 줄·사이드바·드롭다운, 폴더 만들기·이름 바꾸기·삭제·순서)
+ ┃ ┣ 📜 explorer_panels.py     # 탐색기의 창 크기와 옆에 덧붙는 영역 (폴더 사이드바, 환경설정 패널)
+ ┃ ┣ 📜 explorer_preview.py    # 탐색기의 미리보기 (그 자리에서 고치기, 체크 상자, 우클릭 메뉴)
+ ┃ ┣ 📜 explorer_selection.py  # 탐색기에서 여러 메모 고르기, 삭제·복원, 휴지통 보기
  ┃ ┣ 📜 settings_window.py     # 환경설정
  ┃ ┣ 📜 dialogs.py             # 복원 중복 확인 창, 여러 폴더 삭제 창, 이전 내용 창
  ┃ ┣ 📜 themed_dialog.py       # 자체 제목 줄 대화상자 (확인·입력·색 고르기), 토스트 알림

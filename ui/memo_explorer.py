@@ -1,12 +1,10 @@
-from ui.dialogs import ConflictDialog, FolderPickDialog, HistoryDialog
+from ui.dialogs import HistoryDialog
 from ui.reminder_ui import ask_reminder
-from ui import themed_dialog
 from core import reminders
 from ui import checklist
 from ui.check_marks import CheckEdit
 from ui.lock_overlay import WindowOverlay
 from ui.settings_window import SettingsWindow
-from ui.themes import app_palette
 from ui import modern_style
 from core import folders
 from ui.tab_strip import TabStrip
@@ -14,24 +12,24 @@ from ui import screen_bounds
 import datetime
 from typing import List, Dict, Any, Optional
 from PyQt6.QtWidgets import (
-    QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMenu, QApplication,
-    QLabel, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QFrame,
-    QSizeGrip, QSizePolicy, QListWidget, QListWidgetItem, QGridLayout
+    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMenu, QApplication, QLabel, QComboBox,
+    QTableWidget, QTableWidgetItem, QHeaderView, QFrame, QSizeGrip, QSizePolicy, QListWidget, QGridLayout
 )
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, pyqtSlot
-from PyQt6.QtGui import QTextCursor, QTextDocument, QGuiApplication, QShortcut, QKeySequence, QFont, QIcon
-from utils.text_utils import clean_plain_text, extract_hashtags, is_html_content
+from PyQt6.QtGui import QGuiApplication, QShortcut, QKeySequence, QFont, QIcon
+from utils.text_utils import clean_plain_text, extract_hashtags
+from ui.explorer_folders import ExplorerFoldersMixin
+from ui.explorer_panels import ExplorerPanelsMixin
+from ui.explorer_preview import ExplorerPreviewMixin
+from ui.explorer_selection import ExplorerSelectionMixin
 
-class MemoExplorerWindow(QWidget):
+class MemoExplorerWindow(ExplorerFoldersMixin, ExplorerPanelsMixin, ExplorerPreviewMixin, ExplorerSelectionMixin, QWidget):
     """
     iOS 울트라 미니멀 화이트 & 블랙 탐색기:
     - 윈도우 우측 창 제어 버튼 (─, □/❐, ✕) & 100% 정상 작동하는 최대화/복원
     - 실시간 라이트 / 다크 모드 전환 지원
     """
     FAVORITE_COLOR = "#F5A623"
-    SIDEBAR_WIDTH = 176          # 사이드바(폴더 목록)의 너비
-    SIDEBAR_GAP = 12
-    SETTINGS_WIDTH = 540         # 환경설정 패널의 너비
     # 창 둘레의 투명한 여백. 눈에 보이는 테두리는 창의 실제 크기보다 이만큼 안쪽에 있습니다.
     # 화면 끝에 붙일 때는 보이는 테두리가 끝에 닿도록 이 여백만큼 창이 화면 밖으로 나가게 합니다.
     EDGE_MARGIN = 15
@@ -500,24 +498,6 @@ class MemoExplorerWindow(QWidget):
         self._apply_font_scale()
         self.apply_size_settings()
 
-    def is_size_fixed(self) -> bool:
-        return bool(self.ui_manager.sync_manager.settings.get('explorer_fixed_size', False))
-
-    def apply_size_settings(self) -> None:
-        """환경설정의 탐색기 크기·고정 옵션을 창에 반영합니다."""
-        geom = self.ui_manager.sync_manager.settings.get('explorer_geom')
-        fixed = self.is_size_fixed()
-        if fixed and self.isMaximized():
-            self.showNormal()
-        self._apply_minimum_size()
-        self.setMaximumSize(16777215, 16777215)
-        if geom and len(geom) == 4 and not self.isMaximized():
-            self.resize(max(580, int(geom[2])) + self._sidebar_extra + self._settings_extra, max(440, int(geom[3])))
-        if fixed:
-            # 모니터 간 이동(DPI 변경) 등 어떤 경우에도 크기가 변하지 않도록 고정
-            self.setFixedSize(self.size())
-        self.grip.setVisible(not fixed)
-        self._limit_to_screen()
 
     def toggle_maximize(self) -> None:
         """100% 정상 작동하는 윈도우 최대화/복원 기능"""
@@ -622,19 +602,6 @@ class MemoExplorerWindow(QWidget):
         self.update_icons()
         modern_style.apply_explorer(self)
 
-    def sync_selection_and_checkboxes(self) -> None:
-        """Ctrl·Shift 로 여러 줄을 고르면 그 줄들을 체크합니다.
-
-        한 줄만 고른 경우(보통의 클릭)에는 체크를 건드리지 않습니다. 전에는 줄을 누를 때마다 다른 줄의 체크가
-        풀려서, 체크 상자를 하나씩 눌러 여러 개를 고를 수가 없었습니다.
-        """
-        selected_rows = set(index.row() for index in self.table.selectedIndexes())
-        if len(selected_rows) < 2:
-            return
-        for r in selected_rows:
-            item_cb = self.table.item(r, 0)
-            if item_cb:
-                item_cb.setCheckState(Qt.CheckState.Checked)
 
     def set_filter_mode(self, mode: str) -> None:
         self.filter_mode = mode
@@ -734,19 +701,6 @@ class MemoExplorerWindow(QWidget):
             self._limit_to_screen()         # 다른 모니터로 옮겼으면 그 모니터 크기에 맞춤
         self._old_pos = None
 
-    def _limit_to_screen(self) -> None:
-        """창이 화면보다 커지거나 화면 밖에 놓이지 않게 합니다. (크기 고정 상태에서는 크기는 그대로, 위치만)"""
-        if self.isMaximized():
-            return
-        limit = screen_bounds.max_inner_size(self, inset=self.EDGE_MARGIN)
-        if limit is None:
-            return
-        if self.is_size_fixed():
-            if self.width() > limit[0] or self.height() > limit[1]:
-                self.setFixedSize(min(self.width(), limit[0]), min(self.height(), limit[1]))
-        else:
-            self.setMaximumSize(*limit)
-        screen_bounds.keep_inside(self, inset=self.EDGE_MARGIN)
 
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
@@ -810,12 +764,6 @@ class MemoExplorerWindow(QWidget):
         for btn, text in filter_labels.items():
             btn.setText(text if show_text else "")
 
-    def empty_trash(self) -> None:
-        if themed_dialog.confirm(self, "휴지통 비우기", "휴지통의 모든 메모를 영구 삭제할까요? (복구 불가)", ok_text="휴지통 비우기", danger=True):
-            cnt = self.ui_manager.sync_manager.empty_trash_locally()
-            self.pv.clear()
-            self.refresh()
-            self.show_toast(f"🧹 휴지통의 메모 {cnt}개가 영구 삭제되었습니다.")
 
     def show_table_context_menu(self, pos: QPoint) -> None:
         item = self.table.itemAt(pos)
@@ -882,478 +830,7 @@ class MemoExplorerWindow(QWidget):
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
     # ── 폴더 ─────────────────────────────────────────────────────────────────
-    FOLDER_ACTIONS = {"/new": "＋ 새 폴더…", "/rename": "이름 바꾸기…", "/delete": "폴더 삭제…",
-                      "/delete_many": "여러 폴더 삭제…"}
 
-    def _saved_folders(self) -> List[str]:
-        return list(self.ui_manager.sync_manager.settings.get("folders", []) or [])
-
-    def _is_real_folder(self) -> bool:
-        return self.current_folder not in (folders.ALL, folders.UNFILED)
-
-    def folder_ui_mode(self) -> str:
-        mode = self.ui_manager.sync_manager.settings.get("folder_ui", "tabs")
-        return mode if mode in folders.UI_MODES else "tabs"
-
-    def apply_folder_ui_mode(self) -> None:
-        """환경설정에서 고른 방식의 폴더 화면만 보이게 합니다."""
-        mode = self.folder_ui_mode()
-        sidebar_open = bool(self.ui_manager.sync_manager.settings.get("folder_sidebar_open", True))
-        self.folder_combo.setVisible(mode == "dropdown")
-        self.folder_tabs.setVisible(mode == "tabs")
-        self.btn_folder.setVisible(mode == "sidebar")
-        show_list = mode == "sidebar" and sidebar_open
-        self.folder_list.setVisible(show_list)
-        self._set_sidebar_extra(self.SIDEBAR_WIDTH + self.SIDEBAR_GAP if show_list else 0)
-        if not self.is_size_fixed():
-            self._apply_minimum_size()
-
-    def _apply_minimum_size(self) -> None:
-        """창의 최소 크기. 폴더 탭 줄처럼 화면에 놓인 것이 늘어나면 그만큼 더 필요하므로, 배치가 요구하는 크기보다 작아지지 않게 합니다."""
-        # 너비는 내용에 따라 늘리지 않습니다. (긴 폴더 이름은 줄여 보여 주고, 많은 탭은 < > 로 넘겨 봄)
-        self._fit_header()
-        self.setMinimumSize(self.MIN_WIDTH + self._sidebar_extra + self._settings_extra,
-                            max(self.MIN_HEIGHT, self.minimumSizeHint().height()))
-
-    MIN_WIDTH, MIN_HEIGHT = 580, 440
-
-    def _fit_header(self) -> None:
-        """제목 줄의 폴더 버튼·드롭다운을 가운데의 'Memos' 와 겹치지 않는 너비로 맞춥니다.
-
-        자리가 모자라면 창을 넓히는 대신 폴더 이름을 줄여(…) 보여 주고, 온전한 이름은 풍선 도움말로 보여 줍니다.
-        드롭다운도 사이드바 방식의 폴더 버튼과 같은 너비를 씁니다.
-        """
-        name = self._folder_title(self.current_folder)
-        button = self.btn_folder
-        metrics = button.fontMetrics()
-        button.setMinimumWidth(0)
-        button.setMaximumWidth(16777215)
-        button.setText(" " + name)
-        natural = button.sizeHint().width()
-        chrome = natural - metrics.horizontalAdvance(" " + name)          # 아이콘·안쪽 여백이 차지하는 너비
-        # 제목 줄에서 'Memos' 왼쪽에 남는 자리 = (줄 너비 - 'Memos' 너비) / 2 에서 라이트/다크 버튼과 간격을 뺀 것
-        margins = self.bg.layout().contentsMargins()
-        row_width = self.content_width() - 2 * self.EDGE_MARGIN - margins.left() - margins.right()
-        side = (row_width - self.title_label.sizeHint().width()) // 2 - 8
-        room = max(70, side - self.btn_app_theme.width() - self._header_left.spacing())
-        width = min(natural, room)
-        if width < natural:
-            button.setText(" " + metrics.elidedText(name, Qt.TextElideMode.ElideRight, max(10, width - chrome)))
-        button.setFixedWidth(width)
-        button.setToolTip(f"{name} — 폴더 목록 열기/닫기")
-        self.folder_combo.setFixedWidth(max(width, min(room, 110)))
-        self.folder_combo.setToolTip(f"{name} — 폴더 (고른 폴더의 메모만 보기)")
-        self.folder_combo.view().setMinimumWidth(240)
-
-    def content_x(self) -> int:
-        """왼쪽에 덧붙인 영역(폴더 사이드바, 왼쪽에 붙은 환경설정 패널)을 뺀, 탐색기 본래 영역의 왼쪽 위치."""
-        return self.x() + self._sidebar_extra + (self._settings_extra if self._settings_side == "left" else 0)
-
-    def content_width(self) -> int:
-        """사이드바·환경설정 패널로 덧붙인 영역을 뺀, 탐색기 본래 너비."""
-        return self.width() - self._sidebar_extra - self._settings_extra
-
-    def _set_sidebar_extra(self, extra: int) -> None:
-        """폴더 목록을 여닫을 때 창을 왼쪽으로 그만큼 늘리거나 줄입니다.
-
-        탐색기 본래 영역의 위치와 크기는 그대로 두므로 글자 크기나 버튼 배치가 달라지지 않습니다.
-        """
-        delta = extra - self._sidebar_extra
-        if delta == 0:
-            return
-        self._sidebar_extra = extra            # 먼저 바꿔 두어야 resizeEvent 가 본래 너비를 그대로 봅니다.
-        if self.isMaximized():
-            return
-        fixed = self.is_size_fixed()
-        geom = self.geometry()
-        # 목록을 여닫은 것이 배치에 반영된 뒤에 크기를 바꿔야, 예전 최소 너비에 걸리지 않습니다.
-        for holder in (self.bg, self):
-            if holder.layout():
-                holder.layout().activate()
-        self.setMinimumSize(0, 0)
-        self.setMaximumSize(16777215, 16777215)
-        left = geom.x() - delta
-        if delta > 0:
-            screen = QGuiApplication.screenAt(geom.center()) or QGuiApplication.primaryScreen()
-            if screen:
-                left = max(screen.availableGeometry().left() - self.EDGE_MARGIN, left)
-        self.setGeometry(left, geom.y(), geom.width() + delta, geom.height())
-        self._apply_minimum_size()
-        if fixed:
-            self.setFixedSize(self.size())
-        self._limit_to_screen()
-
-    # ── 환경설정 패널 (폴더 사이드바처럼 탐색기와 한 창으로 열림) ──────────────
-    def settings_open(self) -> bool:
-        return self.settings_panel is not None
-
-    def _pick_settings_side(self) -> str:
-        """패널을 붙일 쪽. 오른쪽에 자리가 있으면 오른쪽, 없고 왼쪽에 있으면 왼쪽."""
-        need = self.SETTINGS_WIDTH + self.SIDEBAR_GAP
-        area = screen_bounds.work_area(self)
-        if area is None or self.isMaximized():
-            return "right"
-        left = self.x() + self.EDGE_MARGIN                       # 보이는 테두리의 왼쪽
-        right = self.x() + self.width() - self.EDGE_MARGIN
-        if right + need <= area.left() + area.width():
-            return "right"
-        return "left" if left - need >= area.left() else "right"
-
-    def open_settings_panel(self) -> None:
-        if self.settings_panel is not None:
-            return
-        panel = SettingsWindow(self.ui_manager.sync_manager, embedded=True)
-        panel.setFixedWidth(self.SETTINGS_WIDTH)
-        panel.on_close = self.ask_and_close_settings_panel
-        side = self._pick_settings_side()
-        outer = self.bg.layout()
-        if side == "left":
-            outer.insertWidget(0, panel)
-        else:
-            outer.addWidget(panel)
-        self.settings_panel = panel
-        panel.show()
-        self._resize_for_settings(self.SETTINGS_WIDTH + self.SIDEBAR_GAP, side)
-
-    def settle_unsaved_settings(self) -> bool:
-        """환경설정에 저장하지 않은 변경이 있으면 어떻게 할지 묻습니다. 닫아도 되면 True, 취소했으면 False.
-
-        '저장하고 닫기'를 고르면 여기서 저장합니다. 바뀐 것이 없으면 묻지 않습니다.
-        """
-        panel = self.settings_panel
-        if panel is None or not panel.is_dirty():
-            return True
-        if getattr(self, '_asking_unsaved', False):
-            return False                                 # 이미 묻고 있는 중
-        self._asking_unsaved = True
-        try:
-            choice = themed_dialog.choose(
-                self, "저장하지 않은 변경이 있습니다", "환경설정에서 바꾼 내용을 저장할까요?",
-                [("저장하고 닫기", "save", "primary"), ("저장 안 함", "discard", ""), ("취소", None, "")])
-        finally:
-            self._asking_unsaved = False
-        if choice == "save":
-            if self.settings_panel is not None:
-                self.settings_panel.save()
-            return True
-        return choice == "discard"
-
-    def ask_and_close_settings_panel(self) -> bool:
-        """환경설정 패널을 닫습니다. 저장하지 않은 변경이 있으면 먼저 묻고, 취소하면 닫지 않습니다(False)."""
-        if not self.settle_unsaved_settings():
-            return False
-        self.close_settings_panel()
-        return True
-
-    def request_hide(self) -> bool:
-        """탐색기를 숨깁니다. 환경설정에 저장하지 않은 변경이 있으면 먼저 묻고, 취소하면 숨기지 않습니다(False)."""
-        if not self.settle_unsaved_settings():
-            return False
-        self.hide()
-        return True
-
-    def close_settings_panel(self) -> None:
-        """환경설정 패널을 묻지 않고 닫습니다. (저장하지 않은 변경은 버림)"""
-        panel = self.settings_panel
-        if panel is None:
-            return
-        self.settings_panel = None
-        if self.ui_manager.settings_window is panel:
-            self.ui_manager.settings_window = None
-        self.bg.layout().removeWidget(panel)
-        panel.hide()
-        panel.deleteLater()
-        self._resize_for_settings(0, self._settings_side)
-
-    def _resize_for_settings(self, extra: int, side: str) -> None:
-        """환경설정 패널을 여닫을 때 창을 그만큼 늘리거나 줄입니다. 탐색기 본래 영역의 크기는 그대로 둡니다."""
-        delta = extra - self._settings_extra
-        self._settings_extra, self._settings_side = extra, side
-        if delta == 0 or self.isMaximized():
-            return
-        fixed = self.is_size_fixed()
-        geom = self.geometry()
-        for holder in (self.bg, self):
-            if holder.layout():
-                holder.layout().activate()
-        self.setMinimumSize(0, 0)
-        self.setMaximumSize(16777215, 16777215)
-        left = geom.x() - delta if side == "left" else geom.x()
-        self.setGeometry(left, geom.y(), geom.width() + delta, geom.height())
-        self._apply_minimum_size()
-        if fixed:
-            self.setFixedSize(self.size())
-        self._limit_to_screen()
-
-    def toggle_folder_sidebar(self) -> None:
-        is_open = bool(self.ui_manager.sync_manager.settings.get("folder_sidebar_open", True))
-        self.ui_manager.sync_manager.save_settings({"folder_sidebar_open": not is_open})
-        self.apply_folder_ui_mode()
-
-    def _folder_title(self, path: str) -> str:
-        return {folders.ALL: "전체 메모", folders.UNFILED: "미분류"}.get(path, path)
-
-    def _rebuild_folder_ui(self, memos: List[Dict[str, Any]]) -> None:
-        """폴더 고르는 화면(탭 줄·사이드바·드롭다운)을 지금의 폴더 목록으로 다시 채웁니다."""
-        names = folders.all_folders(self._saved_folders(), memos)
-        if self._is_real_folder() and self.current_folder not in names:
-            self.current_folder = folders.ALL
-        counts = folders.counts(memos)
-        self._fill_folder_combo(names)
-        self._fill_folder_tabs(names)
-        self._fill_folder_list(names, counts)
-        self._fit_header()
-        self.apply_folder_ui_mode()
-
-    def _fill_folder_combo(self, names: List[str]) -> None:
-        """드롭다운: 맨 위에 '새 폴더', 그다음 '전체 메모', 그 아래 폴더(탭·사이드바에서 정한 순서), 미분류, 관리 메뉴."""
-        combo = self.folder_combo
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem(self.FOLDER_ACTIONS["/new"], "/new")
-        combo.addItem("전체 메모", folders.ALL)
-        for path in names:
-            combo.addItem("　" * folders.depth(path) + folders.leaf(path), path)
-            combo.setItemData(combo.count() - 1, path, Qt.ItemDataRole.ToolTipRole)
-        combo.addItem("미분류", folders.UNFILED)
-        if names:
-            combo.insertSeparator(combo.count())
-            for key in ("/rename", "/delete") if self._is_real_folder() else ():
-                combo.addItem(self.FOLDER_ACTIONS[key], key)
-            combo.addItem(self.FOLDER_ACTIONS["/delete_many"], "/delete_many")
-        combo.setCurrentIndex(max(0, combo.findData(self.current_folder)))
-        combo.blockSignals(False)
-
-    def _make_folder_tab(self, label: str, path: str, selected: bool, sub: bool = False) -> QPushButton:
-        btn = QPushButton(label)
-        btn.setFixedHeight(28 if sub else 32)
-        btn.setCheckable(path != "/new")
-        btn.setChecked(selected)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setProperty("folder_path", path)
-        btn.setProperty("sub_tab", sub)
-        btn.setToolTip("새 폴더" if path == "/new" else self._folder_title(path))
-        btn.clicked.connect(lambda checked, target=path: self._on_folder_data(target))
-        if path not in (folders.ALL, folders.UNFILED, "/new"):
-            btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            btn.customContextMenuRequested.connect(
-                lambda pos, target=path, b=btn: self._show_folder_menu(target, b.mapToGlobal(pos)))
-        return btn
-
-    def _fill_folder_tabs(self, names: List[str]) -> None:
-        current_top = folders.top(self.current_folder) if self._is_real_folder() else self.current_folder
-        tops = [p for p in names if folders.depth(p) == 0]
-        row = [("전체 메모", folders.ALL)] + [(p, p) for p in tops] + [("미분류", folders.UNFILED), ("＋", "/new")]
-        top_buttons = [self._make_folder_tab(label, path, current_top == path) for label, path in row]
-
-        # 하위 폴더가 있는 폴더를 고른 경우에만 둘째 줄을 채웁니다.
-        children = [p for p in names if self._is_real_folder() and p.startswith(current_top + folders.SEP)]
-        sub_row = ([("전체", current_top)] + [(p[len(current_top) + 1:], p) for p in children]) if children else []
-        sub_buttons = [self._make_folder_tab(label, path, self.current_folder == path, sub=True) for label, path in sub_row]
-
-        self.folder_tab_buttons = top_buttons + sub_buttons
-        # 버튼 너비는 모양(스타일)이 입혀진 뒤에 정해지므로, 먼저 모양을 입히고 줄에 넣습니다.
-        modern_style.apply_explorer_folders(self)
-        self.folder_tab_strip.set_tabs(top_buttons, [p for _, p in row], tops, keep_visible=current_top)
-        self.folder_subtab_strip.set_tabs(sub_buttons, [p for _, p in sub_row], children, keep_visible=self.current_folder)
-        self.folder_subtab_strip.setVisible(bool(sub_buttons))
-
-    def _fill_folder_list(self, names: List[str], counts: Dict[str, int]) -> None:
-        lst = self.folder_list
-        lst.blockSignals(True)
-        lst.clear()
-        rows = [(folders.ALL, "전체 메모")] + [(p, "　" * folders.depth(p) + folders.leaf(p)) for p in names] \
-            + [(folders.UNFILED, "미분류")]
-        for path, label in rows:
-            item = QListWidgetItem(f"{label}  ({counts.get(path, 0)})")
-            item.setData(Qt.ItemDataRole.UserRole, path)
-            item.setToolTip(self._folder_title(path))
-            if path in (folders.ALL, folders.UNFILED):
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)      # 폴더만 끌어 옮길 수 있음
-            lst.addItem(item)
-            if path == self.current_folder:
-                lst.setCurrentItem(item)
-        new_item = QListWidgetItem("＋ 새 폴더…")
-        new_item.setData(Qt.ItemDataRole.UserRole, "/new")
-        new_item.setFlags(new_item.flags() & ~Qt.ItemFlag.ItemIsDragEnabled)
-        lst.addItem(new_item)
-        lst.blockSignals(False)
-
-    # ── 폴더 순서 (탭·사이드바에서 끌어서 바꾸며, 드롭다운에도 같은 순서가 쓰입니다) ──
-    def _folder_names(self) -> List[str]:
-        return folders.all_folders(self._saved_folders(), self.ui_manager.sync_manager.load_local_memos())
-
-    def _save_folder_order(self, names: List[str]) -> None:
-        self.ui_manager.sync_manager.save_settings({"folders": folders.arrange(names)})
-        self.refresh()
-
-    def move_folder(self, path: Any, before: Any) -> None:
-        """path 폴더를 before 폴더 앞으로 옮깁니다. before 가 None 이면 같은 단계의 맨 뒤로."""
-        names = self._folder_names()
-        if path in names and path != before:
-            self._save_folder_order(folders.reorder(names, path, before))
-
-    def _on_sidebar_reordered(self) -> None:
-        """사이드바에서 항목을 끌어 놓은 뒤: 화면에 놓인 순서대로 저장합니다."""
-        order = [self.folder_list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.folder_list.count())]
-        self._save_folder_order([p for p in order if isinstance(p, str) and not p.startswith(folders.SEP) and p])
-
-    def _show_sidebar_menu(self, pos: QPoint) -> None:
-        item = self.folder_list.itemAt(pos)
-        path = item.data(Qt.ItemDataRole.UserRole) if item else None
-        if isinstance(path, str) and path not in (folders.ALL, folders.UNFILED, "/new"):
-            self._show_folder_menu(path, self.folder_list.viewport().mapToGlobal(pos))
-
-    def _show_folder_menu(self, path: str, global_pos: QPoint) -> None:
-        """폴더(탭·목록 항목)를 우클릭했을 때: 하위 폴더 만들기 / 이름 바꾸기 / 삭제."""
-        menu = QMenu(self)
-        menu.setStyleSheet(modern_style.menu_qss(self.ui_manager.sync_manager.settings))
-        for key, label in (("/new", "여기에 하위 폴더 만들기…"), ("/rename", "이름 바꾸기…"), ("/delete", "폴더 삭제…")):
-            menu.addAction(label).triggered.connect(lambda checked, k=key: self._run_folder_action(path, k))
-        menu.addSeparator()
-        menu.addAction("여러 폴더 삭제…").triggered.connect(lambda: self.pick_and_delete_folders([path]))
-        menu.exec(global_pos)
-
-    def _run_folder_action(self, path: str, key: str) -> None:
-        self.current_folder = path
-        self._on_folder_data(key)
-
-    def _on_folder_picked(self, index: int) -> None:
-        self._on_folder_data(self.folder_combo.itemData(index))
-
-    def _on_folder_data(self, data: Any) -> None:
-        """폴더 화면에서 무언가를 골랐을 때. 폴더 경로면 그 폴더로, '/new' 같은 값이면 관리 동작을 합니다."""
-        if data == "/new":
-            self.new_folder()
-        elif data == "/rename":
-            self.rename_folder()
-        elif data == "/delete":
-            self.delete_folder()
-        elif data == "/delete_many":
-            self.pick_and_delete_folders([self.current_folder] if self._is_real_folder() else [])
-            return
-        elif isinstance(data, str):
-            self.select_folder(data)
-            return
-        self.refresh()      # 관리 동작 뒤: 폴더 화면을 다시 채우며 선택 표시를 맞춤
-
-    def select_folder(self, path: str) -> None:
-        self.current_folder = path
-        self.current_page = 1
-        self.ui_manager.sync_manager.save_settings({"explorer_folder": path})
-        self.refresh()
-
-    def _ask_folder_name(self, title: str, text: str = "") -> str:
-        name, ok = themed_dialog.ask_text(self, title, "폴더 이름", text,
-                                          hint="하위 폴더는 '업무/프로젝트A'처럼 / 로 구분해서 적습니다.")
-        return folders.normalize(name) if ok else ""
-
-    def new_folder(self) -> None:
-        name = self._ask_folder_name("새 폴더", self.current_folder + folders.SEP if self._is_real_folder() else "")
-        if not name:
-            return
-        saved = self._saved_folders()
-        if name not in saved:
-            self.ui_manager.sync_manager.save_settings({"folders": saved + [name]})
-        self.current_folder = name
-        self.ui_manager.sync_manager.save_settings({"explorer_folder": name})
-        self.show_toast(f"'{name}' 폴더를 만들었습니다")
-
-    def _memos_in(self, path: str) -> List[Dict[str, Any]]:
-        return [m for m in self.ui_manager.sync_manager.load_local_memos() if folders.contains(path, folders.folder_of(m))]
-
-    def _move_to_folder(self, memo: Dict[str, Any], path: str) -> None:
-        self._save_memo_meta(memo, folder=path)
-
-    def rename_folder(self) -> None:
-        old = self.current_folder
-        if not self._is_real_folder():
-            return
-        new = self._ask_folder_name("폴더 이름 바꾸기", old)
-        if not new or new == old:
-            return
-        for memo in self._memos_in(old):
-            self._move_to_folder(memo, folders.moved(folders.folder_of(memo), old, new))
-        renamed = [folders.moved(p, old, new) for p in self._saved_folders()]
-        self.ui_manager.sync_manager.save_settings({"folders": list(dict.fromkeys(renamed + [new])), "explorer_folder": new})
-        self.current_folder = new
-        self.show_toast(f"폴더 이름을 '{new}'(으)로 바꿨습니다")
-
-    def delete_folder(self) -> None:
-        if self._is_real_folder():
-            self.delete_folders([self.current_folder])
-
-    def pick_and_delete_folders(self, preselect: List[str]) -> None:
-        """폴더 목록에서 여러 개를 체크해 한 번에 삭제합니다. preselect 는 미리 체크해 둘 폴더."""
-        memos = self.ui_manager.sync_manager.load_local_memos()
-        names = folders.all_folders(self._saved_folders(), memos)
-        dialog = FolderPickDialog(self, names, folders.counts(memos), preselect)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.delete_folders(dialog.selected())
-        else:
-            self.refresh()
-
-    def delete_folders(self, paths: List[str]) -> bool:
-        """폴더들을(하위 폴더 포함) 삭제합니다. 메모는 지우지 않고 미분류로 옮깁니다. 삭제했으면 True."""
-        names = self._folder_names()
-        # 상위 폴더가 함께 골라졌으면 하위 폴더는 따로 처리할 필요가 없습니다.
-        picked = [p for p in dict.fromkeys(paths) if p in names]
-        tops = [p for p in picked if not any(other != p and folders.contains(other, p) for other in picked)]
-        if not tops:
-            return False
-        doomed = lambda path: any(folders.contains(top, path) for top in tops)
-        inside = [m for m in self.ui_manager.sync_manager.load_local_memos() if doomed(folders.folder_of(m))]
-        label = f"'{tops[0]}' 폴더" if len(tops) == 1 else f"폴더 {len(tops)}개"
-        # 여러 개를 지울 때는 어떤 폴더인지 한 줄씩 보여 줍니다.
-        listing = "" if len(tops) == 1 else "\n" + "\n".join(f"  • {p}" for p in tops) + "\n"
-        question = (f"{label}를 삭제할까요?{listing}\n"
-                    f"메모는 지워지지 않고 미분류로 옮겨집니다. (옮겨질 메모 {len(inside)}개)")
-        if not themed_dialog.confirm(self, "폴더 삭제", question, ok_text="폴더 삭제", danger=True):
-            return False
-        for memo in inside:
-            self._move_to_folder(memo, "")
-        changes: Dict[str, Any] = {"folders": [p for p in self._saved_folders() if not doomed(folders.normalize(p))]}
-        if self._is_real_folder() and doomed(self.current_folder):
-            # 보고 있던 폴더가 사라졌으면 전체 메모로
-            self.current_folder = folders.ALL
-            changes["explorer_folder"] = folders.ALL
-        self.ui_manager.sync_manager.save_settings(changes)
-        self.show_toast(f"{label}를 삭제했습니다 (메모 {len(inside)}개는 미분류로)")
-        self.refresh()
-        return True
-
-    def _checked_memos(self) -> List[Dict[str, Any]]:
-        out = []
-        for r in range(self.table.rowCount()):
-            item_cb, item = self.table.item(r, 0), self.table.item(r, 2)
-            if item_cb and item and item_cb.checkState() == Qt.CheckState.Checked:
-                out.append(item.data(Qt.ItemDataRole.UserRole))
-        return out
-
-    def move_memos_to_folder(self, clicked: Dict[str, Any], path: Optional[str]) -> None:
-        """우클릭한 메모(체크해 둔 메모가 있으면 그것들도 함께)를 폴더로 옮깁니다. path 가 None 이면 새 폴더를 물어봅니다."""
-        if path is None:
-            path = self._ask_folder_name("새 폴더로 이동")
-            if not path:
-                return
-            saved = self._saved_folders()
-            if path not in saved:
-                self.ui_manager.sync_manager.save_settings({"folders": saved + [path]})
-        targets = {m.get('id'): m for m in self._checked_memos() + [clicked] if m}
-        for memo in targets.values():
-            self._move_to_folder(memo, path)
-        self.show_toast(f"메모 {len(targets)}개를 '{path or '미분류'}'(으)로 옮겼습니다")
-        self.refresh()
-
-    def _add_folder_menu(self, menu: Any, m: Dict[str, Any]) -> None:
-        sub = menu.addMenu("폴더로 이동")
-        current = folders.folder_of(m)
-        names = folders.all_folders(self._saved_folders(), self.ui_manager.sync_manager.load_local_memos())
-        for path, label in [("", "미분류")] + [(p, "　" * folders.depth(p) + folders.leaf(p)) for p in names]:
-            act = sub.addAction(("✓ " if path == current else "　") + label)
-            act.triggered.connect(lambda checked, target=path: self.move_memos_to_folder(m, target))
-        sub.addSeparator()
-        sub.addAction("＋ 새 폴더로…").triggered.connect(lambda: self.move_memos_to_folder(m, None))
 
     # ── 알림 · 변경 기록 ─────────────────────────────────────────────────────
     def edit_reminder(self, memo: Dict[str, Any]) -> None:
@@ -1424,240 +901,6 @@ class MemoExplorerWindow(QWidget):
         QApplication.clipboard().setText(text)
         self.show_toast("본문 내용이 클립보드에 복사되었습니다.")
 
-    def delete_single_memo(self, memo: Dict[str, Any]) -> None:
-        if memo.get('is_protected'):
-            self.show_toast("🔒 삭제 방지 설정된 메모입니다.")
-            return
-        memo_id = memo.get('id')
-        if memo_id and themed_dialog.confirm(self, "삭제", f"'{memo.get('title','')}' 메모를 휴지통으로 이동할까요?", ok_text="삭제", danger=True):
-            self.ui_manager.close_memo_window_by_id(memo_id, is_deleting=True)
-            self.ui_manager.sync_manager.delete_memo_locally(memo_id, title=memo.get('title'))
-            self.ui_manager.sync_manager.delete_memos_cloud([memo_id])
-            self.pv.clear()
-            self.refresh()
-
-    def on_cell_click(self, r: int, c: int) -> None:
-        """셀 클릭 시 미리보기 업데이트 — 코드 메모는 D2Coding 폰트 적용."""
-        m_item = self.table.item(r, 2)
-        if m_item:
-            m = m_item.data(Qt.ItemDataRole.UserRole)
-            if m:
-                self._flush_preview_save()
-                self._is_loading_preview = True
-                sealed = bool(m.get('_locked') or m.get('_unreadable'))
-                # 창에 아직 저장되지 않은 입력이 있으면 먼저 저장하고 그 내용을 보여줍니다.
-                w = self.ui_manager.memo_windows.get(m.get('id', ''))
-                if w and not sealed and not w.is_sealed():
-                    w.flush_auto_save()
-                    # 저장하면서 목록이 새로 그려지면 줄 선택이 풀립니다. 같은 메모를 다시 골라 두어야
-                    # 이어서 미리보기에서 고친 내용이 이 메모에 저장됩니다.
-                    m = self._reselect_memo(m)
-                    m['content'] = w.memo_data.get('content', m.get('content', ''))
-                content = m.get('content', '')
-                if m.get('_locked'):
-                    clean_text = "🔒 암호 메모입니다. 메모를 열어 암호를 입력하면 볼 수 있습니다."
-                elif m.get('_unreadable'):
-                    clean_text = "⚠ 본문을 복호화할 수 없는 메모입니다."
-                else:
-                    clean_text = clean_plain_text(content)
-                self.pv.setReadOnly(self.is_trash_mode or sealed)
-                self.pv.setPlainText(clean_text)
-                self._is_loading_preview = False
-
-    # ── 미리보기 우클릭 메뉴: 지금 보고 있는 본문에 하는 일만 둡니다 ──────────────
-    def _preview_memo(self) -> Optional[Dict[str, Any]]:
-        item = self.table.item(self.table.currentRow(), 2) if self.table.currentRow() >= 0 else None
-        return item.data(Qt.ItemDataRole.UserRole) if item else None
-
-    def preview_menu_actions(self) -> List[tuple]:
-        """미리보기 우클릭 메뉴의 항목들. [(글자, 동작, 쓸 수 있는지)] — 글자가 None 이면 구분선."""
-        m = self._preview_memo()
-        if not m:
-            return []
-        pv = self.pv
-        has_selection = pv.textCursor().hasSelection()
-        copy_part = ("복사", pv.copy, has_selection)
-        copy_all = ("전체 내용 복사", lambda: self.copy_memo_text(m), not (m.get('_locked') or m.get('_unreadable')))
-        if self.is_trash_mode:
-            return [copy_part, copy_all]
-        if m.get('_locked'):
-            return [("🔓 잠금 해제 (암호 입력)", lambda: self._lock_action(m, "prompt_unlock"), True)]
-        if m.get('_unreadable'):
-            return []
-        has_reminder = bool(reminders.normalize(m.get('reminder')))
-        return [
-            ("메모 열기", lambda: self.ui_manager.show_specific_memo(m.get('id')), True),
-            (None, None, False),
-            ("체크리스트 켜기/끄기", self.toggle_preview_checklist, not pv.isReadOnly()),
-            (None, None, False),
-            copy_part,
-            ("붙여넣기", pv.paste, not pv.isReadOnly() and pv.canPaste()),
-            ("모두 선택", pv.selectAll, bool(pv.toPlainText())),
-            copy_all,
-            (None, None, False),
-            ("⏰ 알림 바꾸기…" if has_reminder else "⏰ 알림 설정…", lambda: self.edit_reminder(m), True),
-            ("이전 내용 보기…", lambda: self.show_history(m), True),
-        ]
-
-    def show_preview_menu(self, pos: QPoint) -> None:
-        actions = self.preview_menu_actions()
-        if not actions:
-            return
-        menu = QMenu(self)
-        menu.setStyleSheet(modern_style.menu_qss(self.ui_manager.sync_manager.settings))
-        for text, action, enabled in actions:
-            if text is None:
-                menu.addSeparator()
-                continue
-            entry = menu.addAction(text)
-            entry.setEnabled(enabled)
-            entry.triggered.connect(lambda checked=False, run=action: run())
-        menu.exec(self.pv.viewport().mapToGlobal(pos))
-
-    def toggle_preview_checklist(self) -> None:
-        """미리보기에서 커서가 있는 줄(여러 줄을 골랐으면 그 줄들)에 체크 상자를 붙이거나 뗍니다."""
-        pv = self.pv
-        if pv.isReadOnly():
-            return
-        cursor = pv.textCursor()
-        document = pv.document()
-        first = document.findBlock(cursor.selectionStart())
-        last = document.findBlock(cursor.selectionEnd())
-        blocks = []
-        block = first
-        while block.isValid():
-            blocks.append(block)
-            if block == last:
-                break
-            block = block.next()
-        new_lines = checklist.toggle_boxes([b.text() for b in blocks])
-        cursor.beginEditBlock()
-        for block, new_text in zip(blocks, new_lines):
-            if block.text() != new_text:
-                edit = QTextCursor(block)
-                edit.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
-                edit.insertText(new_text)
-        cursor.endEditBlock()
-
-    def _reselect_memo(self, memo: Dict[str, Any]) -> Dict[str, Any]:
-        """목록에서 memo 와 같은 메모의 줄을 (신호 없이) 다시 고르고, 그 줄이 들고 있는 메모 데이터를 돌려줍니다."""
-        memo_id = memo.get('id')
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 2)
-            data = item.data(Qt.ItemDataRole.UserRole) if item else None
-            if data and data.get('id') == memo_id:
-                if self.table.currentRow() != row:
-                    self.table.blockSignals(True)
-                    self.table.setCurrentCell(row, 2)
-                    self.table.blockSignals(False)
-                return data
-        return memo
-
-    def _preview_check_colors(self) -> Dict[str, Any]:
-        return modern_style.check_colors(modern_style.app_colors(self.ui_manager.sync_manager.settings))
-
-    def on_preview_changed(self) -> None:
-        if self._is_loading_preview or self.is_trash_mode:
-            return
-        r = self.table.currentRow()
-        if r < 0:
-            return
-        m_item = self.table.item(r, 2)
-        if m_item:
-            m = m_item.data(Qt.ItemDataRole.UserRole)
-            if not m: return
-            if m.get('_locked') or m.get('_unreadable') or self.pv.isReadOnly():
-                return
-            new_content = self.pv.toPlainText()
-            if new_content == clean_plain_text(m.get('content', '')):
-                return                      # 글자가 그대로면 수정이 아님
-            if is_html_content(m.get('content', '')):
-                # 미리보기는 글자만 다루므로, 서식이 있는 메모를 여기서 고치면 서식이 사라집니다. 그 사실을 알립니다.
-                self.show_toast("서식이 있는 메모라 글자만 저장했습니다 (이전 내용 보기로 되돌릴 수 있음)", warn=True)
-            self._commit_preview_content(m, new_content, r)
-
-    def _commit_preview_content(self, m: Dict[str, Any], new_content: str, row: int) -> None:
-        """미리보기에서 고친 본문을 메모에 반영합니다. (잠시 뒤 저장, 열려 있는 메모 창과 목록의 수정일시도 맞춤)"""
-        memo_id = m.get('id', '')
-        m['content'] = new_content
-        m['updated_at'] = datetime.datetime.now().isoformat()
-
-        if self._pending_preview_memo is not None and self._pending_preview_memo is not m:
-            self._flush_preview_save()
-        self._pending_preview_memo = m
-        self._preview_save_timer.start()
-
-        if memo_id in self.ui_manager.memo_windows:
-            w = self.ui_manager.memo_windows[memo_id]
-            w._is_updating_from_explorer = True
-            if is_html_content(new_content):
-                w.text_edit.setHtml(new_content)
-            else:
-                w.text_edit.setPlainText(new_content)
-            w._is_updating_from_explorer = False
-            # 창이 들고 있는 데이터도 맞춰 두어야, 창이 나중에 저장할 때 미리보기 편집을 되돌리지 않습니다.
-            w.memo_data['content'] = new_content
-            w.memo_data['updated_at'] = m['updated_at']
-            # 미리보기에서의 입력도 '마지막 입력'으로 보고 자동 잠금 시간을 다시 셉니다.
-            w.restart_relock_timer()
-
-        if self.table.item(row, 3):
-            self.table.item(row, 3).setText(datetime.datetime.now().strftime("%y.%m.%d %H:%M"))      # 목록과 같은 표기
-
-    def _toggle_preview_box_keeping_format(self, block: Any) -> bool:
-        """미리보기에서 체크 상자를 눌렀을 때: 서식이 있는 메모면 서식을 지킨 채 그 상자만 바꿉니다.
-
-        처리했으면 True. 서식이 없는 메모는 False 를 돌려주어 보통대로(글자를 바꾸는 방식으로) 처리되게 합니다.
-        """
-        m = self._preview_memo()
-        row = self.table.currentRow()
-        content = m.get('content', '') if m else ''
-        if not m or not isinstance(content, str) or not is_html_content(content):
-            return False
-        # 미리보기의 몇 번째 체크리스트 줄인지 세고, 원본 문서에서 같은 번째 줄을 찾습니다.
-        order, probe = 0, self.pv.document().begin()
-        while probe.isValid() and probe != block:
-            order += checklist.box_index(probe.text()) >= 0
-            probe = probe.next()
-        document = QTextDocument()
-        document.setHtml(content)
-        target, seen, source = None, 0, document.begin()
-        while source.isValid():
-            if checklist.box_index(source.text()) >= 0:
-                if seen == order:
-                    target = source
-                    break
-                seen += 1
-            source = source.next()
-        if target is None or target.text().strip() != block.text().strip():
-            # 줄이 서로 맞지 않으면(목록 안의 체크 상자 등) 엉뚱한 줄을 바꾸지 않습니다.
-            self.show_toast("이 줄은 메모를 열어서 체크하세요 (서식이 있는 메모)", warn=True)
-            return True
-        index = checklist.box_index(target.text())
-        flipped = checklist.CHECKED if target.text()[index] == checklist.UNCHECKED else checklist.UNCHECKED
-        edit = QTextCursor(target)
-        edit.setPosition(target.position() + index)
-        edit.setPosition(target.position() + index + 1, QTextCursor.MoveMode.KeepAnchor)
-        edit.insertText(flipped)
-        # 미리보기의 글자도 같이 바꾸되, 이것을 '미리보기에서 고침'(글자만 저장)으로 처리하지 않게 합니다.
-        self._is_loading_preview = True
-        try:
-            shown = QTextCursor(block)
-            at = checklist.box_index(block.text())
-            shown.setPosition(block.position() + at)
-            shown.setPosition(block.position() + at + 1, QTextCursor.MoveMode.KeepAnchor)
-            shown.insertText(flipped)
-        finally:
-            self._is_loading_preview = False
-        self._commit_preview_content(m, document.toHtml(), row)
-        return True
-
-    def _flush_preview_save(self) -> None:
-        self._preview_save_timer.stop()
-        m = self._pending_preview_memo
-        self._pending_preview_memo = None
-        if m is not None:
-            self.ui_manager.sync_manager.save_memo_locally(m)
 
     def hideEvent(self, event: Any) -> None:
         self._flush_preview_save()
@@ -1699,21 +942,6 @@ class MemoExplorerWindow(QWidget):
         # 레이아웃 후 다시 텍스트/아이콘 상태 원상 복원
         self._refresh_btn_labels()
 
-    def toggle_trash(self) -> None:
-        self._remember_checked()
-        self._checked_ids.clear()                # 목록과 휴지통은 서로 다른 메모들이므로 체크를 이어 가지 않음
-        for r in range(self.table.rowCount()):
-            if self.table.item(r, 0):
-                self.table.item(r, 0).setCheckState(Qt.CheckState.Unchecked)
-        self.is_trash_mode = self.t_btn.isChecked()
-        self.t_btn.setText("목록으로 돌아가기" if self.is_trash_mode else "휴지통 보기")
-        is_dark = self.ui_manager.sync_manager.settings.get('app_theme', 'white') == "dark"
-        icon_name = "total.svg" if self.is_trash_mode else "trashbucket.svg"
-        self.t_btn.setIcon(self.ui_manager.get_theme_icon(icon_name, is_dark))
-        self.pv.setReadOnly(self.is_trash_mode)
-        self.pv.clear()
-        self.current_page = 1
-        self.refresh()
 
     def on_search(self) -> None:
         self.current_page = 1
@@ -1730,12 +958,6 @@ class MemoExplorerWindow(QWidget):
             self.current_page += 1
             self.update_table()
 
-    def on_header_click(self, idx: int) -> None:
-        if idx == 0:
-            all_c = all(self.table.item(r, 0).checkState() == Qt.CheckState.Checked for r in range(self.table.rowCount()))
-            ns = Qt.CheckState.Unchecked if all_c else Qt.CheckState.Checked
-            for r in range(self.table.rowCount()):
-                self.table.item(r, 0).setCheckState(ns)
 
     @pyqtSlot()
     def refresh(self) -> None:
@@ -1819,17 +1041,6 @@ class MemoExplorerWindow(QWidget):
         if not self.is_size_fixed() and not self.isMaximized():
             self._apply_minimum_size()
 
-    def _remember_checked(self) -> None:
-        """지금 목록에 보이는 줄들의 체크 상태를 기억해 둡니다. (목록을 다시 그려도 유지되도록)"""
-        for r in range(self.table.rowCount()):
-            box, item = self.table.item(r, 0), self.table.item(r, 2)
-            memo = item.data(Qt.ItemDataRole.UserRole) if item else None
-            if not box or not memo or not memo.get('id'):
-                continue
-            if box.checkState() == Qt.CheckState.Checked:
-                self._checked_ids.add(memo['id'])
-            else:
-                self._checked_ids.discard(memo['id'])
 
     def update_table(self) -> None:
         # 동기화가 끝나거나 열어 둔 메모가 저장되어 목록이 다시 그려져도, 체크해 둔 것은 그대로 둡니다.
@@ -1939,57 +1150,4 @@ class MemoExplorerWindow(QWidget):
         self._save_memo_meta(memo, is_favorite=not memo.get('is_favorite', False))
         self.refresh()
 
-    def picked_memos(self) -> List[Dict[str, Any]]:
-        """여러 개를 한꺼번에 다룰 때의 대상. 체크한 메모들이며, 체크한 것이 없으면 선택한 줄의 메모입니다. (목록 순서대로)"""
-        checked = [r for r in range(self.table.rowCount())
-                   if self.table.item(r, 0) and self.table.item(r, 0).checkState() == Qt.CheckState.Checked]
-        rows = checked or sorted({index.row() for index in self.table.selectedIndexes()})
-        picked: List[Dict[str, Any]] = []
-        for r in rows:
-            item = self.table.item(r, 2)
-            m = item.data(Qt.ItemDataRole.UserRole) if item else None
-            if m and all(m.get('id') != other.get('id') for other in picked):
-                picked.append(m)
-        return picked
 
-    def del_checked(self) -> None:
-        checked_memos = self.picked_memos()
-        if not checked_memos:
-            self.show_toast("지울 메모를 먼저 고르세요 (체크하거나 줄을 선택)", warn=True)
-            return
-
-        protected_memos = [m for m in checked_memos if m.get('is_protected')]
-        if protected_memos:
-            self.show_toast(f"🔒 {len(protected_memos)}개 메모가 삭제 방지 상태입니다.")
-            checked_memos = [m for m in checked_memos if not m.get('is_protected')]
-
-        # 어떤 메모가 지워지는지 제목으로 보여 줍니다. (예전에 체크해 둔 줄이 함께 지워지는 실수를 막기 위해)
-        titles = [f"  • {str(m.get('title', '')) or '(제목 없음)'}" for m in checked_memos[:6]]
-        if len(checked_memos) > 6:
-            titles.append(f"  … 외 {len(checked_memos) - 6}개")
-        question = f"선택한 {len(checked_memos)}개 메모를 휴지통으로 이동할까요?" + chr(10) + chr(10).join(titles)
-        if checked_memos and themed_dialog.confirm(self, "일괄 삭제", question, ok_text="일괄 삭제", danger=True):
-            self._checked_ids.difference_update(m.get('id') for m in checked_memos)
-            deleted_ids = []
-            for m in checked_memos:
-                memo_id = m.get('id')
-                if memo_id:
-                    self.ui_manager.close_memo_window_by_id(memo_id, is_deleting=True)
-                    self.ui_manager.sync_manager.delete_memo_locally(memo_id, title=m.get('title'))
-                    deleted_ids.append(memo_id)
-            self.ui_manager.sync_manager.delete_memos_cloud(deleted_ids)
-            self.pv.clear()
-            self.refresh()
-
-    def res_checked(self) -> None:
-        for r in range(self.table.rowCount()):
-            if self.table.item(r, 0).checkState() == Qt.CheckState.Checked:
-                m = self.table.item(r, 2).data(Qt.ItemDataRole.UserRole)
-                memo_id = m.get('id')
-                title = m.get('title', '')
-                if memo_id:
-                    ex = next((x for x in self.ui_manager.sync_manager.load_local_memos() if x.get('id') == memo_id), None)
-                    if not ex or ConflictDialog(title, ex.get('content', ''), m.get('content', ''), self).exec() == QDialog.DialogCode.Accepted:
-                        self.ui_manager.sync_manager.restore_memo_locally(memo_id)
-        self.pv.clear()
-        self.refresh()
