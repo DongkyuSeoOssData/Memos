@@ -223,7 +223,7 @@ class ReminderUiTest(support.UiTestCase):
         self.assertTrue(self.ui._reminder_timer.isActive())
         self.assertLessEqual(self.ui._reminder_timer.interval(), 30 * 60 * 1000 + 300)
         self.assertEqual(self.disk("memo-0000")["updated_at"], "2026-01-01T00:00:00")
-        self.assertIn("meta_updated_at", self.disk("memo-0000"))
+        self.assertNotIn("meta_updated_at", self.disk("memo-0000"))         # 알림은 이 PC만의 값이라 속성 변경으로 치지 않음
         self.sm.set_reminder(self.memo("memo-0000"), None)
         support.app.processEvents()
         self.assertFalse(self.ui._reminder_timer.isActive())

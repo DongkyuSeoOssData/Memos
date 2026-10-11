@@ -11,7 +11,8 @@ from core import shared_settings
 
 # 이 PC에서만 의미가 있는 값. 드라이브에 올리지 않고, 내려받을 때도 이 PC의 값을 그대로 둡니다.
 # (창을 옮기거나 접는 것만으로 업로드가 일어나거나, 다른 PC의 창 배치를 덮어쓰는 일을 막습니다)
-DEVICE_ONLY_KEYS = frozenset({"position_x", "position_y", "width", "height", "is_visible", "is_rolled_up"})
+# 알림(reminder)도 여기에 듭니다: 알림은 건 PC에서만 울리며, 걸거나 미루거나 울려서 넘어가도 동기화가 일어나지 않습니다.
+DEVICE_ONLY_KEYS = frozenset({"position_x", "position_y", "width", "height", "is_visible", "is_rolled_up", "reminder"})
 DEVICE_ONLY_PREFIXES = ("rolled_", "unrolled_")
 # sync_state.json 형식 버전. 2: 해시를 '공유 부분'만으로 계산
 STATE_VERSION = 2

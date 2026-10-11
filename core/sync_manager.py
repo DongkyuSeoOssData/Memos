@@ -463,13 +463,16 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, MemoIndex
             self.reminders_changed.emit()
 
     def set_reminder(self, memo: Dict[str, Any], reminder: Optional[Dict[str, Any]]) -> bool:
-        """메모에 알림을 걸거나(reminder) 풉니다(None). 본문을 고친 것이 아니므로 수정일시는 그대로 둡니다."""
+        """메모에 알림을 걸거나(reminder) 풉니다(None).
+
+        알림은 이 PC에만 두는 값입니다. (sync_worker.DEVICE_ONLY_KEYS) 본문이나 속성을 고친 것이 아니므로
+        수정일시도, 다른 기기에 전하는 속성 변경 시각(meta_updated_at)도 건드리지 않아 동기화가 일어나지 않습니다.
+        """
         normal = reminders.normalize(reminder) if reminder else None
         if normal is None:
             memo.pop('reminder', None)
         else:
             memo['reminder'] = normal
-        memo['meta_updated_at'] = datetime.now().isoformat()
         saved = self.save_memo_locally(memo)
         if not saved and memo.get('id'):
             # 저장하지 못했더라도 메모리의 알림 목록은 넘겨 둡니다.
@@ -658,7 +661,7 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, MemoIndex
 
     def on_memos_pulled(self, memo_ids: List[str]) -> None:
         if memo_ids:
-            self.load_local_memos()         # 다른 기기에서 걸거나 푼 알림을 알림 목록에 반영
+            self.load_local_memos()         # 내려받아 새로 생기거나 바뀐 메모를 읽어 둠
         if memo_ids and self.ui_manager:
             self.ui_manager.reload_pulled_memos(memo_ids)
 

@@ -939,6 +939,59 @@ class FolderRulesTest(unittest.TestCase):
         self.assertEqual(shared, {"id": "a", "folder": "업무"})
 
 
+class LocalReminderTest(SyncManagerTestCase):
+    """알림은 건 PC에만 둡니다. 드라이브에 올리지 않고, 걸거나 미뤄도 동기화가 일어나지 않습니다."""
+
+    REMINDER = {"at": "2030-01-01T09:00:00", "repeat": "none", "cron": ""}
+
+    def test_reminder_changes_do_not_cause_a_sync(self) -> None:
+        memo = self._memo("memo-aaaa", "one")
+        self.sm.save_memo_locally(memo)
+        self._sync()
+        self.sm._dirty_ids.clear()
+        self.drive.uploads.clear()
+        self.assertTrue(self.sm.set_reminder(memo, dict(self.REMINDER)))
+        self.assertEqual(self.sm._dirty_ids, set())
+        self.assertEqual(self._disk("memo-aaaa")["reminder"], self.REMINDER)     # 이 PC의 파일에는 남음
+        self._sync()
+        self.assertEqual(self.drive.uploads, [])
+        self.assertNotIn("reminder", self.drive.files["memo-aaaa.json"][0])
+        self.assertTrue(self.sm.set_reminder(memo, None))
+        self.assertEqual(self.sm._dirty_ids, set())
+
+    def test_reminder_is_left_out_of_uploads_and_survives_downloads(self) -> None:
+        memo = {**self._memo("memo-aaaa", "one"), "reminder": dict(self.REMINDER)}
+        self.sm.save_memo_locally(memo)
+        self._sync()
+        self.assertNotIn("reminder", self.drive.files["memo-aaaa.json"][0])
+        # 다른 기기가 본문을 고쳐 올림. (예전 버전이 올린 알림이 섞여 있어도 받지 않음)
+        self.drive.put("memo-aaaa.json", {**self._memo("memo-aaaa", "two", "2026-02-01T00:00:00"),
+                                          "reminder": {"at": "2031-05-05T05:00:00", "repeat": "daily", "cron": ""}})
+        self._sync()
+        self.assertEqual(self._disk("memo-aaaa")["content"], "two")
+        self.assertEqual(self._disk("memo-aaaa")["reminder"], self.REMINDER)
+        self.sm.load_local_memos()
+        self.assertEqual(self.sm.reminders["memo-aaaa"], self.REMINDER)
+        # 이 PC에 없던 메모를 받을 때도 남의 알림은 따라오지 않음
+        self.drive.put("memo-bbbb.json", {**self._memo("memo-bbbb", "three"), "reminder": dict(self.REMINDER)})
+        self._sync()
+        self.assertNotIn("reminder", self._disk("memo-bbbb"))
+
+    def test_reminder_uploaded_by_an_older_version_is_taken_off_the_drive(self) -> None:
+        memo = {**self._memo("memo-aaaa", "one"), "reminder": dict(self.REMINDER)}
+        self.sm.save_memo_locally(memo)
+        self._sync()
+        # 예전 버전이 남긴 상태로 되돌림: 드라이브에는 알림째 올라가 있고, 동기화 기록의 해시는 알림을 넣어 계산한 값
+        self.drive.files["memo-aaaa.json"] = (dict(memo), self.drive.files["memo-aaaa.json"][1])
+        state_path = self.sm.base_path / "sync_state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["memo-aaaa"]["hash"] = "hash-that-included-the-reminder"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        self._sync()
+        self.assertNotIn("reminder", self.drive.files["memo-aaaa.json"][0])
+        self.assertEqual(self._disk("memo-aaaa")["reminder"], self.REMINDER)
+
+
 class TextUtilsTest(unittest.TestCase):
     def test_extract_hashtags(self) -> None:
         from utils.text_utils import extract_hashtags
