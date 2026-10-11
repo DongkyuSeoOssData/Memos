@@ -1,19 +1,23 @@
 from PyQt6.QtCore import QMetaObject, pyqtSlot
 from core.defaults import DEFAULT_SHORTCUTS
 from core.sync_manager import is_auto_start_enabled
-from ui.themes import LIGHT_THEMES, DARK_THEMES
+from ui.themes import LIGHT_THEMES, DARK_THEMES, app_palette
 from ui import modern_style
 from ui.wheel_guard import guard_wheel
 from ui import screen_bounds
+from ui.reminder_ui import DEFAULT_QUICK_MINUTES, quick_minutes
+
+# 구글 드라이브 동기화를 준비하는 방법 (README 의 '설정 방법')
+SYNC_GUIDE_URL = "https://github.com/DongkyuSeoOssData/Memos#설정-방법"
 from typing import Any
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLineEdit, QMessageBox, QLabel,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QPushButton, QLineEdit, QLabel,
     QComboBox, QCheckBox, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
     QFontComboBox, QTabWidget, QKeySequenceEdit, QGroupBox, QScrollArea, QSlider, QSpinBox, QAbstractSpinBox,
     QSizeGrip, QApplication
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QGuiApplication, QColor, QKeySequence, QFont, QFontMetrics
+from PyQt6.QtCore import Qt, QTimer, QEvent, QPoint, QUrl
+from PyQt6.QtGui import QDesktopServices, QGuiApplication, QColor, QKeySequence, QFont, QFontMetrics
 import threading
 
 class SettingsWindow(QWidget):
@@ -115,6 +119,14 @@ class SettingsWindow(QWidget):
         self.title_label = QLabel("환경설정")
         self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         title_bar.addWidget(self.title_label, 0, 0, Qt.AlignmentFlag.AlignCenter)
+        # 알림(토스트)은 제목 줄 왼쪽의 빈자리에 표시합니다. (버튼이나 설정 글자를 가리지 않는 자리)
+        self.toast = QLabel("")
+        self.toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.toast.hide()
+        self._toast_timer = QTimer(self)
+        self._toast_timer.setSingleShot(True)
+        self._toast_timer.timeout.connect(self.toast.hide)
+        title_bar.addWidget(self.toast, 0, 0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         main_layout.addLayout(title_bar)
         self.grip = QSizeGrip(self)
 
@@ -133,6 +145,23 @@ class SettingsWindow(QWidget):
         l_gen = QVBoxLayout(tab_general)
         l_gen.setContentsMargins(15, 15, 15, 15)
         l_gen.setSpacing(15)
+
+        g_folder = QGroupBox("폴더 표시 방식")
+        g_folder_l = QVBoxLayout(g_folder)
+        g_folder_l.setContentsMargins(18, 24, 18, 18)
+        g_folder_l.setSpacing(8)
+        self.folder_ui_box = QComboBox()
+        self.folder_ui_box.addItem("탭 줄 (위쪽에 폴더가 한 줄로)", "tabs")
+        self.folder_ui_box.addItem("사이드바 (왼쪽에 폴더 목록)", "sidebar")
+        self.folder_ui_box.addItem("드롭다운 (버튼 하나)", "dropdown")
+        self.folder_ui_box.setFixedHeight(36)
+        g_folder_l.addWidget(self.folder_ui_box)
+        folder_hint = QLabel("탭 줄은 폴더가 몇 개 안 될 때, 사이드바는 폴더가 많거나 여러 단계일 때 편합니다. "
+                             "사이드바는 탐색기 왼쪽 위의 폴더 버튼으로 열고 닫습니다.")
+        folder_hint.setProperty("role", "hint")
+        folder_hint.setWordWrap(True)
+        g_folder_l.addWidget(folder_hint)
+        l_gen.addWidget(g_folder)
 
         g2 = QGroupBox("암호 메모")
         g2_l = QVBoxLayout(g2)
@@ -188,6 +217,50 @@ class SettingsWindow(QWidget):
         self.trash_auto_delete_box.setFixedHeight(40)
         g4_l.addWidget(self.trash_auto_delete_box)
         l_gen.addWidget(g4)
+
+        g_alarm = QGroupBox("알림 설정의 빠른 선택")
+        g_alarm_l = QVBoxLayout(g_alarm)
+        g_alarm_l.setContentsMargins(18, 24, 18, 18)
+        g_alarm_l.setSpacing(8)
+        self.quick_minute_spins = []
+        for n in range(3):                               # 버튼 하나에 한 줄씩
+            alarm_row = QHBoxLayout()
+            alarm_row.setSpacing(10)
+            alarm_row.addWidget(QLabel(f"버튼 {n + 1}:"))
+            spin = QSpinBox()
+            spin.setRange(1, 10080)                      # 1분 ~ 7일
+            spin.setSuffix(" 분 뒤")
+            spin.setFixedHeight(34)
+            spin.setMinimumWidth(140)
+            alarm_row.addWidget(spin)
+            alarm_row.addStretch()
+            g_alarm_l.addLayout(alarm_row)
+            self.quick_minute_spins.append(spin)
+        alarm_hint = QLabel("알림 설정 화면에서 한 번에 고르는 버튼 세 개입니다. 60분은 '1시간 뒤', 1440분은 '1일 뒤'처럼 보입니다.")
+        alarm_hint.setProperty("role", "hint")
+        alarm_hint.setWordWrap(True)
+        g_alarm_l.addWidget(alarm_hint)
+        l_gen.addWidget(g_alarm)
+
+
+        g_guide = QGroupBox("사용 안내")
+        g_guide_l = QVBoxLayout(g_guide)
+        g_guide_l.setContentsMargins(18, 24, 18, 18)
+        g_guide_l.setSpacing(8)
+        guide_row = QHBoxLayout()
+        self.btn_make_guide = QPushButton("사용 안내 메모 만들기")
+        self.btn_make_guide.setFixedHeight(36)
+        self.btn_make_guide.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_make_guide.clicked.connect(self.make_guide_memos)
+        guide_row.addWidget(self.btn_make_guide)
+        guide_row.addStretch()
+        g_guide_l.addLayout(guide_row)
+        guide_hint = QLabel("메모 창 · 메모 탐색기 · 환경설정 사용법을 적은 메모 세 개를 '사용 안내' 폴더에 만듭니다. "
+                            "처음 실행했을 때 만들어지는 것과 같은 메모이며, 읽은 뒤에는 지워도 됩니다.")
+        guide_hint.setProperty("role", "hint")
+        guide_hint.setWordWrap(True)
+        g_guide_l.addWidget(guide_hint)
+        l_gen.addWidget(g_guide)
 
         l_gen.addStretch()
 
@@ -267,6 +340,26 @@ class SettingsWindow(QWidget):
         sync_hint.setWordWrap(True)
         g1_l.addWidget(sync_hint)
         l_sync.addWidget(g1)
+        g_help = QGroupBox("동기화 설정 방법")
+        g_help_l = QVBoxLayout(g_help)
+        g_help_l.setContentsMargins(18, 24, 18, 18)
+        g_help_l.setSpacing(8)
+        help_hint = QLabel("웹 앱 주소(GAS URL)를 만드는 방법은 GitHub 의 안내에 순서대로 적혀 있습니다. "
+                           "구글 앱스 스크립트에 Code.gs 와 Index.html 을 붙여 넣고, 접근 암호를 정한 뒤, 웹 앱으로 배포하면 주소가 나옵니다.")
+        help_hint.setProperty("role", "hint")
+        help_hint.setWordWrap(True)
+        g_help_l.addWidget(help_hint)
+        help_row = QHBoxLayout()
+        self.btn_sync_guide = QPushButton("설정 방법 보기 (GitHub)")
+        self.btn_sync_guide.setFixedHeight(36)
+        self.btn_sync_guide.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_sync_guide.setToolTip(SYNC_GUIDE_URL)
+        self.btn_sync_guide.clicked.connect(self.open_sync_guide)
+        help_row.addWidget(self.btn_sync_guide)
+        help_row.addStretch()
+        g_help_l.addLayout(help_row)
+        l_sync.addWidget(g_help)
+
         l_sync.addStretch()
 
         scroll_sync = QScrollArea()
@@ -507,22 +600,6 @@ class SettingsWindow(QWidget):
         g_explorer_l.setColumnStretch(1, 1)
         l_font.addWidget(g_explorer)
 
-        g_folder = QGroupBox("폴더 표시 방식")
-        g_folder_l = QVBoxLayout(g_folder)
-        g_folder_l.setContentsMargins(14, 22, 14, 14)
-        g_folder_l.setSpacing(8)
-        self.folder_ui_box = QComboBox()
-        self.folder_ui_box.addItem("탭 줄 (위쪽에 폴더가 한 줄로)", "tabs")
-        self.folder_ui_box.addItem("사이드바 (왼쪽에 폴더 목록)", "sidebar")
-        self.folder_ui_box.addItem("드롭다운 (버튼 하나)", "dropdown")
-        self.folder_ui_box.setFixedHeight(36)
-        g_folder_l.addWidget(self.folder_ui_box)
-        folder_hint = QLabel("탭 줄은 폴더가 몇 개 안 될 때, 사이드바는 폴더가 많거나 여러 단계일 때 편합니다. "
-                             "사이드바는 탐색기 왼쪽 위의 폴더 버튼으로 열고 닫습니다.")
-        folder_hint.setProperty("role", "hint")
-        folder_hint.setWordWrap(True)
-        g_folder_l.addWidget(folder_hint)
-        l_font.addWidget(g_folder)
         l_font.addStretch()
 
         scroll_font = QScrollArea()
@@ -542,7 +619,7 @@ class SettingsWindow(QWidget):
         # 헤더 설명 + 초기화 버튼 한 줄 배치
         sc_header_row = QHBoxLayout()
         sc_header_label = QLabel(
-            f"<b>[단축키 설정 - {len(DEFAULT_SHORTCUTS)}종]</b><br/>"
+            "<b>단축키 설정</b><br/>"
             "<span style='font-size:8.5pt; color:#8E8E93;'>"
             "원하는 기능을 클릭하여 단축키를 즉시 조합 변경하세요. "
             "충돌 방지를 위해 기본값은 Alt 조합입니다."
@@ -600,6 +677,51 @@ class SettingsWindow(QWidget):
         super().showEvent(event)
         self._limit_to_screen()
 
+    # ── 탐색기 옆에 붙어서 열리기 ─────────────────────────────────────────────
+    def dock_to(self, explorer: Any) -> None:
+        """탐색기의 오른쪽(자리가 없으면 왼쪽)에 높이를 맞춰 붙입니다. 탐색기를 옮기면 따라 움직입니다.
+
+        이 창을 직접 끌어 옮기면 그때부터는 따로 움직입니다.
+        """
+        self._dock_target = explorer
+        explorer.installEventFilter(self)
+        self.place_docked()
+
+    def docked_side(self) -> str:
+        return getattr(self, '_docked_side', "")
+
+    def place_docked(self) -> None:
+        explorer = getattr(self, '_dock_target', None)
+        if explorer is None or not explorer.isVisible() or explorer.isMaximized() or self.isMaximized():
+            return
+        frame = explorer.bg                              # 탐색기의 보이는 영역 (둘레의 투명한 여백 제외)
+        origin = frame.mapToGlobal(QPoint(0, 0))
+        left, top, width, height = origin.x(), origin.y(), frame.width(), frame.height()
+        area = screen_bounds.work_area(explorer)
+        own_width = self.width()
+        right_x, left_x = left + width, left - own_width
+        fits_right = area is None or right_x + own_width <= area.left() + area.width()
+        fits_left = area is None or left_x >= area.left()
+        on_right = fits_right or not fits_left
+        self._docked_side = "right" if on_right else "left"
+        self._placing_docked = True
+        try:
+            self.setGeometry(right_x if on_right else left_x, top, own_width, max(self.minimumHeight(), height))
+        finally:
+            self._placing_docked = False
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:
+        if obj is getattr(self, '_dock_target', None) and event.type() in (QEvent.Type.Move, QEvent.Type.Resize):
+            self.place_docked()
+        return super().eventFilter(obj, event)
+
+    def undock(self) -> None:
+        target = getattr(self, '_dock_target', None)
+        if target is not None:
+            target.removeEventFilter(self)
+        self._dock_target = None
+        self._docked_side = ""
+
     # ── 끌어서 옮기기 (탐색기와 같은 방식: 가장자리에 붙고, 화면 밖으로는 나가지 않음) ──
     def mousePressEvent(self, e: Any) -> None:
         if e.button() == Qt.MouseButton.LeftButton and not self.isMaximized():
@@ -609,6 +731,7 @@ class SettingsWindow(QWidget):
     def mouseMoveEvent(self, e: Any) -> None:
         if self._drag_start_cursor is None or self.isMaximized():
             return
+        self.undock()                                    # 직접 끌어 옮기면 탐색기에서 떼어 냄
         ctrl_held = bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.ControlModifier)
         x, y = screen_bounds.drag_position(self, self._drag_start_cursor, self._drag_start_pos,
                                            e.globalPosition().toPoint(), snap=not ctrl_held)
@@ -625,16 +748,40 @@ class SettingsWindow(QWidget):
         self.sm.save_settings(self.sm.settings)
         super().closeEvent(event)
 
+    def make_guide_memos(self) -> None:
+        ui_manager = getattr(self.sm, 'ui_manager', None)
+        if ui_manager is None:
+            return
+        ui_manager.remake_guide_memos()
+        self.show_toast("사용 안내 메모를 만들었습니다")
+
+    def open_sync_guide(self) -> None:
+        """동기화 설정 방법(구글 앱스 스크립트에 Code.gs · Index.html 넣기, 배포)을 브라우저로 엽니다."""
+        QDesktopServices.openUrl(QUrl(SYNC_GUIDE_URL))
+
+    def show_toast(self, text: str, warn: bool = False) -> None:
+        """환경설정 창 안에서 알립니다. 제목과 겹치지 않게 남는 너비 안에서만 보여 주고, 넘치면 줄입니다(…)."""
+        pal, _ = app_palette(self.sm.settings)
+        color = modern_style.DANGER if warn else pal['text']
+        self.toast.setStyleSheet(f"color: {color}; background: transparent; font-weight: 700; font-size: {max(9.0, self.ui_font_pt - 1)}pt; "
+                                 f"font-family: {modern_style.UI_FONT};")
+        full = ("⚠ " if warn else "✓ ") + text
+        room = max(80, (self.width() - self.title_label.sizeHint().width()) // 2 - 40)
+        self.toast.ensurePolished()
+        self.toast.setText(self.toast.fontMetrics().elidedText(full, Qt.TextElideMode.ElideRight, room))
+        self.toast.setToolTip(full)
+        self.toast.show()
+        self._toast_timer.start(4500 if warn else 3000)
+
     def test_gas_url(self) -> None:
         url = self.url_input.text().strip()
         if not url or not url.startswith("http"):
-            QMessageBox.warning(self, "연결 테스트 실패", "유효한 HTTP/HTTPS URL을 입력해주세요.")
+            self.show_toast("http(s):// 로 시작하는 주소를 입력하세요", warn=True)
             return
 
         self.sm.drive_api.set_web_app_url(url)
         self.sm.drive_api.set_access_token(self.token_input.text())
-        if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager and self.sm.ui_manager.explorer_window:
-            self.sm.ui_manager.explorer_window.show_toast("🔄 구글 드라이브 연결 테스트 중...")
+        self.show_toast("연결 테스트 중…")
 
         def _async_ping():
             try:
@@ -651,17 +798,11 @@ class SettingsWindow(QWidget):
     @pyqtSlot()
     def _on_ping_success(self) -> None:
         self.sync_cb.setChecked(True)
-        if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager and self.sm.ui_manager.explorer_window:
-            self.sm.ui_manager.explorer_window.show_toast("✓ 구글 드라이브 연결 성공! (자동 동기화 활성화)")
-        else:
-            QMessageBox.information(self, "연결 테스트 성공", "구글 드라이브 연결 성공!")
+        self.show_toast("연결 성공 (동기화 켬)")
 
     @pyqtSlot()
     def _on_ping_failed(self) -> None:
-        if hasattr(self.sm, 'ui_manager') and self.sm.ui_manager and self.sm.ui_manager.explorer_window:
-            self.sm.ui_manager.explorer_window.show_toast("❌ 구글 드라이브 연결 실패 (URL·접근 암호·권한 확인)")
-        else:
-            QMessageBox.warning(self, "연결 테스트 실패", "구글 서버 응답이 없거나 URL 또는 접근 암호가 올바르지 않습니다.")
+        self.show_toast("연결 실패 (주소·접근 암호 확인)", warn=True)
 
     def apply_theme_style(self) -> None:
         is_dark = self.sm.settings.get('app_theme', 'white') == "dark"
@@ -729,6 +870,7 @@ class SettingsWindow(QWidget):
             "sync_interval_index": self.sync_interval_combo.currentIndex(),
             "auto_start": auto_start_now,
             "locked_memo_relock_min": self.spin_relock_min.value(),
+            "reminder_quick_minutes": [spin.value() for spin in self.quick_minute_spins],
             "default_memo_color": list(self.colors.values())[self.default_color_combo.currentIndex()],
             "default_font_family": self.default_font_box.currentFont().family(),
             "default_code_font_family": self.default_code_font_box.currentFont().family(),
@@ -762,8 +904,6 @@ class SettingsWindow(QWidget):
             "shortcuts": shortcuts_dict
         }
         self.sm.save_settings(ns)
-        if not auto_start_ok:
-            QMessageBox.warning(self, "자동 실행", "윈도우 자동 실행 설정을 변경하지 못했습니다. (레지스트리 쓰기 실패)")
 
         # 바뀐 설정을 열려 있는 모든 창(탐색기·메모·트레이)에 바로 반영
         self.apply_theme_style()
@@ -771,7 +911,10 @@ class SettingsWindow(QWidget):
         if ui_manager and hasattr(ui_manager, 'apply_settings_to_windows'):
             ui_manager.apply_settings_to_windows()
 
-        QMessageBox.information(self, "알림", "설정이 성공적으로 저장되었습니다.")
+        if auto_start_ok:
+            self.show_toast("설정을 저장했습니다")
+        else:
+            self.show_toast("저장했지만 자동 실행은 바꾸지 못했습니다", warn=True)
 
 
     def sel(self) -> None:
@@ -789,6 +932,8 @@ class SettingsWindow(QWidget):
         # 설정 파일이 아니라 레지스트리의 실제 등록 상태를 보여줍니다.
         self.auto_start_cb.setChecked(is_auto_start_enabled())
         self.spin_relock_min.setValue(int(s.get("locked_memo_relock_min", 5)))
+        for spin, minutes in zip(self.quick_minute_spins, (quick_minutes(s) + list(DEFAULT_QUICK_MINUTES))[:3]):
+            spin.setValue(minutes)
         self.cb_default_pin.setChecked(s.get("default_is_pinned", False))
         self.cb_auto_eng_kor.setChecked(s.get("auto_eng_kor_convert", True))
         # 투명도 슬라이더 로드
@@ -903,11 +1048,7 @@ class SettingsWindow(QWidget):
         이 메서드는 UI만 변경하며, 실제 적용은 저장 버튼을 눌러야 합니다.
         """
         self._fill_shortcut_table(self.DEFAULT_SHORTCUTS)
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.information(
-            self, "단축키 초기화",
-            "단축키가 기본값으로 초기화되었습니다.\n[저장] 버튼을 눌러야 실제 적용됩니다."
-        )
+        self.show_toast("기본값으로 되돌림 · 저장해야 적용")
 
     # (기능명, settings key, 설명/비고)
     SHORTCUT_ROWS = [
@@ -944,6 +1085,24 @@ class SettingsWindow(QWidget):
         ("이전 내용 보기",            "show_history",         "저장되기 전의 내용을 보고 되돌립니다"),
     ]
 
+    def _resolve_shortcut_conflict(self, edited: Any) -> list:
+        """방금 정한 단축키를 다른 기능이 쓰고 있었으면 그쪽을 비우고 알립니다. (같은 단축키를 두 기능에 걸 수 없음)
+
+        비운 기능의 이름들을 돌려줍니다.
+        """
+        sequence = edited.keySequence().toString()
+        if not sequence:
+            return []
+        cleared = []
+        for r in range(self.shortcut_table.rowCount()):
+            other = self.shortcut_table.cellWidget(r, 1)
+            if other is not None and other is not edited and other.keySequence().toString().lower() == sequence.lower():
+                other.clear()
+                cleared.append(str(other.property("shortcut_label")))
+        if cleared:
+            self.show_toast(f"'{sequence}' 겹침 → '{', '.join(cleared)}' 단축키를 비웠습니다", warn=True)
+        return cleared
+
     def _fill_shortcut_table(self, sc_map: dict) -> None:
         """단축키 테이블을 sc_map 기반으로 채웁니다. DEFAULT_SHORTCUTS를 fallback으로 사용합니다."""
         self.shortcut_table.setRowCount(0)
@@ -957,6 +1116,9 @@ class SettingsWindow(QWidget):
             self.shortcut_table.setItem(r, 0, name_item)
 
             k_edit = QKeySequenceEdit(QKeySequence(sc_map.get(key, self.DEFAULT_SHORTCUTS[key])))
+            k_edit.setProperty("shortcut_key", key)
+            k_edit.setProperty("shortcut_label", label_text)
+            k_edit.editingFinished.connect(lambda edit=k_edit: self._resolve_shortcut_conflict(edit))
             self.shortcut_table.setCellWidget(r, 1, k_edit)
 
             desc_item = QTableWidgetItem(desc_text)

@@ -29,6 +29,7 @@ SHARED_KEYS = frozenset({
     "default_code_line_numbers", "default_code_line_bg", "default_show_line_numbers", "default_show_line_bg",
     # 동작
     "auto_eng_kor_convert", "auto_save_idle_sec", "locked_memo_relock_min", "trash_auto_delete_days",
+    "reminder_quick_minutes",
     "sync_interval_index", "shortcuts",
 })
 

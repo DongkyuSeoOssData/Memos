@@ -22,8 +22,9 @@ PASTEL_COLORS = ["#E0F2FE", "#DCFCE7", "#FEF9C3", "#FCE7F3", "#FFFFFF"]
 from ui.themes import app_palette
 from ui import modern_style
 from core.defaults import DEFAULT_SHORTCUTS
-from core import folders, reminders
+from core import folders, guide, reminders
 from ui.quick_search import QuickSearch
+from ui import themed_dialog
 from ui.reminder_ui import ReminderPopup
 from utils.text_utils import clean_plain_text
 
@@ -42,6 +43,8 @@ class UIManager:
         self._hotkeys = GlobalHotkeys()
         # (아이콘 파일, 색, 화면 배율) → 그려 둔 아이콘. 같은 아이콘을 쓸 때마다 SVG를 다시 읽고 그리지 않습니다.
         self._icon_cache: Dict[tuple, QIcon] = {}
+        themed_dialog.use_settings(lambda: self.sync_manager.settings, self._save_dialog_settings)
+        reminders.set_ampm(not self.sync_manager.settings.get("time_24h", False))
         self.quick_search: Optional[QuickSearch] = None
         # 알림: 가장 가까운 알림 시각에 맞춰 한 번만 깨어나는 타이머 (주기적으로 훑지 않음)
         self._reminder_popups: List[ReminderPopup] = []
@@ -226,6 +229,37 @@ class UIManager:
                 w.setMaximumHeight(rolled_h)
                 w._apply_rolled_ui(rolled_h)
 
+    def make_guide_memos(self) -> None:
+        """사용 안내 메모(메모 창·탐색기·환경설정)를 만듭니다. 이미 있는 안내 메모는 그대로 둡니다."""
+        existing = {m.get('id') for m in self.sync_manager.load_local_memos()}
+        made = 0
+        for memo in guide.build(datetime.datetime.now()):
+            if memo["id"] not in existing:
+                self.sync_manager.save_memo_locally(memo)
+                made += 1
+        changes: Dict[str, Any] = {"guide_memos_made": True}
+        saved = list(self.sync_manager.settings.get("folders", []) or [])
+        if made and guide.FOLDER not in saved:
+            changes["folders"] = saved + [guide.FOLDER]
+        self.sync_manager.save_settings(changes)
+
+    def remake_guide_memos(self) -> None:
+        """환경설정의 '사용 안내 메모 만들기': 안내 메모를 다시 만들어 첫 번째 안내를 엽니다."""
+        self.make_guide_memos()
+        self.show_specific_memo(guide.GUIDES[0][0])
+        if self.explorer_window and self.explorer_window.isVisible():
+            self.explorer_window.refresh()
+
+    def _save_dialog_settings(self, changes: Dict[str, Any]) -> None:
+        """대화상자 안에서 바꾼 선택을 기억합니다. 시간 표기를 바꿨으면 알림 시각을 보여 주는 곳들도 맞춥니다."""
+        self.sync_manager.save_settings(changes)
+        if "time_24h" in changes:
+            reminders.set_ampm(not changes["time_24h"])
+            for w in self.memo_windows.values():
+                w.refresh_reminder_badge()
+            if self.explorer_window and self.explorer_window.isVisible():
+                self.explorer_window.refresh()
+
     # ── 빠른 검색 ────────────────────────────────────────────────────────────
     def toggle_quick_search(self) -> None:
         if self.quick_search is None:
@@ -270,8 +304,9 @@ class UIManager:
             self.memo_windows[memo_id].refresh_reminder_badge()
 
         title = str(memo.get('title', '')) or "(제목 없음)"
-        sealed = memo.get('_locked') or memo.get('_unreadable')
-        detail = "" if sealed else " ".join(clean_plain_text(memo.get('content', '')).split())[:120]
+        # 암호 메모는 지금 열려 있더라도 알림 창에 내용을 보이지 않습니다. (암호를 풀어야 보이는 내용)
+        sealed = memo.get('is_locked') or memo.get('_locked') or memo.get('_unreadable')
+        detail = "🔒 암호 메모" if sealed else " ".join(clean_plain_text(memo.get('content', '')).split())[:120]
         late = (now - (reminders.due_at(reminder) or now)).total_seconds() > 120
         self._reminder_popups = [p for p in self._reminder_popups if self._still_open(p)]
         popup = ReminderPopup(self.sync_manager.settings, memo_id, title,
@@ -279,7 +314,6 @@ class UIManager:
                               self.show_specific_memo, self.snooze_reminder, slot=len(self._reminder_popups))
         self._reminder_popups.append(popup)
         popup.show()
-        self.tray_icon.showMessage("⏰ " + title, detail or "알림 시각입니다.", QSystemTrayIcon.MessageIcon.Information, 5000)
         if self.explorer_window and self.explorer_window.isVisible():
             self.explorer_window.refresh()
 
@@ -366,7 +400,7 @@ class UIManager:
     @staticmethod
     def _place(w: Any, x: int, y: int) -> None:
         w.move(x, y)
-        w.memo_data.update({'position_x': x, 'position_y': y})
+        w.remember_geometry()               # 접은 메모는 접힌 자리로, 펼친 메모는 펼친 자리로 기억
 
     def _toast(self, text: str) -> None:
         if self.explorer_window and self.explorer_window.isVisible():
@@ -486,9 +520,23 @@ class UIManager:
             return
         self.settings_window = SettingsWindow(self.sync_manager)
         self.settings_window.show()
+        # 탐색기가 떠 있으면 그 옆(자리에 따라 오른쪽이나 왼쪽)에 붙여서 엽니다.
+        if self.explorer_window and self.explorer_window.isVisible():
+            self.settings_window.dock_to(self.explorer_window)
+
+    def toggle_settings(self) -> None:
+        """환경설정이 열려 있으면 닫고, 닫혀 있으면 엽니다. (탐색기의 환경설정 버튼)"""
+        if self.settings_window and self.settings_window.isVisible() and not self.settings_window.isMinimized():
+            self.settings_window.close()
+        else:
+            self.open_settings()
 
     def show_all_memos(self) -> None:
         ms = self.sync_manager.load_local_memos()
+        if not ms and not self.sync_manager.settings.get("guide_memos_made"):
+            # 처음 실행: 빈 메모 대신 사용 안내 메모를 만들어 둡니다. (읽고 지우면 됨)
+            self.make_guide_memos()
+            ms = self.sync_manager.load_local_memos()
         if not ms:
             self.create_empty_memo()
         else:
@@ -500,10 +548,11 @@ class UIManager:
 
     def show_specific_memo(self, identifier: str) -> None:
         self._show_specific_memo(identifier)
-        # 잠긴 암호 메모를 열었으면 바로 암호를 묻습니다.
+        # 잠긴 암호 메모는 접힌 것은 접힌 대로, 펼친 것은 펼친 대로 엽니다. 따로 암호를 묻지 않고,
+        # 펼쳐진 메모라면 본문 자리의 암호 칸에 커서만 둡니다. (접힌 메모는 펼쳤을 때 그 칸이 나타남)
         w = self.memo_windows.get(identifier)
         if w and w.isVisible() and w.memo_data.get('_locked'):
-            QTimer.singleShot(0, w.prompt_unlock)
+            QTimer.singleShot(0, w.lock_overlay.focus_inline)
 
     def _show_specific_memo(self, identifier: str) -> None:
         target_win = None

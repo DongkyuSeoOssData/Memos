@@ -2,7 +2,9 @@
 import datetime
 from typing import Any
 
-from PyQt6.QtWidgets import QFileDialog, QInputDialog, QLineEdit, QMessageBox
+from PyQt6.QtWidgets import QFileDialog
+
+from ui import lock_overlay, themed_dialog
 
 
 class MemoLockMixin:
@@ -34,10 +36,16 @@ class MemoLockMixin:
         if ex and ex.isVisible():
             ex.refresh()
 
-    def _ask_password(self, label: str) -> str:
-        from PyQt6.QtWidgets import QInputDialog
-        text, ok = QInputDialog.getText(self._dlg_parent(), "암호 메모", label, QLineEdit.EchoMode.Password)
-        return text if ok else ""
+    def _ask_form(self, title: str, text: str, fields: list, ok_text: str = "확인", validate: Any = None,
+                  danger: bool = False) -> Any:
+        """암호 등을 입력받습니다. 메모 창 안에서 본문을 흐리게 가리고 묻고, 자리가 없으면 대화상자로 묻습니다.
+
+        확인하면 입력한 값들을, 취소하면 None 을 돌려줍니다. validate 가 오류 문구를 돌려주면 닫지 않고 다시 묻습니다.
+        """
+        return lock_overlay.ask(self, title, text, fields, ok_text, validate, danger)
+
+    def _warn(self, text: str) -> None:
+        themed_dialog.toast(self._dlg_parent(), text, warn=True)
 
     def restart_relock_timer(self) -> None:
         self._relock_timer.stop()
@@ -50,24 +58,44 @@ class MemoLockMixin:
         if minutes > 0:
             self._relock_timer.start(int(minutes * 60 * 1000))
 
+    def try_unlock(self, pwd: str) -> Any:
+        """암호로 본문을 풀어 봅니다. 틀리면 오류 문구를, 맞으면 None 을 돌려줍니다. (맞으면 finish_unlock 으로 마무리)"""
+        sm = self._sync_manager()
+        if not sm or not self.memo_data.get('_locked'):
+            return "잠긴 메모가 아닙니다."
+        if not pwd:
+            return "암호를 입력하세요."
+        plain = sm.unlock_memo(self.memo_data.get('id', ''), pwd)
+        if plain is None:
+            return "암호가 일치하지 않습니다."
+        self._opened_plain = plain
+        return None
+
+    def finish_unlock(self) -> None:
+        """try_unlock 으로 푼 본문을 화면에 올립니다."""
+        plain = self.__dict__.pop('_opened_plain', None)
+        if plain is None:
+            return
+        self.memo_data['content'] = plain
+        self.memo_data.pop('_locked', None)
+        self.apply_data()
+        self.restart_relock_timer()
+        self._refresh_explorer()
+        self.text_edit.setFocus()
+
     def prompt_unlock(self) -> None:
+        """잠긴 메모의 암호를 묻습니다. 메모가 펼쳐져 있으면 본문 자리의 암호 칸에 커서를 두는 것으로 충분합니다."""
         sm = self._sync_manager()
         if not sm or not self.memo_data.get('_locked') or getattr(self, '_is_prompting', False):
             return
+        if self._dlg_parent() is self and self.lock_overlay.focus_inline():
+            return
         self._is_prompting = True
         try:
-            pwd = self._ask_password("이 메모의 암호를 입력하세요:")
-            if not pwd:
+            if self._ask_form("🔒 암호 메모", "이 메모의 암호를 입력하세요.", [{"label": "암호", "password": True}],
+                              "열기", validate=lambda values: self.try_unlock(values[0])) is None:
                 return
-            plain = sm.unlock_memo(self.memo_data.get('id', ''), pwd)
-            if plain is None:
-                QMessageBox.warning(self._dlg_parent(), "암호 메모", "암호가 일치하지 않습니다.")
-                return
-            self.memo_data['content'] = plain
-            self.memo_data.pop('_locked', None)
-            self.apply_data()
-            self.restart_relock_timer()
-            self._refresh_explorer()
+            self.finish_unlock()
         finally:
             self._is_prompting = False
 
@@ -83,21 +111,28 @@ class MemoLockMixin:
             with open(path, "rb") as f:
                 pem = f.read()
         except OSError:
-            QMessageBox.warning(self._dlg_parent(), "관리자 복구", "개인키 파일을 읽을 수 없습니다.")
+            self._warn("개인키 파일을 읽을 수 없습니다.")
             return
-        passphrase = self._ask_password("개인키 파일의 암호를 입력하세요:")
-        new_pwd = self._ask_password("이 메모에 새로 설정할 암호:")
-        if not new_pwd:
+        recovered = {}
+
+        def attempt(values: list) -> Any:
+            passphrase, new_pwd, again = values
+            if not new_pwd:
+                return "새 암호를 입력하세요."
+            if new_pwd != again:
+                return "두 암호가 일치하지 않습니다."
+            try:
+                recovered['plain'] = sm.recover_memo_with_master(self.memo_data.get('id', ''), pem, passphrase, new_pwd)
+            except ValueError as e:
+                return str(e)
+            return None
+
+        fields = [{"label": "개인키 파일의 암호 (없으면 비워 둠)", "password": True},
+                  {"label": "이 메모에 새로 설정할 암호", "password": True},
+                  {"label": "새 암호 한 번 더", "password": True}]
+        if self._ask_form("관리자 키로 복구", "", fields, "복구", validate=attempt) is None:
             return
-        if self._ask_password("새 암호를 한 번 더 입력하세요:") != new_pwd:
-            QMessageBox.warning(self._dlg_parent(), "관리자 복구", "두 암호가 일치하지 않습니다.")
-            return
-        try:
-            plain = sm.recover_memo_with_master(self.memo_data.get('id', ''), pem, passphrase, new_pwd)
-        except ValueError as e:
-            QMessageBox.warning(self._dlg_parent(), "관리자 복구", str(e))
-            return
-        self.memo_data['content'] = plain
+        self.memo_data['content'] = recovered['plain']
         self.memo_data.pop('_locked', None)
         self.apply_data()
         self.restart_relock_timer()
@@ -128,37 +163,36 @@ class MemoLockMixin:
             self.prompt_unlock()
             if self.is_sealed():
                 return
-        pwd = self._ask_password("새 암호를 입력하세요:")
-        if not pwd:
+        def check(values: list) -> Any:
+            if not values[0]:
+                return "암호를 입력하세요."
+            return None if values[0] == values[1] else "두 암호가 일치하지 않습니다."
+
+        changing = bool(self.memo_data.get('is_locked'))
+        values = self._ask_form(
+            "암호 변경" if changing else "🔒 암호 걸기", "암호를 잊으면 이 메모의 내용은 복구할 수 없습니다.",
+            [{"label": "새 암호", "password": True}, {"label": "새 암호 한 번 더", "password": True}],
+            "암호 변경" if changing else "암호 걸기", validate=check)
+        if values is None:
             return
-        if self._ask_password("확인을 위해 한 번 더 입력하세요:") != pwd:
-            QMessageBox.warning(self._dlg_parent(), "암호 메모", "두 암호가 일치하지 않습니다.")
-            return
-        if QMessageBox.question(
-            self._dlg_parent(), "암호 메모",
-            "암호를 잊으면 이 메모의 내용은 복구할 수 없습니다.\n계속할까요?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        ) != QMessageBox.StandardButton.Yes:
-            return
+        pwd = values[0]
         self._auto_save_timer.stop()
         self._dirty_since = None
         self.memo_data['content'] = self.current_content()
         self.memo_data['updated_at'] = datetime.datetime.now().isoformat()
         if sm.set_memo_password(self.memo_data, pwd):
+            self.refresh_lock_badge()                    # 접어 둔 메모면 바로 자물쇠가 보이게
             self.show_toast("🔒 암호 설정됨")
             self.restart_relock_timer()
             self._refresh_explorer()
         else:
-            QMessageBox.warning(self._dlg_parent(), "암호 메모", "암호를 설정하지 못했습니다.")
+            self._warn("암호를 설정하지 못했습니다.")
 
     def remove_memo_password(self) -> None:
         sm = self._sync_manager()
         if not sm or not self.memo_data.get('is_locked') or self.is_sealed():
             return
-        if QMessageBox.question(
-            self._dlg_parent(), "암호 메모", "이 메모의 암호를 없애고 일반 메모로 되돌릴까요?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        ) != QMessageBox.StandardButton.Yes:
+        if self._ask_form("암호 제거", "이 메모의 암호를 없애고 일반 메모로 되돌릴까요?", [], "암호 제거", danger=True) is None:
             return
         self._auto_save_timer.stop()
         self._dirty_since = None
@@ -166,5 +200,6 @@ class MemoLockMixin:
         self.memo_data['content'] = self.current_content()
         self.memo_data['updated_at'] = datetime.datetime.now().isoformat()
         if sm.remove_memo_password(self.memo_data):
+            self.refresh_lock_badge()
             self.show_toast("🔓 암호 제거됨")
             self._refresh_explorer()

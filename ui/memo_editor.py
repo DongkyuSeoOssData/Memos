@@ -1,4 +1,5 @@
-from ui import checklist
+from ui import modern_style
+from ui.check_marks import CheckMarks
 from typing import List, Any
 from PyQt6.QtWidgets import *
 from PyQt6.QtGui import *
@@ -96,54 +97,57 @@ class MemoTextEdit(QTextEdit):
         self.document().documentLayout().update.connect(self.update_line_number_area)
         self.verticalScrollBar().valueChanged.connect(self.line_number_area.update)
         self.textChanged.connect(self.update_line_number_area)
+        self.check_marks = CheckMarks(self, self._check_colors, on_edit=lambda: self.memo_window._mark_edited())
 
-    # ── 체크리스트 (줄 앞의 ☐ / ☑) ───────────────────────────────────────────
+    # ── 체크리스트 (줄 앞의 ☐ / ☑). 그리기와 조작은 CheckMarks 가 맡습니다. ─────────────
+    def _check_colors(self) -> dict:
+        """체크 상자에 쓸 색. 메모 바탕 밝기와 디자인 스타일(Modern 은 강조색, Neo 는 흑백)을 따릅니다."""
+        w = self.memo_window
+        pal = w._memo_theme_palette()
+        sm = w._sync_manager()
+        neo = modern_style.is_neo(sm.settings) if sm else False
+        dark = w.is_dark_bg()
+        return {"ink": pal['text'], "fill": pal['text'] if neo else pal['accent'],
+                "tick": "#1C1C1E" if neo and dark else "#FFFFFF", "dark": dark}
+
     def toggle_check_at(self, pos: Any) -> bool:
-        """pos(편집기 안의 좌표)가 체크 상자 위면 체크 상태를 뒤집고 True 를 돌려줍니다."""
-        if self.isReadOnly():
+        return self.check_marks.toggle_at(pos)
+
+    def _check_box_rect(self, block: Any, index: int) -> QRect:
+        return self.check_marks.box_rect(block, index)
+
+    def refresh_check_marks(self) -> None:
+        self.check_marks.refresh()
+
+    def continue_checklist(self) -> bool:
+        return self.check_marks.continue_line()
+
+    def _unlist_at_start(self) -> bool:
+        """커서가 목록 줄의 맨 앞에 있으면 그 줄을 목록에서 빼고 들여쓰기도 없앱니다. (한 번에 보통 줄로)"""
+        cursor = self.textCursor()
+        if self.isReadOnly() or cursor.hasSelection() or not cursor.atBlockStart():
             return False
-        block = self.cursorForPosition(pos).block()
-        index = checklist.box_index(block.text())
-        if index < 0:
+        block = cursor.block()
+        text_list = block.textList()
+        if text_list is None:
             return False
-        probe = QTextCursor(block)
-        probe.setPosition(block.position() + index)
-        left = self.cursorRect(probe)
-        probe.setPosition(block.position() + index + 1)
-        right = self.cursorRect(probe)
-        if not (left.left() - 3 <= pos.x() <= right.left() + 3 and left.top() <= pos.y() <= left.bottom()):
-            return False
-        edit = QTextCursor(block)
-        edit.setPosition(block.position() + index)
-        edit.setPosition(block.position() + index + 1, QTextCursor.MoveMode.KeepAnchor)
-        edit.insertText(checklist.CHECKED if block.text()[index] == checklist.UNCHECKED else checklist.UNCHECKED)
+        cursor.beginEditBlock()
+        text_list.remove(block)
+        fmt = cursor.blockFormat()
+        fmt.setIndent(0)
+        fmt.setTextIndent(0)
+        cursor.setBlockFormat(fmt)
+        cursor.endEditBlock()
+        self.setTextCursor(cursor)
         self.memo_window._mark_edited()
         return True
 
-    def continue_checklist(self) -> bool:
-        """체크리스트 줄에서 Enter: 다음 줄도 체크 상자로 시작합니다. 상자만 있는 빈 줄이면 상자를 지워 체크리스트를 끝냅니다."""
-        cursor = self.textCursor()
-        if cursor.hasSelection():
-            return False
-        block = cursor.block()
-        prefix, clear_box = checklist.continuation(block.text())
-        if clear_box:
-            cursor.beginEditBlock()
-            cursor.movePosition(QTextCursor.MoveOperation.StartOfBlock)
-            cursor.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
-            cursor.insertText(checklist.without_box(block.text()).rstrip())
-            cursor.endEditBlock()
-            self.setTextCursor(cursor)
-            return True
-        if not prefix or not cursor.atBlockEnd():
-            return False
-        cursor.beginEditBlock()
-        cursor.insertBlock()
-        cursor.insertText(prefix)
-        cursor.endEditBlock()
-        self.setTextCursor(cursor)
-        self.ensureCursorVisible()
-        return True
+    def mouseDoubleClickEvent(self, e: Any) -> None:
+        # 체크 상자를 빠르게 두 번 누른 경우: 글자를 선택하지 않고, 누른 만큼 체크를 뒤집습니다.
+        if e.button() == Qt.MouseButton.LeftButton and self.toggle_check_at(e.pos()):
+            e.accept()
+            return
+        super().mouseDoubleClickEvent(e)
 
     def mousePressEvent(self, e: Any) -> None:
         if e.button() == Qt.MouseButton.LeftButton and self.memo_window.memo_data.get('_locked'):
@@ -259,6 +263,14 @@ class MemoTextEdit(QTextEdit):
 
         if (e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not e.modifiers() and not self.extra_cursors
                 and not self.isReadOnly() and self.continue_checklist()):
+            e.accept()
+            return
+        # 체크 상자 바로 뒤에서 Backspace: 상자와 공백을 한 번에 지웁니다. (불릿·번호 목록처럼)
+        if e.key() == Qt.Key.Key_Backspace and not e.modifiers() and not self.extra_cursors and self.check_marks.backspace():
+            e.accept()
+            return
+        # 불릿·번호 목록의 맨 앞에서 Backspace: 목록 표시와 들여쓰기를 한 번에 없앱니다.
+        if e.key() == Qt.Key.Key_Backspace and not e.modifiers() and not self.extra_cursors and self._unlist_at_start():
             e.accept()
             return
 
@@ -501,6 +513,7 @@ class MemoTextEdit(QTextEdit):
 
         painter.end()
         super().paintEvent(event)
+        self.check_marks.paint()
 
     def wheelEvent(self, event: Any) -> None:
         modifiers = QApplication.keyboardModifiers()

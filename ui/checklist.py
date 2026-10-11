@@ -49,6 +49,33 @@ def without_box(line: str) -> str:
     return line[:index] + (rest[1:] if rest[:1] == " " else rest)
 
 
+def has_boxes(text: str) -> bool:
+    """글 어딘가에 체크 상자 글자가 있는지. (줄마다 따져 보기 전에 빨리 거르는 용도)"""
+    return UNCHECKED in text or CHECKED in text
+
+
+def progress(text: str) -> Tuple[int, int]:
+    """(끝낸 일 수, 체크리스트 줄 수). 체크리스트가 없으면 (0, 0)."""
+    if not has_boxes(text):
+        return 0, 0
+    states = [s for s in map(state, text.splitlines()) if s is not None]
+    return sum(states), len(states)
+
+
+def progress_text(text: str) -> str:
+    """'3/5' 같은 진행 표시. 체크리스트가 없으면 ''."""
+    done, total = progress(text)
+    return f"{done}/{total}" if total else ""
+
+
+def progress_label(text: str) -> str:
+    """상자 모양까지 붙인 진행 표시. 다 끝냈으면 '☑ 5/5', 남은 일이 있으면 '☐ 3/5'. 체크리스트가 없으면 ''."""
+    done, total = progress(text)
+    if not total:
+        return ""
+    return f"{CHECKED if done == total else UNCHECKED} {done}/{total}"
+
+
 def toggle_boxes(lines: List[str]) -> List[str]:
     """여러 줄에 체크 상자를 붙이거나 뗍니다. 모두 체크리스트 줄이면 떼고, 아니면 없는 줄에 붙입니다. (빈 줄은 건너뜀)"""
     real = [line for line in lines if line.strip()]

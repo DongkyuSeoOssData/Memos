@@ -844,6 +844,21 @@ function continueChecklist() {
   return true;
 }
 
+// 커서가 체크 상자(와 그 뒤 공백) 바로 뒤에 있으면 지울 범위 [시작, 끝] 을, 아니면 null 을 돌려줍니다.
+function boxBehindCaret(body) {
+  if (body.selectionStart !== body.selectionEnd) return null;
+  const text = body.value, pos = body.selectionStart;
+  const start = text.lastIndexOf("\n", pos - 1) + 1;
+  let lineEnd = text.indexOf("\n", pos);
+  if (lineEnd < 0) lineEnd = text.length;
+  const line = text.slice(start, lineEnd);
+  const at = boxIndex(line);
+  if (at < 0) return null;
+  const end = at + (line[at + 1] === " " ? 2 : 1);
+  const col = pos - start;
+  return col > at && col <= end ? [start + at, start + end] : null;
+}
+
 const REPEAT_NAMES = {daily: "매일", weekdays: "평일", weekly: "매주", monthly: "매월"};
 
 // 알림을 사람이 읽을 말로. 알림이 없거나 값이 이상하면 "".
@@ -854,6 +869,12 @@ function reminderText(reminder) {
   const day = "일월화수목금토"[new Date(+m[1], +m[2] - 1, +m[3]).getDay()];
   const when = `${+m[2]}.${m[3]}(${day}) ${m[4]}:${m[5]}`;
   if (reminder.repeat === "cron") return `${when} · 크론 ${String(reminder.cron || "")}`;
+  // 매주는 요일(0=월 … 6=일), 매월은 날짜를 함께 보여 줍니다. (PC 앱에서 여러 개를 고를 수 있음)
+  const picks = (list, low, high) => (Array.isArray(list) ? list : []).filter((v) => Number.isInteger(v) && v >= low && v <= high);
+  if (reminder.repeat === "weekly" && picks(reminder.weekdays, 0, 6).length)
+    return `${when} · 매주 ${picks(reminder.weekdays, 0, 6).map((d) => "월화수목금토일"[d]).join("·")}`;
+  if (reminder.repeat === "monthly" && picks(reminder.days, 1, 31).length)
+    return `${when} · 매월 ${picks(reminder.days, 1, 31).join("·")}일`;
   return REPEAT_NAMES[reminder.repeat] ? `${when} · ${REPEAT_NAMES[reminder.repeat]}` : when;
 }
 
@@ -1096,6 +1117,15 @@ $("btn-fav").onclick = () => {
 $("title").oninput = () => markDirty(false);
 $("body").oninput = () => markDirty(true);
 $("btn-check").onclick = cycleChecklist;
+// 체크 상자 바로 뒤에서 지우기: 상자와 그 뒤의 공백을 한 번에 지웁니다. (PC 앱과 같은 규칙)
+$("body").addEventListener("beforeinput", (ev) => {
+  if (ev.inputType !== "deleteContentBackward" || !editing || editing.readOnly) return;
+  const range = boxBehindCaret($("body"));
+  if (!range) return;
+  ev.preventDefault();
+  $("body").setRangeText("", range[0], range[1], "end");
+  markDirty(true);
+});
 $("body").onkeydown = (ev) => {
   if (ev.key === "Enter" && !ev.isComposing && !ev.shiftKey && editing && !editing.readOnly && continueChecklist()) {
     ev.preventDefault();

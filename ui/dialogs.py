@@ -1,69 +1,50 @@
 from typing import Dict, Iterable, List
 
-from ui import modern_style
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
-    QTextEdit, QVBoxLayout, QHBoxLayout, QApplication, QLabel, QDialog, QDialogButtonBox,
-    QListWidget, QListWidgetItem, QPushButton, QSplitter
+    QTextEdit, QVBoxLayout, QHBoxLayout, QLabel, QDialogButtonBox,
+    QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSplitter, QWidget
 )
-from PyQt6.QtGui import QPalette
+from ui.check_marks import CheckEdit
+from ui.themed_dialog import ThemedDialog
 from utils.text_utils import clean_plain_text
 
 
-def _system_dialog_palette() -> Dict[str, str]:
-    pal = QApplication.palette()
-    return {
-        'bg': pal.color(QPalette.ColorRole.Window).name(),
-        'card': pal.color(QPalette.ColorRole.Base).name(),
-        'input': pal.color(QPalette.ColorRole.Base).name(),
-        'text': pal.color(QPalette.ColorRole.WindowText).name(),
-        'border': pal.color(QPalette.ColorRole.Mid).name(),
-        'accent': pal.color(QPalette.ColorRole.Highlight).name(),
-        'highlight_text': pal.color(QPalette.ColorRole.HighlightedText).name(),
-    }
+class ConflictDialog(ThemedDialog):
+    """휴지통에서 복원하려는 메모와 같은 메모가 이미 있을 때, 두 내용을 나란히 보여 주고 덮어쓸지 묻습니다."""
 
-class ConflictDialog(QDialog):
-    def __init__(self, title: str, cur_c: str, trash_c: str) -> None:
-        super().__init__()
-        pal = _system_dialog_palette()
-        self.setWindowTitle("복구 중복 확인")
-        self.setFixedSize(620, 460)
-        self.setStyleSheet(f"background-color: {pal['bg']}; color: {pal['text']}; font-family: 'D2Coding', 'Consolas', monospace;")
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.addWidget(QLabel(f"<b style='color:{pal['accent']}; font-size:11pt;'>'{title}'</b>이(가) 이미 존재합니다. 덮어쓰시겠습니까?"))
+    def __init__(self, title: str, cur_c: str, trash_c: str, parent=None) -> None:
+        super().__init__(parent, "복원 중복 확인")
+        self.resize(640, 460)
+        layout = self.body
+        head = QLabel(f"<b>'{title}'</b> 메모가 이미 있습니다. 휴지통의 내용으로 덮어쓸까요?")
+        head.setWordWrap(True)
+        layout.addWidget(head)
 
         diff = QHBoxLayout()
-        for label_text, content_text in [("[현재 로컬]", clean_plain_text(cur_c)), ("[휴지통]", clean_plain_text(trash_c))]:
+        diff.setSpacing(10)
+        for label_text, content_text in [("지금 있는 메모", clean_plain_text(cur_c)), ("휴지통의 메모", clean_plain_text(trash_c))]:
             box = QVBoxLayout()
+            box.setSpacing(6)
             box.addWidget(QLabel(f"<b>{label_text}</b>"))
             te = QTextEdit()
             te.setPlainText(content_text)
             te.setReadOnly(True)
-            te.setStyleSheet(f"border: 1px solid {pal['border']}; border-radius: 0px; padding: 10px; color: {pal['text']}; background: {pal['card']};")
             box.addWidget(te)
             diff.addLayout(box)
-
-        layout.addLayout(diff)
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No)
-        btns.accepted.connect(self.accept)
-        btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
+        layout.addLayout(diff, 1)
+        self.add_buttons("덮어쓰기", "취소", danger=True)
 
 
-class FolderPickDialog(QDialog):
+class FolderPickDialog(ThemedDialog):
     """폴더를 여러 개 골라 한 번에 삭제하기 위한 창. 폴더마다 체크 상자와 메모 개수가 보입니다."""
 
     def __init__(self, parent, names: List[str], counts: Dict[str, int], preselect: Iterable[str] = ()) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("여러 폴더 삭제")
+        super().__init__(parent, "여러 폴더 삭제")
         self.setMinimumSize(360, 420)
         self._syncing = False
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout = self.body
         hint = QLabel("삭제할 폴더를 고르세요. 상위 폴더를 고르면 하위 폴더도 함께 삭제됩니다.\n"
                       "메모는 지워지지 않고 미분류로 옮겨집니다.")
         hint.setWordWrap(True)
@@ -126,69 +107,180 @@ class FolderPickDialog(QDialog):
                 if self.list.item(i).checkState() == Qt.CheckState.Checked]
 
 
-class HistoryDialog(QDialog):
-    """메모의 이전 내용을 보고, 고른 내용으로 되돌리는 창."""
+class HistoryView(QWidget):
+    """메모의 이전 내용을 보고, 고른 내용으로 되돌리는 화면.
 
-    def __init__(self, parent, title: str, entries: List[dict]) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("이전 내용")
-        self.resize(720, 460)
+    왼쪽에는 기록 목록(저장 시각과 제목)만 보이고, 하나를 누르면 오른쪽에 그 본문과 '되돌리기' 버튼이 펼쳐집니다.
+    되돌리기를 누르면 submitted(기록 번호) 를, 닫으면 cancelled 를 보냅니다.
+    """
+
+    submitted = pyqtSignal(object)
+    cancelled = pyqtSignal()
+    layout_changed = pyqtSignal()        # 본문 쪽이 펼쳐져 화면 크기가 달라졌을 때
+
+    LIST_WIDTH = 230
+    DETAIL_WIDTH = 340
+
+    def __init__(self, title: str, entries: List[dict], wide: bool = False, reveal=None) -> None:
+        super().__init__()
         self.chosen_index = None
         self._entries = entries
-        modern_style.style_dialog(self, parent)
+        self._reveal = reveal               # (기록 번호, 암호) → 본문 글자 또는 None. 암호 메모의 기록을 열어 볼 때 씁니다.
+        self._password = ""                 # 한 번 맞은 암호는 이 화면이 떠 있는 동안 다른 기록에도 써 봅니다.
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
-        hint = QLabel(f"<b>{title}</b> — 저장되기 전의 내용이 최근 것부터 보입니다. "
-                      "되돌리면 지금 내용도 기록에 남으므로 다시 돌아올 수 있습니다.")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(12)
+
+        # 왼쪽: 기록 목록
+        left = QVBoxLayout()
+        left.setSpacing(8)
+        hint = QLabel(f"<b>{title}</b><br>저장되기 전의 내용입니다. 최근 것부터 보이며, 누르면 본문이 옆에 펼쳐집니다.")
         hint.setWordWrap(True)
-        layout.addWidget(hint)
-
-        split = QSplitter()
+        hint.setProperty("role", "hint")
+        hint.setFixedWidth(self.LIST_WIDTH)
+        left.addWidget(hint)
         self.list = QListWidget()
+        self.list.setFixedWidth(self.LIST_WIDTH)
         for entry in entries:
-            when = str(entry.get("saved_at", ""))[:16].replace("T", " ")
-            label = when + ("  ·  " + entry["reason"] if entry.get("reason") else "")
-            first_line = "🔒 암호 메모" if entry.get("locked") else (entry.get("text", "").strip().splitlines() or [""])[0][:40]
-            item = QListWidgetItem(label + chr(10) + (first_line or "(빈 메모)"))
+            when = str(entry.get("saved_at", ""))[5:16].replace("T", " ").replace("-", ".")
+            name = "🔒 암호 메모" if entry.get("locked") else (str(entry.get("title", "")) or "(제목 없음)")
+            item = QListWidgetItem(when + chr(10) + name)
+            item.setToolTip(entry.get("reason", "") or name)
             item.setData(Qt.ItemDataRole.UserRole, entry.get("index"))
             self.list.addItem(item)
-        self.list.currentRowChanged.connect(self._show)
-        split.addWidget(self.list)
-        self.preview = QTextEdit()
-        self.preview.setReadOnly(True)
-        split.addWidget(self.preview)
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 3)
-        layout.addWidget(split, 1)
+        if not entries:
+            empty = QListWidgetItem("아직 기록이 없습니다." + chr(10) + "메모를 고쳐 저장하면 쌓입니다.")
+            empty.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.list.addItem(empty)
+        left.addWidget(self.list, 1)
+        self.close_button = QPushButton("닫기")
+        self.close_button.clicked.connect(self.cancelled.emit)
+        left.addWidget(self.close_button)
+        row.addLayout(left)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Close)
-        self.restore_button = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self.restore_button.setText("이 내용으로 되돌리기")
-        self.buttons.button(QDialogButtonBox.StandardButton.Close).setText("닫기")
-        self.buttons.accepted.connect(self._restore)
-        self.buttons.rejected.connect(self.reject)
-        layout.addWidget(self.buttons)
+        # 오른쪽: 고른 기록의 본문 (기록을 고르기 전에는 숨김)
+        self.detail = QWidget()
+        self.detail.setFixedWidth(self.DETAIL_WIDTH)
+        right = QVBoxLayout(self.detail)
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(8)
+        self.detail_title = QLabel("")
+        self.detail_title.setProperty("role", "title")
+        self.detail_title.setWordWrap(True)
+        right.addWidget(self.detail_title)
+        # 암호 메모의 기록: 암호를 넣어야 내용이 보입니다. (되돌리기 전에 확인할 수 있도록)
+        self.unlock_row = QWidget()
+        unlock = QHBoxLayout(self.unlock_row)
+        unlock.setContentsMargins(0, 0, 0, 0)
+        unlock.setSpacing(6)
+        self.password_edit = QLineEdit()
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_edit.setPlaceholderText("그때 쓰던 암호를 넣으면 내용이 보입니다")
+        self.password_edit.returnPressed.connect(self._unlock_current)
+        unlock.addWidget(self.password_edit, 1)
+        self.unlock_button = QPushButton("내용 보기")
+        self.unlock_button.clicked.connect(self._unlock_current)
+        unlock.addWidget(self.unlock_button)
+        self.unlock_row.hide()
+        right.addWidget(self.unlock_row)
+        self.unlock_error = QLabel("")
+        self.unlock_error.setProperty("role", "error")
+        self.unlock_error.hide()
+        right.addWidget(self.unlock_error)
+
+        self.preview = CheckEdit()                      # 체크 상자를 본문과 같은 네모로 보여 줌 (읽기 전용이라 눌러도 바뀌지 않음)
+        self.preview.setReadOnly(True)
+        right.addWidget(self.preview, 1)
+        self.restore_button = QPushButton("이 내용으로 되돌리기")
+        self.restore_button.setProperty("role", "primary")
+        self.restore_button.clicked.connect(self._restore)
         self.restore_button.setEnabled(False)
-        if entries:
-            self.list.setCurrentRow(0)
-        else:
-            self.preview.setPlainText("아직 기록된 이전 내용이 없습니다. 메모를 고쳐서 저장하면 그 전의 내용이 여기에 쌓입니다.")
+        right.addWidget(self.restore_button)
+        self.detail.hide()
+        row.addWidget(self.detail)
+
+        self.list.currentRowChanged.connect(self._show)
+        self.list.itemClicked.connect(lambda item: self._show(self.list.row(item)))
+
+    def focus_first(self) -> None:
+        self.list.setFocus()
 
     def _show(self, row: int) -> None:
         if not (0 <= row < len(self._entries)):
             return
         entry = self._entries[row]
-        if entry.get("locked"):
-            self.preview.setPlainText("암호 메모의 기록입니다. 내용은 보이지 않지만 되돌릴 수 있습니다.\n"
-                                      "되돌린 뒤에는 그때 쓰던 암호로 열어야 합니다.")
+        when = str(entry.get("saved_at", ""))[:16].replace("T", " ")
+        reason = "  ·  " + entry["reason"] if entry.get("reason") else ""
+        self.detail_title.setText((str(entry.get("title", "")) or "(제목 없음)") + chr(10) + when + reason)
+        self.unlock_error.hide()
+        opened = None
+        if entry.get("locked") and self._reveal and self._password:
+            opened = self._reveal(entry.get("index"), self._password)       # 앞서 맞은 암호로 먼저 열어 봄
+        self.unlock_row.setVisible(bool(entry.get("locked")) and opened is None and self._reveal is not None)
+        if not entry.get("locked"):
+            self.preview.setPlainText(entry.get("text", ""))
+        elif opened is not None:
+            self.preview.setPlainText(opened)
         else:
-            self.preview.setPlainText(("제목: " + entry.get("title", "") + chr(10) + chr(10)) + entry.get("text", ""))
+            self.preview.setPlainText("암호 메모의 기록입니다. 위에 그때 쓰던 암호를 넣으면 내용을 볼 수 있습니다.\n"
+                                      "내용을 보지 않고도 되돌릴 수 있으며, 되돌린 뒤에는 그때 쓰던 암호로 엽니다.")
         self.restore_button.setEnabled(True)
+        if self.detail.isHidden():
+            self.detail.show()
+            self.layout_changed.emit()
+
+    def _unlock_current(self) -> None:
+        """암호 칸의 암호로 지금 고른 기록을 열어 봅니다."""
+        row = self.list.currentRow()
+        if self._reveal is None or not (0 <= row < len(self._entries)):
+            return
+        password = self.password_edit.text()
+        opened = self._reveal(self._entries[row].get("index"), password) if password else None
+        if opened is None:
+            self.unlock_error.setText("⚠ 암호가 일치하지 않습니다." if password else "⚠ 암호를 입력하세요.")
+            self.unlock_error.show()
+            self.password_edit.selectAll()
+            self.password_edit.setFocus()
+            return
+        self._password = password
+        self.password_edit.clear()
+        self.unlock_error.hide()
+        self.unlock_row.hide()
+        self.preview.setPlainText(opened)
 
     def _restore(self) -> None:
         item = self.list.currentItem()
-        if item is not None:
+        if item is not None and item.data(Qt.ItemDataRole.UserRole) is not None:
             self.chosen_index = item.data(Qt.ItemDataRole.UserRole)
-            self.accept()
+            self.submitted.emit(self.chosen_index)
+
+
+class HistoryDialog(ThemedDialog):
+    """이전 내용 화면을 담은 대화상자. (탐색기에서 부를 때)"""
+
+    def __init__(self, parent, title: str, entries: List[dict], reveal=None) -> None:
+        super().__init__(parent, "이전 내용", fit_content=True)       # 본문이 펼쳐지면 창도 따라 넓어짐
+        self.view = HistoryView(title, entries, wide=True, reveal=reveal)
+        self.view.setMinimumHeight(400)
+        self.body.addWidget(self.view)
+        self.view.submitted.connect(lambda index: self.accept())
+        self.view.cancelled.connect(self.reject)
+
+    def __getattr__(self, name: str):
+        if name == "view":
+            raise AttributeError(name)
+        return getattr(self.view, name)
+
+
+def pick_history(parent, title: str, entries: List[dict], reveal=None):
+    """되돌릴 기록을 고릅니다. → 기록 번호 (닫으면 None)
+
+    메모 창에서 부르면 그 메모의 오른쪽에 붙는 패널로, 그 밖에는 대화상자로 보여 줍니다.
+    reveal(기록 번호, 암호) 을 주면 암호 메모의 기록을 암호로 열어 볼 수 있습니다.
+    """
+    window = parent.window() if parent is not None else None
+    if hasattr(window, "side_panel") and window.isVisible() and not window.side_panel().is_busy():
+        return window.side_panel().run(HistoryView(title, entries, reveal=reveal), "이전 내용", min_height=460)
+    dialog = HistoryDialog(parent, title, entries, reveal)
+    return dialog.chosen_index if dialog.exec() and dialog.chosen_index is not None else None

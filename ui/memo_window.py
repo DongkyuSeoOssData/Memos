@@ -4,8 +4,11 @@ from ui import modern_style
 from ui.wheel_guard import guard_wheel
 from ui import screen_bounds
 from core import reminders
+from ui import checklist
 from ui.reminder_ui import ask_reminder
-from ui.dialogs import HistoryDialog
+from ui.dialogs import pick_history
+from ui.side_panel import SidePanel
+from ui.lock_overlay import LockOverlay
 from ui.memo_lock import MemoLockMixin
 from ui.memo_format import MemoFormatMixin
 import re
@@ -14,12 +17,12 @@ import json
 from typing import Dict, Any, Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMenu, QApplication,
-    QMessageBox, QLabel, QComboBox, QSizeGrip, QFontComboBox, QSlider,
+    QLabel, QComboBox, QSizeGrip, QFontComboBox, QSlider, QCompleter,
     QWidgetAction
 )
-from PyQt6.QtCore import Qt, QPoint, QTimer, QEvent
+from PyQt6.QtCore import Qt, QPoint, QRect, QTimer, QEvent
 from PyQt6.QtGui import (
-    QColor, QShortcut, QKeySequence, QFont, QTextCursor, QTextCharFormat,
+    QColor, QShortcut, QKeySequence, QFont, QTextCursor, QTextCharFormat, QIntValidator,
     QPalette, QTextDocument, QCursor
 )
 from utils.text_utils import convert_eng_kor_smart
@@ -143,15 +146,15 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
     def _memo_theme_palette(self) -> Dict[str, Any]:
         return memo_palette(self.is_dark_bg())
 
-    def show_toast(self, text: str) -> None:
-        self.toast_label.setText(text)
+    def show_toast(self, text: str, warn: bool = False) -> None:
+        self.toast_label.setText(("⚠ " + text) if warn else text)
         self.toast_label.adjustSize()
         x = self.width() - self.toast_label.width() - 15
         y = self.height() - (self.fmt_bar.geometry().height() if hasattr(self, 'fmt_bar') else 35) - self.toast_label.height() - 20
         self.toast_label.move(max(10, x), max(10, y))
         self.toast_label.show()
         self.toast_label.raise_()
-        self.toast_timer.start(1500)
+        self.toast_timer.start(3000 if warn else 1500)
 
     def toggle_line_numbers(self) -> None:
         self.memo_data['show_line_numbers'] = not self.memo_data.get('show_line_numbers', False)
@@ -196,7 +199,19 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.title_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.title_edit.customContextMenuRequested.connect(self.show_menu)
         self.title_edit.installEventFilter(self)
+        # 다른 칸이 닫히며 포커스가 넘어와 제목 전체가 선택된 것처럼 보이지 않도록, 직접 눌렀을 때만 포커스를 받습니다.
+        self.title_edit.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         ctrl.addWidget(self.title_edit, 1)
+
+        # 접어 둔 암호 메모임을 알리는 자물쇠. 제목 칸 안의 왼쪽 끝에 얹어, 한눈에 구분되게 합니다.
+        # (접힌 상태에서는 본문 자리의 암호 칸이 보이지 않으므로)
+        # 제목 줄의 배치에 끼워 넣지 않는 이유: 끼워 넣으면 제목 줄에 필요한 최소 너비가 늘어나, 좁게 접어 둔 메모가
+        # 암호를 거는 순간 옆으로 늘어납니다. 제목 칸의 최소 너비도 지금 값으로 고정해, 자물쇠 자리를 비워도 늘지 않게 합니다.
+        self.title_edit.setMinimumWidth(self.title_edit.minimumSizeHint().width())
+        self.lbl_lock = QLabel("🔒", self.title_edit)
+        self.lbl_lock.setToolTip("암호 메모")
+        self.lbl_lock.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.lbl_lock.hide()
 
         self.btn_code_theme = QPushButton("")
         self.btn_code_theme.setFixedSize(90, 24)
@@ -221,6 +236,12 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         ctrl.addWidget(self.btn_lang_icon)
         ctrl.addWidget(self.code_lang_box)
         ctrl.addStretch()
+
+        # 체크리스트 진행 표시 (끝낸 일/전체). 접어 둔 메모에서도 남은 일이 보입니다.
+        self.lbl_progress = QLabel("")
+        self.lbl_progress.setToolTip("체크리스트: 끝낸 일 / 전체")
+        self.lbl_progress.hide()
+        ctrl.addWidget(self.lbl_progress)
 
         # 핀 버튼
         self.btn_pin = QPushButton("")
@@ -253,6 +274,9 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.text_edit = MemoTextEdit(self)
         self.text_edit.setStyleSheet("border:none; background:transparent;")
         self.text_edit.textChanged.connect(self.update_content)
+        # 암호를 물을 때 본문을 가리고 그 위에 입력 칸을 보여 주는 가림막 (잠긴 메모는 평소에도 덮여 있음)
+        self.lock_overlay = LockOverlay(self)
+        self.text_edit.textChanged.connect(self.refresh_progress)
         self.text_edit.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.text_edit.customContextMenuRequested.connect(self.show_menu)
         self.text_edit.installEventFilter(self)
@@ -308,7 +332,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
         self.btn_bullet = QPushButton("")
         self.btn_num = QPushButton("")
-        self.btn_check = QPushButton("☑")
+        self.btn_check = QPushButton("")                # 아이콘은 apply_data 에서 본문의 체크 상자와 같은 모양으로 그려 넣습니다.
         self.btn_check.setToolTip("체크리스트 (선택한 줄에 체크 상자 붙이기/떼기)")
         self.btn_indent = QPushButton("")
         self.btn_outdent = QPushButton("")
@@ -316,11 +340,13 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.btn_bold = QPushButton("B")
         self.btn_italic = QPushButton("I")
         self.btn_underline = QPushButton("U")
+        self.btn_strike = QPushButton("S")
+        self.btn_strike.setToolTip("취소선 (선택한 글자에 줄 긋기/지우기)")
 
-        for b in [self.btn_bullet, self.btn_num, self.btn_check, self.btn_indent, self.btn_outdent, self.btn_bold, self.btn_italic, self.btn_underline]:
+        for b in [self.btn_bullet, self.btn_num, self.btn_check, self.btn_indent, self.btn_outdent, self.btn_bold, self.btn_italic, self.btn_underline, self.btn_strike]:
             b.setFixedSize(24, 24)
-            # 굵게·기울임·밑줄만 '켜짐/꺼짐'이 표시됩니다. 목록·들여쓰기는 누를 때 동작만 하는 버튼입니다.
-            b.setCheckable(b in (self.btn_bold, self.btn_italic, self.btn_underline))
+            # 굵게·기울임·밑줄·취소선만 '켜짐/꺼짐'이 표시됩니다. 목록·들여쓰기는 누를 때 동작만 하는 버튼입니다.
+            b.setCheckable(b in (self.btn_bold, self.btn_italic, self.btn_underline, self.btn_strike))
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             # 버튼을 눌러도 본문의 입력 포커스가 넘어가지 않게 합니다.
             b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -334,6 +360,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.btn_bold.clicked.connect(self.toggle_bold)
         self.btn_italic.clicked.connect(self.toggle_italic)
         self.btn_underline.clicked.connect(self.toggle_underline)
+        self.btn_strike.clicked.connect(self.toggle_strike)
 
         self.btn_format_code = QPushButton("{} 정렬")
         self.btn_format_code.setFixedHeight(24)
@@ -364,19 +391,41 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         sub_l.setContentsMargins(0, 2, 0, 0)
         sub_l.setSpacing(4)
 
+        # 글꼴: 목록에서 고르거나, 이름의 일부를 적어 찾습니다. (적는 동안에는 바뀌지 않고, 고르거나 Enter 를 쳐야 적용)
         self.font_box = QFontComboBox()
-        self.font_box.setMaximumWidth(120)
+        self.font_box.setEditable(True)
+        self.font_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.font_box.setMaximumWidth(140)
         self.font_box.setFixedHeight(24)
-        self.font_box.currentFontChanged.connect(self.change_font_family)
-        sub_l.addWidget(self.font_box)
+        self.font_box.setToolTip("글꼴 (이름을 적어 검색)")
+        self.font_box.setCurrentFont(QFont(self.memo_data.get('font_family') or 'D2Coding'))
+        finder = self.font_box.completer()
+        finder.setFilterMode(Qt.MatchFlag.MatchContains)
+        finder.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        finder.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        finder.activated[str].connect(self.pick_font_family)
+        self.font_box.activated.connect(lambda index: self.pick_font_family(self.font_box.itemText(index)))
+        self.font_box.lineEdit().editingFinished.connect(lambda: self.pick_font_family(self.font_box.currentText()))
+        self.btn_font_drop = self._drop_button(self.font_box, "글꼴 목록 열기")
+        sub_l.addLayout(self._joined(self.font_box, self.btn_font_drop))
 
+        # 크기: 목록에서 고르거나 숫자를 직접 적습니다. (6~72)
         self.size_box = QComboBox()
-        self.size_box.setFixedSize(48, 24)
+        self.size_box.setEditable(True)
+        self.size_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.size_box.setValidator(QIntValidator(1, 99, self.size_box))
+        self.size_box.setToolTip("글자 크기 (숫자를 적어도 됨)")
+        size_finder = self.size_box.completer()
+        size_finder.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        size_finder.activated[str].connect(self.pick_font_size)
+        self.size_box.setFixedSize(54, 24)
         for sz in [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72]:
             self.size_box.addItem(str(sz))
         self.size_box.setCurrentText(str(self.memo_data.get('font_size', 11)))
-        self.size_box.currentTextChanged.connect(self.change_font_size)
-        sub_l.addWidget(self.size_box)
+        self.size_box.activated.connect(lambda index: self.pick_font_size(self.size_box.itemText(index)))
+        self.size_box.lineEdit().editingFinished.connect(lambda: self.pick_font_size(self.size_box.currentText()))
+        self.btn_size_drop = self._drop_button(self.size_box, "크기 목록 열기")
+        sub_l.addLayout(self._joined(self.size_box, self.btn_size_drop))
         # 지나가던 휠에 글꼴·크기·언어가 바뀌지 않게 합니다. (클릭해서 고름)
         guard_wheel(self, (self.font_box, self.size_box, self.code_lang_box))
 
@@ -403,6 +452,64 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.update_toolbar_button_states()
         bg_l.addWidget(self.content_container)
         self.grip = QSizeGrip(self)
+
+    def _drop_button(self, box: Any, tip: str) -> QPushButton:
+        """글꼴·크기 칸 옆의 '목록 열기' 버튼. 칸에는 적어서 찾고, 이 버튼으로는 목록을 펼칩니다."""
+        button = QPushButton("▾")
+        button.setFixedSize(20, 24)
+        button.setToolTip(tip)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.clicked.connect(lambda checked=False: self.open_choice_list(box))
+        return button
+
+    def open_choice_list(self, box: Any) -> None:
+        """글꼴·크기 목록을 칸 아래에 펼칩니다. 목록이 떠 있는 채로 칸에 적으면 그 글자가 들어간 것만 남습니다."""
+        edit = box.lineEdit()
+        edit.setFocus()
+        edit.selectAll()                                # 바로 적으면 지금 글자를 대신함
+        finder = box.completer()
+        finder.setCompletionPrefix("")                  # 처음에는 전부 보여 줌
+        finder.popup().setMinimumWidth(max(box.width() + 20, 120))
+        finder.complete()
+
+    @staticmethod
+    def _joined(box: Any, button: QPushButton) -> QHBoxLayout:
+        pair = QHBoxLayout()
+        pair.setContentsMargins(0, 0, 0, 0)
+        pair.setSpacing(0)
+        pair.addWidget(box)
+        pair.addWidget(button)
+        return pair
+
+    LOCK_BADGE_WIDTH = 20
+
+    def refresh_lock_badge(self) -> None:
+        """접어 둔 암호 메모의 제목 왼쪽에 자물쇠를 보입니다. (제목 글자는 그만큼 오른쪽에서 시작)"""
+        show = bool(self.memo_data.get('is_locked')) and self._is_rolled_up
+        self.title_edit.setTextMargins(self.LOCK_BADGE_WIDTH if show else 0, 0, 0, 0)
+        if show:
+            self.lbl_lock.setFont(self.title_edit.font())
+            self.lbl_lock.setGeometry(0, 0, self.LOCK_BADGE_WIDTH, self.title_edit.height())
+        self.lbl_lock.setVisible(show)
+
+    def side_panel(self) -> SidePanel:
+        """이 메모 옆에 붙는 패널. (알림 설정·이전 내용처럼 메모 안에 다 들어가지 않는 화면을 띄우는 곳)"""
+        if getattr(self, '_side_panel', None) is None:
+            self._side_panel = SidePanel(self)
+        return self._side_panel
+
+    # ── 체크리스트 진행 표시 ──────────────────────────────────────────────────
+    def refresh_progress(self) -> None:
+        """제목 줄의 진행 표시('☐ 3/5', 다 끝내면 '☑ 5/5')를 지금 본문에 맞춥니다. 체크리스트가 없거나 잠긴 메모면 숨깁니다."""
+        text = "" if self.is_sealed() else checklist.progress_label(self.text_edit.toPlainText())
+        if text != self.lbl_progress.text() or self.lbl_progress.isHidden() == bool(text):
+            ink = self._memo_theme_palette()['text']
+            self.lbl_progress.setStyleSheet(
+                f"color: {ink}; background: {modern_style._rgba(ink, 0.10)}; padding: 1px 6px; font-size: 8.5pt; "
+                f"font-weight: 700; font-family: {modern_style.UI_FONT};")
+            self.lbl_progress.setText(text)
+            self.lbl_progress.setVisible(bool(text))
 
     # ── 알림 ─────────────────────────────────────────────────────────────────
     def refresh_reminder_badge(self) -> None:
@@ -445,8 +552,9 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         if not sm or not memo_id:
             return
         self.flush_auto_save()                  # 지금 치던 내용도 기록에 남도록 먼저 저장
-        dialog = HistoryDialog(self._dlg_parent(), str(self.memo_data.get('title', '')), sm.list_history(memo_id))
-        if dialog.exec() and dialog.chosen_index is not None and sm.restore_history(memo_id, dialog.chosen_index):
+        chosen = pick_history(self._dlg_parent(), str(self.memo_data.get('title', '')), sm.list_history(memo_id),
+                              reveal=lambda index, password: sm.read_history_text(memo_id, index, password))
+        if chosen is not None and sm.restore_history(memo_id, chosen):
             self.ui_manager.reload_pulled_memos([memo_id])
             self._refresh_explorer()
             self.show_toast("이전 내용으로 되돌렸습니다")
@@ -480,6 +588,9 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         is_vis = self.sub_fmt_widget.isVisible()
         self.sub_fmt_widget.setVisible(not is_vis)
         self.btn_toggle_sub_fmt.setText("Aa ▴" if not is_vis else "Aa ▾")
+        if is_vis:
+            self.title_edit.deselect()
+            self.text_edit.setFocus()                   # 닫으면 본문으로 돌아감
 
     def on_code_lang_changed(self, lang: str) -> None:
         self.memo_data['code_lang'] = lang
@@ -599,6 +710,11 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
+        if hasattr(self, 'lock_overlay'):
+            self.lock_overlay.refresh()                    # 접거나 펼 때 보이기/숨기기
+            self.refresh_lock_badge()
+            if not self.lock_overlay.isHidden():
+                self.lock_overlay.sync_geometry()
         if hasattr(self, 'btn_reminder') and not self.btn_reminder.isHidden():
             self.refresh_reminder_badge()
         if hasattr(self, 'grip'):
@@ -610,8 +726,10 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             self.grip.resize(12, 12)
 
         # 📌 접힌 상태에서 맞닿아 있을 때만 12px 스냅 멈춤 & 15px 이상 끌면 이탈하여 가로 자유 조절
+        applying = getattr(self, '_applying_geometry', False)
         if self._is_rolled_up:
-            self.memo_data['rolled_width'] = self.width()
+            if not applying:
+                self.memo_data['rolled_width'] = self.width()
             rolled_h = self._get_rolled_height()
             if self.height() != rolled_h:
                 self.resize(self.width(), rolled_h)
@@ -637,7 +755,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
                         self._sticky_snap_origin = (mouse_x, target_w)
             else:
                 self._sticky_snap_origin = None
-        else:
+        elif not applying and not self.is_locked_compact():
             self.memo_data['unrolled_width'] = self.width()
             self.memo_data['unrolled_height'] = self.height()
             self.memo_data['width'] = self.width()
@@ -919,21 +1037,35 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         """접힘/펼침 상태로 바꾸고 창 크기·내용 영역·제목 줄 버튼을 그 상태에 맞춥니다."""
         self._is_rolled_up = rolled
         self.memo_data['is_rolled_up'] = rolled
-        if rolled:
-            self.content_container.hide()          # 내용을 먼저 숨겨야 창을 제목 줄 높이까지 줄일 수 있습니다.
-        self.window_layout.setContentsMargins(0, 0, 0, 0)
-        self.setMinimumSize(0, 0) if rolled else self.setMinimumSize(200, 150)
-        self.setMaximumSize(16777215, 16777215)
-        self.setGeometry(x, y, w, h)
-        if rolled:
-            self.memo_data['rolled_position_y'] = y
-            self.setMinimumHeight(h)
-            self.setMaximumHeight(h)
-            self._apply_rolled_ui(h)
-        else:
-            self.memo_data['position_y'] = y
-            self.content_container.show()
-            self._restore_normal_ui()
+        # 아래에서 창 크기를 바꾸는 동안 지나가는 크기를 '사용자가 정한 크기'로 기억하지 않게 합니다.
+        # (예: 잠긴 메모를 폈다 접을 때 암호 입력용 크기가 접은 메모의 너비로 남지 않도록)
+        self._applying_geometry = True
+        try:
+            if rolled:
+                self.content_container.hide()      # 내용을 먼저 숨겨야 창을 제목 줄 높이까지 줄일 수 있습니다.
+            self.window_layout.setContentsMargins(0, 0, 0, 0)
+            self.setMinimumSize(0, 0) if rolled else self.setMinimumSize(200, 150)
+            self.setMaximumSize(16777215, 16777215)
+            self.setGeometry(x, y, w, h)
+            if rolled:
+                self.setMinimumHeight(h)
+                self.setMaximumHeight(h)
+                self._apply_rolled_ui(h)
+            else:
+                self.content_container.show()
+                self._restore_normal_ui()
+            if self.width() != w or (not rolled and self.height() != h):
+                self.setGeometry(x, y, w, h)       # 내용을 다시 보이는 동안 크기가 달라졌으면 바로잡음
+        finally:
+            self._applying_geometry = False
+        self.remember_geometry()
+        # 본문 영역이 제자리를 잡은 뒤에 가림막(잠긴 메모의 암호 칸)을 그 위에 맞춥니다.
+        for holder in (self.bg, self):
+            if holder.layout():
+                holder.layout().activate()
+        if hasattr(self, 'lock_overlay'):
+            self.lock_overlay.refresh()
+            QTimer.singleShot(0, self.lock_overlay.refresh)
         self.btn_min.setToolTip("펼치기 (Ctrl+M)" if rolled else "접기 (Ctrl+M)")
         self.btn_max.setVisible(not rolled)
         show_code_controls = not rolled and bool(self.memo_data.get('is_code_memo', False))
@@ -941,6 +1073,47 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             control.setVisible(show_code_controls)
         if hasattr(self, 'btn_reminder'):
             self.refresh_reminder_badge()
+
+    # ── 위치와 크기 기억 ─────────────────────────────────────────────────────
+    # 접힌 상태와 펼친 상태는 위치와 크기를 서로 따로 기억합니다.
+    #   접힘: rolled_position_x / rolled_position_y / rolled_width
+    #   펼침: position_x / position_y / unrolled_width / unrolled_height (width / height 도 같은 값)
+    # 한쪽 상태에서 옮기거나 크기를 바꿔도 다른 쪽 상태의 값은 달라지지 않습니다.
+    LOCKED_SIZE = (340, 290)        # 잠긴 암호 메모를 펼쳤을 때의 크기. 암호 칸이 가운데에 넉넉히 들어가는 크기입니다.
+
+    def is_locked_compact(self) -> bool:
+        """잠겨 있어서 암호 입력용 작은 크기로 떠 있는지. (이때의 크기는 메모의 크기로 기억하지 않음)"""
+        return bool(self.memo_data.get('_locked')) and not self._is_rolled_up
+
+    def remember_geometry(self) -> None:
+        """지금 상태(접힘/펼침)의 위치와 크기를 그 상태의 것으로 기억합니다."""
+        data = self.memo_data
+        if self._is_rolled_up:
+            data['rolled_position_x'], data['rolled_position_y'] = self.x(), self.y()
+            data['rolled_width'], data['rolled_height'] = self.width(), self.height()
+            return
+        data['position_x'], data['position_y'] = self.x(), self.y()
+        if not self.is_locked_compact():
+            data['unrolled_width'] = data['width'] = self.width()
+            data['unrolled_height'] = data['height'] = self.height()
+
+    def _saved_unrolled_size(self) -> tuple:
+        """기억해 둔 펼친 크기. (잠겨 있든 아니든 메모 본래의 크기)"""
+        width = self.memo_data.get('unrolled_width', self.memo_data.get('width', 500))
+        height = self.memo_data.get('unrolled_height', self.memo_data.get('height', getattr(self, '_normal_height', 300)))
+        return (width if width >= 200 else 300), (height if height >= 150 else 300)
+
+    def _unrolled_size(self) -> tuple:
+        """펼쳤을 때의 크기. 잠긴 메모는 암호를 풀기 전까지 암호 입력용 작은 크기로 뜹니다."""
+        return self.LOCKED_SIZE if self.memo_data.get('_locked') else self._saved_unrolled_size()
+
+    def _covers_rolled_memo(self, rect: QRect) -> bool:
+        """rect 에 펼치면 다른 접은 메모를 가리게 되는지."""
+        manager = getattr(self, 'ui_manager', None)
+        if not manager:
+            return False
+        return any(other is not self and other.isVisible() and other._is_rolled_up and rect.intersects(other.geometry())
+                   for other in manager.memo_windows.values())
 
     def _rolled_stack_span(self) -> Optional[tuple]:
         """이 접은 메모가 다른 접은 메모들과 한 줄로 쌓여 있으면 그 줄의 (왼쪽 끝, 오른쪽 끝)을, 아니면 None 을 돌려줍니다."""
@@ -957,56 +1130,48 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         return (left, right) if found else None
 
     def toggle_rollup(self) -> None:
+        """접거나 폅니다. 접힌 상태와 펼친 상태는 저마다 기억해 둔 위치와 크기로 돌아갑니다."""
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         scr_geom = screen.availableGeometry()
+        data = self.memo_data
+        self.remember_geometry()                      # 떠나는 상태의 위치·크기를 먼저 기억
 
-        center_x = self.x() + self.width() / 2
-        center_y = self.y() + self.height() / 2
+        # 기준이 되는 지금 창의 크기. 잠겨서 암호 입력용 크기로 떠 있는 메모는 그 크기가 아니라 메모 본래의 크기로 따집니다.
+        # (그러지 않으면 잠긴 메모를 처음 접을 때 암호 입력용 너비가 접은 메모의 너비로 굳어 버림)
+        own_w, own_h = (self._saved_unrolled_size() if self.is_locked_compact() else (self.width(), self.height()))
+        center_x = self.x() + own_w / 2
+        center_y = self.y() + own_h / 2
         is_near_top = (center_y < scr_geom.top() + scr_geom.height() / 3)
         is_near_right = (center_x > scr_geom.left() + scr_geom.width() / 2)
-
-        anchor_x = self.x() + self.width() if is_near_right else self.x()
-        anchor_y = self.y() if is_near_top else self.y() + self.height()
+        anchor_x = self.x() + own_w if is_near_right else self.x()
+        anchor_y = self.y() if is_near_top else self.y() + own_h
 
         if not self._is_rolled_up:
-            self.memo_data['unrolled_width'] = self.width()
-            self.memo_data['unrolled_height'] = self.height()
-            self._normal_height = self.height()
-
-            # settings의 default_rolled_height 값을 우선 적용
+            # 접기: 접힌 상태로 기억해 둔 자리와 너비로. 처음 접는 메모는 화면 가장자리에 가까운 모서리를 고정점으로 삼습니다.
+            self._normal_height = own_h
             target_h = self._get_rolled_height()
-            self.memo_data['rolled_height'] = target_h
-            target_w = self.memo_data.get('rolled_width', self.width())
+            data['rolled_height'] = target_h
+            if 'rolled_position_x' in data and 'rolled_position_y' in data:
+                target_w = data.get('rolled_width', own_w)
+                new_left_x, new_top_y = data['rolled_position_x'], data['rolled_position_y']
+            else:
+                target_w = data.get('rolled_width', own_w)
+                new_left_x = anchor_x - target_w if is_near_right else anchor_x
+                new_top_y = anchor_y if is_near_top else anchor_y - target_h
         else:
-            target_h = self.memo_data.get('unrolled_height', self.memo_data.get('height', getattr(self, '_normal_height', 300)))
-            target_w = self.memo_data.get('unrolled_width', self.memo_data.get('width', 500))
-            if target_h < 150: target_h = 300
-            if target_w < 200: target_w = 300
-            self.memo_data['width'] = target_w
-            self.memo_data['height'] = target_h
-
-        # 접거나 펼 때 화면 가장자리에 가까운 쪽 모서리를 고정점으로 삼습니다.
-        new_left_x = anchor_x - target_w if is_near_right else anchor_x
-        new_top_y = anchor_y if is_near_top else anchor_y - target_h
-        if self._is_rolled_up:
-            # 접은 메모 여러 개가 한 줄로 쌓여 있을 때 그 자리에서 펼치면 나머지 접은 메모를 가립니다.
-            # 그럴 때는 쌓인 줄의 바깥쪽(왼쪽에 쌓였으면 오른쪽, 오른쪽에 쌓였으면 왼쪽)에 펼칩니다.
+            # 펴기: 펼친 상태로 기억해 둔 자리와 크기로.
+            target_w, target_h = self._unrolled_size()
+            new_left_x, new_top_y = data.get('position_x', self.x()), data.get('position_y', self.y())
+            new_left_x, new_top_y = self._clamp_to_screen(scr_geom, new_left_x, new_top_y, target_w, target_h)
+            # 다만 그 자리가 쌓아 둔 다른 접은 메모를 가리면, 쌓인 줄의 바깥쪽(왼쪽에 쌓였으면 오른쪽, 오른쪽이면 왼쪽)에 폅니다.
             stack = self._rolled_stack_span()
-            if stack is not None:
+            if stack is not None and self._covers_rolled_memo(QRect(new_left_x, new_top_y, target_w, target_h)):
                 beside = stack[0] - target_w if is_near_right else stack[1]
                 if scr_geom.left() <= beside and beside + target_w <= scr_geom.left() + scr_geom.width():
                     new_left_x = beside
-            # 다시 접을 때 원래 쌓여 있던 자리로 돌아가도록 기억해 둡니다.
-            self._rolled_slot = (self.x(), self.y())
-        elif getattr(self, '_rolled_slot', None) and getattr(self, '_opened_at', None) == (self.x(), self.y()):
-            # 펼친 뒤 옮기지 않았다면 접을 때 원래 자리(쌓인 줄 안)로 돌아갑니다.
-            new_left_x, new_top_y = self._rolled_slot
+                    new_top_y = anchor_y if is_near_top else anchor_y - target_h
         new_left_x, new_top_y = self._clamp_to_screen(scr_geom, new_left_x, new_top_y, target_w, target_h)
         self._apply_fold_state(not self._is_rolled_up, new_left_x, new_top_y, target_w, target_h)
-        # 펼친 직후의 위치. 사용자가 옮겼는지 판단하는 데 씁니다.
-        self._opened_at = None if self._is_rolled_up else (self.x(), self.y())
-        if self._is_rolled_up:
-            self._rolled_slot = None
 
         if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
             is_dark_bg = self.is_dark_bg()
@@ -1058,6 +1223,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             self.execute_auto_save()
 
     def hideEvent(self, e: Any) -> None:
+        if hasattr(self, 'lock_overlay'):
+            self.lock_overlay.cancel()                     # 암호를 묻던 중이면 취소
         if not getattr(self, '_is_deleting', False):
             self.flush_auto_save()
         super().hideEvent(e)
@@ -1150,6 +1317,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
             self.btn_bullet.setIcon(icon("bullet_icon_177745.svg", is_dark))
             self.btn_num.setIcon(icon("list_numbers_icon_172368.svg", is_dark))
             self.btn_indent.setIcon(icon("들여쓰기.svg", is_dark))
+            self.btn_check.setIcon(modern_style.checkbox_icon(ink))
             self.btn_outdent.setIcon(icon("내어쓰기.svg", is_dark))
             if is_code_memo:
                 code_is_dark = self.memo_data.get('code_theme', 'dark') == "dark"
@@ -1201,6 +1369,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         self.title_edit.setCursorPosition(0)
         self.title_edit.deselect()
         self.refresh_reminder_badge()
+        self.refresh_progress()
+        self.text_edit.refresh_check_marks()
 
         self._is_updating_from_explorer = True
         cnt = str(self.memo_data.get('content',''))
@@ -1216,11 +1386,13 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         # 잠긴(또는 읽을 수 없는) 메모는 편집을 막고 안내 문구를 보여줍니다.
         self.text_edit.setReadOnly(self.is_sealed())
         if self.memo_data.get('_locked'):
-            self.text_edit.setPlaceholderText("🔒 암호 메모입니다. 여기를 클릭하여 암호를 입력하세요.")
+            self.text_edit.setPlaceholderText("")          # 잠긴 메모는 가림막이 본문 자리를 덮고 안내합니다.
         elif self.memo_data.get('_unreadable'):
             self.text_edit.setPlaceholderText("⚠ 본문을 복호화할 수 없는 메모입니다. (원본은 그대로 보존됩니다)")
         else:
             self.text_edit.setPlaceholderText("")
+        self.lock_overlay.refresh()
+        self.refresh_lock_badge()
 
         self._is_updating_from_explorer = False
         is_rolled = getattr(self, '_is_rolled_up', False) or self.memo_data.get('is_rolled_up', False)
@@ -1229,15 +1401,15 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
 
         was_rolled = getattr(self, '_is_rolled_up', False)
         if is_rolled:
-            target_w = self.memo_data.get('rolled_width', self.width())
+            target_w = self.memo_data.get('rolled_width', self._saved_unrolled_size()[0])
             # settings의 default_rolled_height를 우선 적용
             target_h = self._get_rolled_height()
             self.memo_data['rolled_height'] = target_h
-            x = self.x() if self.isVisible() else self.memo_data.get('position_x', 100)
+            x = self.x() if self.isVisible() else self.memo_data.get('rolled_position_x', self.memo_data.get('position_x', 100))
             y = self.y() if self.isVisible() else self.memo_data.get('rolled_position_y', 100)
         else:
-            target_w = self.memo_data.get('unrolled_width', self.memo_data.get('width', 500))
-            target_h = self.memo_data.get('unrolled_height', self.memo_data.get('height', 400))
+            # 잠긴 메모는 암호 입력용 작은 크기로, 암호를 풀면 원래 크기로 뜹니다.
+            target_w, target_h = self._unrolled_size()
             x = self.x() if self.isVisible() else self.memo_data.get('position_x', 100)
             y = self.y() if (self.isVisible() and not was_rolled) else self.memo_data.get('position_y', 100)
         x, y = self._clamp_to_screen(scr_geom, x, y, target_w, target_h)
@@ -1275,22 +1447,8 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
                 self.memo_data['is_draft'] = False
                 self.save_callback(self.memo_data)
 
-            if self._is_rolled_up:
-                old_rolled_y = self.memo_data.get('rolled_position_y', self.y())
-                delta_y = self.y() - old_rolled_y
-                self.memo_data['rolled_position_y'] = self.y()
-                self.memo_data['position_x'] = self.x()
-                if 'position_y' in self.memo_data:
-                    self.memo_data['position_y'] += delta_y
-            else:
-                self.memo_data['position_x'], self.memo_data['position_y'] = self.x(), self.y()
-                self.memo_data['width'] = self.width()
-
+            self.remember_geometry()
             self.memo_data['is_rolled_up'] = self._is_rolled_up
-            if not self._is_rolled_up:
-                self.memo_data['height'] = self.height()
-            else:
-                self.memo_data['height'] = self._normal_height
 
             self.memo_data['is_visible'] = False
             self.save_callback(self.memo_data)
@@ -1327,7 +1485,7 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
                 self.memo_data['updated_at'] = datetime.datetime.now().isoformat()     # 제목을 고친 것도 수정
                 self.save_callback(self.memo_data)
             else:
-                QMessageBox.warning(self, "중복", f"'{nt}' 존재.")
+                self.show_toast(f"'{nt}' 제목의 메모가 이미 있습니다.", warn=True)
                 self.title_edit.setText(ot)
 
         is_rolled = getattr(self, '_is_rolled_up', False)
@@ -1447,23 +1605,5 @@ class MemoWindow(MemoLockMixin, MemoFormatMixin, QWidget):
         if press_geom is not None and press_geom == self.geometry():
             return
 
-        if self._is_rolled_up:
-            self.memo_data['rolled_position_y'] = self.y()
-            self.memo_data['position_x'] = self.x()
-            self.memo_data['rolled_width'] = self.width()
-            self.memo_data['rolled_height'] = self.height()
-
-            unrolled_h = self.memo_data.get('unrolled_height', self.memo_data.get('height', 300))
-            self.memo_data['position_y'] = (self.y() + self.height()) - unrolled_h
-        else:
-            self.memo_data['position_x'] = self.x()
-            self.memo_data['position_y'] = self.y()
-            self.memo_data['unrolled_width'] = self.width()
-            self.memo_data['unrolled_height'] = self.height()
-            self.memo_data['width'] = self.width()
-            self.memo_data['height'] = self.height()
-
-            rolled_h = self.memo_data.get('rolled_height', 53)
-            self.memo_data['rolled_position_y'] = (self.y() + self.height()) - rolled_h
-
+        self.remember_geometry()
         self.save_callback(self.memo_data)

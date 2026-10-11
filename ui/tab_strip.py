@@ -1,8 +1,8 @@
 """한 줄짜리 탭 묶음. 자리가 모자라면 < > 로 넘겨 보고, 탭을 끌어서 순서를 바꿉니다."""
 from typing import Any, List, Optional
 
-from PyQt6.QtCore import QEvent, Qt, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QHBoxLayout, QPushButton, QWidget
+from PyQt6.QtCore import QEvent, QSize, Qt, pyqtSignal
+from PyQt6.QtWidgets import QApplication, QHBoxLayout, QLayout, QPushButton, QWidget
 
 
 class TabStrip(QWidget):
@@ -23,6 +23,7 @@ class TabStrip(QWidget):
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(self.SPACING)
+        self._layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self.btn_prev = QPushButton("<")
         self.btn_next = QPushButton(">")
         for btn, step in ((self.btn_prev, -1), (self.btn_next, 1)):
@@ -128,6 +129,10 @@ class TabStrip(QWidget):
             shown = max(1, self._last - self._first + 1)
             self._first = max(0, self._first - shown)
         self.relayout()
+
+    def minimumSizeHint(self) -> QSize:
+        # 들어가지 않는 탭은 < > 로 넘겨 보므로, 탭이 아무리 많아도 창을 넓히라고 요구하지 않습니다.
+        return QSize(90, super().minimumSizeHint().height())
 
     def visible_keys(self) -> List[Any]:
         return [self._keys[btn] for btn in self.tabs if not btn.isHidden()]

@@ -568,6 +568,22 @@ class SyncManager(QObject):
             })
         return out
 
+    def read_history_text(self, memo_id: str, index: int, password: str) -> Optional[str]:
+        """암호 메모의 기록(index 번째)을 password 로 풀어 본문 글자를 돌려줍니다. 암호가 틀리면 None.
+
+        되돌리기 전에 내용을 확인하는 용도이며, 푼 내용이나 키를 어디에도 남기지 않습니다.
+        """
+        entries = self._read_history(memo_id)
+        if not (0 <= index < len(entries)):
+            return None
+        payload = entries[index].get("content")
+        if not self.crypto.is_locked_payload(payload):
+            return clean_plain_text(payload) if isinstance(payload, str) else None
+        try:
+            return clean_plain_text(self.crypto.decrypt_locked(payload, self.crypto.key_for_payload(payload, password)))
+        except ValueError:
+            return None
+
     def restore_history(self, memo_id: str, index: int) -> bool:
         """index 번째 기록의 제목·본문으로 되돌립니다. 지금 내용은 먼저 기록에 남깁니다."""
         entries = self._read_history(memo_id)

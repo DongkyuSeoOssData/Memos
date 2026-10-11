@@ -1,6 +1,11 @@
 from ui.dialogs import ConflictDialog, FolderPickDialog, HistoryDialog
 from ui.reminder_ui import ask_reminder
+from ui import themed_dialog
 from core import reminders
+from ui import checklist
+from ui.check_marks import CheckEdit
+from ui.lock_overlay import WindowOverlay
+from ui.themes import app_palette
 from ui import modern_style
 from core import folders
 from ui.tab_strip import TabStrip
@@ -9,11 +14,11 @@ import datetime
 from typing import List, Dict, Any, Optional
 from PyQt6.QtWidgets import (
     QWidget, QTextEdit, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QMenu, QApplication,
-    QMessageBox, QLabel, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QFrame,
-    QSizeGrip, QSizePolicy, QInputDialog, QListWidget, QListWidgetItem, QGridLayout
+    QLabel, QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QDialog, QFrame,
+    QSizeGrip, QSizePolicy, QListWidget, QListWidgetItem, QGridLayout
 )
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer, pyqtSlot
-from PyQt6.QtGui import QGuiApplication, QShortcut, QKeySequence, QFont, QIcon
+from PyQt6.QtGui import QTextCursor, QGuiApplication, QShortcut, QKeySequence, QFont, QIcon
 from utils.text_utils import clean_plain_text, extract_hashtags
 
 class MemoExplorerWindow(QWidget):
@@ -123,6 +128,11 @@ class MemoExplorerWindow(QWidget):
         s_cfg = self.ui_manager.sync_manager.settings.get("shortcuts", {})
         # 글로벌 단축키와 중복을 막기 위해 전역 훅 단축키는 QShortcut에서 제외
         QShortcut(QKeySequence(s_cfg.get("open_all_memos", "Alt+O")), self).activated.connect(self.ui_manager.open_all_memos)
+        # 목록에서 Delete: 고른 메모들을 지웁니다. (삭제 버튼과 같음)
+        if getattr(self, '_delete_key', None) is None:       # 단축키를 다시 걸 때 겹쳐서 만들지 않음
+            self._delete_key = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.table)
+            self._delete_key.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._delete_key.activated.connect(self.del_checked)
         QShortcut(QKeySequence(s_cfg.get("toggle_memo_lock", "Ctrl+L")), self).activated.connect(
             lambda: self._lock_action_on_current("toggle_memo_lock"))
         QShortcut(QKeySequence(s_cfg.get("set_memo_password", "Ctrl+Shift+L")), self).activated.connect(
@@ -260,14 +270,13 @@ class MemoExplorerWindow(QWidget):
         # 드롭다운 방식일 때: 고른 폴더(와 그 하위 폴더)의 메모만 목록·태그·검색에 나타납니다.
         self.folder_combo = QComboBox()
         self.folder_combo.setFixedHeight(30)
-        self.folder_combo.setMinimumWidth(150)
         self.folder_combo.setCursor(Qt.CursorShape.PointingHandCursor)
         self.folder_combo.setToolTip("폴더 (고른 폴더의 메모만 보기)")
         self.folder_combo.activated.connect(self._on_folder_picked)
         center.addWidget(self.folder_combo)
 
         self.btn_app_theme = QPushButton("")
-        self.btn_app_theme.setFixedSize(100, 30)
+        self.btn_app_theme.setFixedSize(88, 30)
         self.btn_app_theme.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_app_theme.clicked.connect(self.toggle_app_theme)
         center.addWidget(self.btn_app_theme)
@@ -429,17 +438,29 @@ class MemoExplorerWindow(QWidget):
 
         pv_head = QHBoxLayout()
         pv_head.setSpacing(10)
+        # 환경설정 버튼: 누르면 탐색기 옆에 열리고, 열려 있을 때 다시 누르면 닫힙니다.
+        self.btn_settings = QPushButton("")
+        self.btn_settings.setFixedSize(28, 24)
+        self.btn_settings.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_settings.setToolTip("환경설정 열기/닫기")
+        self.btn_settings.clicked.connect(self.ui_manager.toggle_settings)
+        pv_head.addWidget(self.btn_settings)
         pv_title = QLabel("미리보기")
         pv_title.setMinimumHeight(24)
         pv_head.addWidget(pv_title)
         pv_head.addWidget(self.toast)
         pv_head.addStretch()
         bg_l.addLayout(pv_head)
-        self.pv = QTextEdit()
+        # 미리보기에서도 체크 상자를 네모로 그리고, 눌러서 체크할 수 있습니다.
+        self.pv = CheckEdit(self._preview_check_colors)
         self.pv.setFixedHeight(100)
         self.pv.setReadOnly(False)
         bg_l.addWidget(self.pv)
         self.pv.textChanged.connect(self.on_preview_changed)
+        self.pv.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.pv.customContextMenuRequested.connect(self.show_preview_menu)
+        # 확인·이름 입력·알림 설정·암호 입력을 따로 창을 띄우지 않고 탐색기 안에서 받는 가림막
+        self.inline_overlay = WindowOverlay(self, self.bg)
 
         # 총 n개 메모 알림 + total.svg 아이콘 적용
         self.stat_box = QWidget()
@@ -575,6 +596,10 @@ class MemoExplorerWindow(QWidget):
         self.b_new_code.setIcon(self.ui_manager.get_theme_icon("codememo.svg", is_dark))
         self.b_ref.setIcon(self.ui_manager.get_theme_icon("restart-icon.svg", is_dark))
         self.b_sync.setIcon(self.ui_manager.get_theme_icon("cloude.svg", is_dark))
+        self.btn_settings.setIcon(self.ui_manager.get_theme_icon("setting.svg", is_dark))
+        hover = "rgba(255,255,255,0.14)" if is_dark else "rgba(0,0,0,0.10)"
+        self.btn_settings.setStyleSheet(f"QPushButton {{ border: none; background: transparent; border-radius: 0px; }} "
+                                        f"QPushButton:hover {{ background: {hover}; }}")
         self.b_del.setIcon(self.ui_manager.get_theme_icon("minus.svg", is_dark))
         self.b_res.setIcon(self.ui_manager.get_theme_icon("restart-icon.svg", is_dark))
         self.b_empty_trash.setIcon(self.ui_manager.get_theme_icon("trashbucket.svg", is_dark))
@@ -589,14 +614,18 @@ class MemoExplorerWindow(QWidget):
         modern_style.apply_explorer(self)
 
     def sync_selection_and_checkboxes(self) -> None:
+        """Ctrl·Shift 로 여러 줄을 고르면 그 줄들을 체크합니다.
+
+        한 줄만 고른 경우(보통의 클릭)에는 체크를 건드리지 않습니다. 전에는 줄을 누를 때마다 다른 줄의 체크가
+        풀려서, 체크 상자를 하나씩 눌러 여러 개를 고를 수가 없었습니다.
+        """
         selected_rows = set(index.row() for index in self.table.selectedIndexes())
-        for r in range(self.table.rowCount()):
+        if len(selected_rows) < 2:
+            return
+        for r in selected_rows:
             item_cb = self.table.item(r, 0)
             if item_cb:
-                if r in selected_rows:
-                    item_cb.setCheckState(Qt.CheckState.Checked)
-                else:
-                    item_cb.setCheckState(Qt.CheckState.Unchecked)
+                item_cb.setCheckState(Qt.CheckState.Checked)
 
     def set_filter_mode(self, mode: str) -> None:
         self.filter_mode = mode
@@ -658,8 +687,8 @@ class MemoExplorerWindow(QWidget):
         self.ui_manager.sync_manager.save_settings(self.ui_manager.sync_manager.settings)
         super().closeEvent(event)
 
-    def show_toast(self, m: str) -> None:
-        self.toast.setText(f"✓ {m}")
+    def show_toast(self, m: str, warn: bool = False) -> None:
+        self.toast.setText(("⚠ " if warn else "✓ ") + m)
         self.toast.show()
         self._toast_timer.start(3500)
 
@@ -769,7 +798,7 @@ class MemoExplorerWindow(QWidget):
             btn.setText(text if show_text else "")
 
     def empty_trash(self) -> None:
-        if QMessageBox.question(self, "휴지통 비우기", "휴지통의 모든 메모를 영구 삭제할까요? (복구 불가)", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+        if themed_dialog.confirm(self, "휴지통 비우기", "휴지통의 모든 메모를 영구 삭제할까요? (복구 불가)", ok_text="휴지통 비우기", danger=True):
             cnt = self.ui_manager.sync_manager.empty_trash_locally()
             self.pv.clear()
             self.refresh()
@@ -829,10 +858,13 @@ class MemoExplorerWindow(QWidget):
         act_copy.triggered.connect(lambda: self.copy_memo_text(m))
 
         menu.addSeparator()
-        act_del = menu.addAction("삭제 (휴지통)")
+        # 여러 줄을 골라 놓고(체크하거나 Ctrl·Shift 로 선택) 그중 하나에서 삭제를 누르면 고른 메모를 모두 지웁니다.
+        picked = self.picked_memos()
+        several = len(picked) > 1 and any(p.get('id') == m.get('id') for p in picked)
+        act_del = menu.addAction(f"선택한 {len(picked)}개 삭제 (휴지통)" if several else "삭제 (휴지통)")
         if hasattr(self.ui_manager, 'get_theme_icon'):
             act_del.setIcon(self.ui_manager.get_theme_icon("trashbucket.svg", is_dark, override_color="#FF453A"))
-        act_del.triggered.connect(lambda: self.delete_single_memo(m))
+        act_del.triggered.connect(self.del_checked if several else (lambda: self.delete_single_memo(m)))
 
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
@@ -865,11 +897,39 @@ class MemoExplorerWindow(QWidget):
 
     def _apply_minimum_size(self) -> None:
         """창의 최소 크기. 폴더 탭 줄처럼 화면에 놓인 것이 늘어나면 그만큼 더 필요하므로, 배치가 요구하는 크기보다 작아지지 않게 합니다."""
-        hint = self.minimumSizeHint()
-        # 가운데의 'Memos' 가 양옆 묶음과 겹치지 않을 만큼의 너비
-        side = max(self._header_left.sizeHint().width(), self._header_right.sizeHint().width())
-        header_w = 2 * side + self.title_label.sizeHint().width() + 24 + 40 + 2 * self.EDGE_MARGIN + self._sidebar_extra
-        self.setMinimumSize(max(580 + self._sidebar_extra, hint.width(), header_w), max(440, hint.height()))
+        # 너비는 내용에 따라 늘리지 않습니다. (긴 폴더 이름은 줄여 보여 주고, 많은 탭은 < > 로 넘겨 봄)
+        self._fit_header()
+        self.setMinimumSize(self.MIN_WIDTH + self._sidebar_extra, max(self.MIN_HEIGHT, self.minimumSizeHint().height()))
+
+    MIN_WIDTH, MIN_HEIGHT = 580, 440
+
+    def _fit_header(self) -> None:
+        """제목 줄의 폴더 버튼·드롭다운을 가운데의 'Memos' 와 겹치지 않는 너비로 맞춥니다.
+
+        자리가 모자라면 창을 넓히는 대신 폴더 이름을 줄여(…) 보여 주고, 온전한 이름은 풍선 도움말로 보여 줍니다.
+        드롭다운도 사이드바 방식의 폴더 버튼과 같은 너비를 씁니다.
+        """
+        name = self._folder_title(self.current_folder)
+        button = self.btn_folder
+        metrics = button.fontMetrics()
+        button.setMinimumWidth(0)
+        button.setMaximumWidth(16777215)
+        button.setText(" " + name)
+        natural = button.sizeHint().width()
+        chrome = natural - metrics.horizontalAdvance(" " + name)          # 아이콘·안쪽 여백이 차지하는 너비
+        # 제목 줄에서 'Memos' 왼쪽에 남는 자리 = (줄 너비 - 'Memos' 너비) / 2 에서 라이트/다크 버튼과 간격을 뺀 것
+        margins = self.bg.layout().contentsMargins()
+        row_width = self.content_width() - 2 * self.EDGE_MARGIN - margins.left() - margins.right()
+        side = (row_width - self.title_label.sizeHint().width()) // 2 - 8
+        room = max(70, side - self.btn_app_theme.width() - self._header_left.spacing())
+        width = min(natural, room)
+        if width < natural:
+            button.setText(" " + metrics.elidedText(name, Qt.TextElideMode.ElideRight, max(10, width - chrome)))
+        button.setFixedWidth(width)
+        button.setToolTip(f"{name} — 폴더 목록 열기/닫기")
+        self.folder_combo.setFixedWidth(max(width, min(room, 110)))
+        self.folder_combo.setToolTip(f"{name} — 폴더 (고른 폴더의 메모만 보기)")
+        self.folder_combo.view().setMinimumWidth(240)
 
     def content_width(self) -> int:
         """사이드바로 덧붙인 영역을 뺀, 탐색기 본래 너비."""
@@ -922,7 +982,7 @@ class MemoExplorerWindow(QWidget):
         self._fill_folder_combo(names)
         self._fill_folder_tabs(names)
         self._fill_folder_list(names, counts)
-        self.btn_folder.setText(" " + self._folder_title(self.current_folder))
+        self._fit_header()
         self.apply_folder_ui_mode()
 
     def _fill_folder_combo(self, names: List[str]) -> None:
@@ -1064,8 +1124,8 @@ class MemoExplorerWindow(QWidget):
         self.refresh()
 
     def _ask_folder_name(self, title: str, text: str = "") -> str:
-        name, ok = QInputDialog.getText(
-            self, title, "폴더 이름 (하위 폴더는 '업무/프로젝트A'처럼 / 로 구분):", QLineEdit.EchoMode.Normal, text)
+        name, ok = themed_dialog.ask_text(self, title, "폴더 이름", text,
+                                          hint="하위 폴더는 '업무/프로젝트A'처럼 / 로 구분해서 적습니다.")
         return folders.normalize(name) if ok else ""
 
     def new_folder(self) -> None:
@@ -1128,8 +1188,7 @@ class MemoExplorerWindow(QWidget):
         listing = "" if len(tops) == 1 else "\n" + "\n".join(f"  • {p}" for p in tops) + "\n"
         question = (f"{label}를 삭제할까요?{listing}\n"
                     f"메모는 지워지지 않고 미분류로 옮겨집니다. (옮겨질 메모 {len(inside)}개)")
-        if QMessageBox.question(self, "폴더 삭제", question,
-                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+        if not themed_dialog.confirm(self, "폴더 삭제", question, ok_text="폴더 삭제", danger=True):
             return False
         for memo in inside:
             self._move_to_folder(memo, "")
@@ -1198,7 +1257,8 @@ class MemoExplorerWindow(QWidget):
         if w:
             w.flush_auto_save()
         self._flush_preview_save()
-        dialog = HistoryDialog(self, str(memo.get('title', '')), sm.list_history(memo_id))
+        dialog = HistoryDialog(self, str(memo.get('title', '')), sm.list_history(memo_id),
+                               reveal=lambda index, password: sm.read_history_text(memo_id, index, password))
         if dialog.exec() and dialog.chosen_index is not None and sm.restore_history(memo_id, dialog.chosen_index):
             self.ui_manager.reload_pulled_memos([memo_id])
             self.pv.clear()
@@ -1247,7 +1307,7 @@ class MemoExplorerWindow(QWidget):
             self.show_toast("🔒 삭제 방지 설정된 메모입니다.")
             return
         memo_id = memo.get('id')
-        if memo_id and QMessageBox.question(self, "삭제", f"'{memo.get('title','')}' 메모를 휴지통으로 이동할까요?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+        if memo_id and themed_dialog.confirm(self, "삭제", f"'{memo.get('title','')}' 메모를 휴지통으로 이동할까요?", ok_text="삭제", danger=True):
             self.ui_manager.close_memo_window_by_id(memo_id, is_deleting=True)
             self.ui_manager.sync_manager.delete_memo_locally(memo_id, title=memo.get('title'))
             self.ui_manager.sync_manager.delete_memos_cloud([memo_id])
@@ -1267,6 +1327,9 @@ class MemoExplorerWindow(QWidget):
                 w = self.ui_manager.memo_windows.get(m.get('id', ''))
                 if w and not sealed and not w.is_sealed():
                     w.flush_auto_save()
+                    # 저장하면서 목록이 새로 그려지면 줄 선택이 풀립니다. 같은 메모를 다시 골라 두어야
+                    # 이어서 미리보기에서 고친 내용이 이 메모에 저장됩니다.
+                    m = self._reselect_memo(m)
                     m['content'] = w.memo_data.get('content', m.get('content', ''))
                 content = m.get('content', '')
                 if m.get('_locked'):
@@ -1278,6 +1341,102 @@ class MemoExplorerWindow(QWidget):
                 self.pv.setReadOnly(self.is_trash_mode or sealed)
                 self.pv.setPlainText(clean_text)
                 self._is_loading_preview = False
+
+    # ── 미리보기 우클릭 메뉴: 지금 보고 있는 본문에 하는 일만 둡니다 ──────────────
+    def _preview_memo(self) -> Optional[Dict[str, Any]]:
+        item = self.table.item(self.table.currentRow(), 2) if self.table.currentRow() >= 0 else None
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def preview_menu_actions(self) -> List[tuple]:
+        """미리보기 우클릭 메뉴의 항목들. [(글자, 동작, 쓸 수 있는지)] — 글자가 None 이면 구분선."""
+        m = self._preview_memo()
+        if not m:
+            return []
+        pv = self.pv
+        has_selection = pv.textCursor().hasSelection()
+        copy_part = ("복사", pv.copy, has_selection)
+        copy_all = ("전체 내용 복사", lambda: self.copy_memo_text(m), not (m.get('_locked') or m.get('_unreadable')))
+        if self.is_trash_mode:
+            return [copy_part, copy_all]
+        if m.get('_locked'):
+            return [("🔓 잠금 해제 (암호 입력)", lambda: self._lock_action(m, "prompt_unlock"), True)]
+        if m.get('_unreadable'):
+            return []
+        has_reminder = bool(reminders.normalize(m.get('reminder')))
+        return [
+            ("메모 열기", lambda: self.ui_manager.show_specific_memo(m.get('id')), True),
+            (None, None, False),
+            ("체크리스트 켜기/끄기", self.toggle_preview_checklist, not pv.isReadOnly()),
+            (None, None, False),
+            copy_part,
+            ("붙여넣기", pv.paste, not pv.isReadOnly() and pv.canPaste()),
+            ("모두 선택", pv.selectAll, bool(pv.toPlainText())),
+            copy_all,
+            (None, None, False),
+            ("⏰ 알림 바꾸기…" if has_reminder else "⏰ 알림 설정…", lambda: self.edit_reminder(m), True),
+            ("이전 내용 보기…", lambda: self.show_history(m), True),
+        ]
+
+    def show_preview_menu(self, pos: QPoint) -> None:
+        actions = self.preview_menu_actions()
+        if not actions:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(modern_style.menu_qss(self.ui_manager.sync_manager.settings))
+        for text, action, enabled in actions:
+            if text is None:
+                menu.addSeparator()
+                continue
+            entry = menu.addAction(text)
+            entry.setEnabled(enabled)
+            entry.triggered.connect(lambda checked=False, run=action: run())
+        menu.exec(self.pv.viewport().mapToGlobal(pos))
+
+    def toggle_preview_checklist(self) -> None:
+        """미리보기에서 커서가 있는 줄(여러 줄을 골랐으면 그 줄들)에 체크 상자를 붙이거나 뗍니다."""
+        pv = self.pv
+        if pv.isReadOnly():
+            return
+        cursor = pv.textCursor()
+        document = pv.document()
+        first = document.findBlock(cursor.selectionStart())
+        last = document.findBlock(cursor.selectionEnd())
+        blocks = []
+        block = first
+        while block.isValid():
+            blocks.append(block)
+            if block == last:
+                break
+            block = block.next()
+        new_lines = checklist.toggle_boxes([b.text() for b in blocks])
+        cursor.beginEditBlock()
+        for block, new_text in zip(blocks, new_lines):
+            if block.text() != new_text:
+                edit = QTextCursor(block)
+                edit.movePosition(QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor)
+                edit.insertText(new_text)
+        cursor.endEditBlock()
+
+    def _reselect_memo(self, memo: Dict[str, Any]) -> Dict[str, Any]:
+        """목록에서 memo 와 같은 메모의 줄을 (신호 없이) 다시 고르고, 그 줄이 들고 있는 메모 데이터를 돌려줍니다."""
+        memo_id = memo.get('id')
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 2)
+            data = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if data and data.get('id') == memo_id:
+                if self.table.currentRow() != row:
+                    self.table.blockSignals(True)
+                    self.table.setCurrentCell(row, 2)
+                    self.table.blockSignals(False)
+                return data
+        return memo
+
+    def _preview_check_colors(self) -> Dict[str, Any]:
+        settings = self.ui_manager.sync_manager.settings
+        pal, is_dark = app_palette(settings)
+        neo = modern_style.is_neo(settings)
+        return {"ink": pal['text'], "fill": pal['text'] if neo else pal['accent'],
+                "tick": "#1C1C1E" if neo and is_dark else "#FFFFFF", "dark": is_dark}
 
     def on_preview_changed(self) -> None:
         if self._is_loading_preview or self.is_trash_mode:
@@ -1315,7 +1474,7 @@ class MemoExplorerWindow(QWidget):
                 w.restart_relock_timer()
 
             if self.table.item(r, 3):
-                self.table.item(r, 3).setText(datetime.datetime.now().strftime("%y%m%d.%H%M"))
+                self.table.item(r, 3).setText(datetime.datetime.now().strftime("%y.%m.%d %H:%M"))      # 목록과 같은 표기
 
     def _flush_preview_save(self) -> None:
         self._preview_save_timer.stop()
@@ -1527,6 +1686,12 @@ class MemoExplorerWindow(QWidget):
             reminder_text = reminders.describe(m.get('reminder'))
             if reminder_text:
                 badge_text = f"⏰ {badge_text}"
+            raw_content = m.get('content', '')
+            # 암호 메모는 열려 있든 잠겨 있든 진행 표시를 내지 않습니다. (잠그고 풀 때마다 나타났다 사라지지 않게, 내용도 드러나지 않게)
+            if isinstance(raw_content, str) and checklist.has_boxes(raw_content) and not (m.get('is_locked') or m.get('_locked') or m.get('_unreadable')):
+                progress = checklist.progress_label(clean_plain_text(raw_content))
+                if progress:
+                    badge_text = f"{badge_text}  {progress}"       # 남은 일이 있으면 ☐, 다 끝냈으면 ☑
 
             t = QTableWidgetItem(badge_text)
             if reminder_text:
@@ -1577,27 +1742,31 @@ class MemoExplorerWindow(QWidget):
         self._save_memo_meta(memo, is_favorite=not memo.get('is_favorite', False))
         self.refresh()
 
-    def del_checked(self) -> None:
-        checked_memos = []
-        for r in range(self.table.rowCount()):
-            item_cb = self.table.item(r, 0)
-            if item_cb and item_cb.checkState() == Qt.CheckState.Checked:
-                m = self.table.item(r, 2).data(Qt.ItemDataRole.UserRole)
-                if m and m not in checked_memos:
-                    checked_memos.append(m)
+    def picked_memos(self) -> List[Dict[str, Any]]:
+        """여러 개를 한꺼번에 다룰 때의 대상. 체크한 메모들이며, 체크한 것이 없으면 선택한 줄의 메모입니다. (목록 순서대로)"""
+        checked = [r for r in range(self.table.rowCount())
+                   if self.table.item(r, 0) and self.table.item(r, 0).checkState() == Qt.CheckState.Checked]
+        rows = checked or sorted({index.row() for index in self.table.selectedIndexes()})
+        picked: List[Dict[str, Any]] = []
+        for r in rows:
+            item = self.table.item(r, 2)
+            m = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if m and all(m.get('id') != other.get('id') for other in picked):
+                picked.append(m)
+        return picked
 
+    def del_checked(self) -> None:
+        checked_memos = self.picked_memos()
         if not checked_memos:
-            for r in set(index.row() for index in self.table.selectedIndexes()):
-                m = self.table.item(r, 2).data(Qt.ItemDataRole.UserRole)
-                if m and m not in checked_memos:
-                    checked_memos.append(m)
+            self.show_toast("지울 메모를 먼저 고르세요 (체크하거나 줄을 선택)", warn=True)
+            return
 
         protected_memos = [m for m in checked_memos if m.get('is_protected')]
         if protected_memos:
             self.show_toast(f"🔒 {len(protected_memos)}개 메모가 삭제 방지 상태입니다.")
             checked_memos = [m for m in checked_memos if not m.get('is_protected')]
 
-        if checked_memos and QMessageBox.question(self, "일괄 삭제", f"선택한 {len(checked_memos)}개 메모를 휴지통으로 이동할까요?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+        if checked_memos and themed_dialog.confirm(self, "일괄 삭제", f"선택한 {len(checked_memos)}개 메모를 휴지통으로 이동할까요?", ok_text="일괄 삭제", danger=True):
             deleted_ids = []
             for m in checked_memos:
                 memo_id = m.get('id')
@@ -1617,7 +1786,7 @@ class MemoExplorerWindow(QWidget):
                 title = m.get('title', '')
                 if memo_id:
                     ex = next((x for x in self.ui_manager.sync_manager.load_local_memos() if x.get('id') == memo_id), None)
-                    if not ex or ConflictDialog(title, ex.get('content', ''), m.get('content', '')).exec() == QDialog.DialogCode.Accepted:
+                    if not ex or ConflictDialog(title, ex.get('content', ''), m.get('content', ''), self).exec() == QDialog.DialogCode.Accepted:
                         self.ui_manager.sync_manager.restore_memo_locally(memo_id)
         self.pv.clear()
         self.refresh()

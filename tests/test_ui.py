@@ -18,7 +18,7 @@ from PyQt6.QtCore import QPoint, QRect, Qt
 from PyQt6.QtGui import QKeyEvent, QTextCursor, QTextListFormat
 from PyQt6.QtCore import QEvent
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QDialog, QFileDialog, QInputDialog, QMessageBox, QPushButton
+from PyQt6.QtWidgets import QApplication, QDialog, QFileDialog, QInputDialog, QLabel, QMessageBox, QPushButton
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -27,6 +27,8 @@ import core.sync_manager as smm
 import ui.settings_window as sw
 import ui.screen_bounds as screen_bounds
 import ui.ui_manager as uim
+import ui.lock_overlay as lock_overlay
+import ui.themed_dialog as themed_dialog
 import utils.crypto_manager as cm
 from drive_api import DriveAPI
 from ui.global_hotkeys import GlobalHotkeys, WM_HOTKEY, parse_shortcut
@@ -55,7 +57,7 @@ class UiTestCase(unittest.TestCase):
         self.memo_dir = self.home / "memos"
         (self.home / ".memoit_custom").mkdir(parents=True)
         (self.home / ".memoit_custom" / "settings.json").write_text(
-            json.dumps({"local_memo_path": str(self.memo_dir), "use_sync": False}), encoding="utf-8")
+            json.dumps({"local_memo_path": str(self.memo_dir), "use_sync": False, "time_24h": True}), encoding="utf-8")
 
         self.auto_start = {"on": False, "calls": []}
         self.answers = []
@@ -67,6 +69,26 @@ class UiTestCase(unittest.TestCase):
             return True
 
         is_enabled = lambda *a, **k: self.auto_start["on"]
+        self.confirm_answer = True
+        self.real_form_ask = lock_overlay.ask
+        self.real = {"confirm": themed_dialog.confirm, "ask_form": themed_dialog.ask_form}
+        real_toast = themed_dialog.toast
+
+        def spy_toast(widget, text, warn=False):
+            if warn:
+                self.warnings.append(text)
+            real_toast(widget, text, warn)
+
+        def fake_form(window, title, text, fields, ok_text="확인", validate=None, danger=False):
+            if len(self.answers) < len(fields):
+                return None                                  # 답이 없으면 취소한 것으로
+            values = [self.answers.pop(0) for _ in fields]
+            error = validate(values) if validate else None
+            if error:
+                self.warnings.append(error)
+                return None
+            return values
+
         patches = [
             mock.patch.object(Path, "home", return_value=self.home),
             mock.patch.object(cm, "MEMO_LOCK_ITERATIONS", 1000),
@@ -76,11 +98,15 @@ class UiTestCase(unittest.TestCase):
             mock.patch.object(uim, "GlobalHotkeys", FakeHotkeys),
             # 시험 환경의 화면은 800x800 이라, 창 크기·위치 시험이 거기에 걸리지 않게 넓은 작업 영역을 줍니다.
             mock.patch.object(screen_bounds, "work_area", lambda widget, at=None: QRect(0, 0, 4000, 3000)),
-            mock.patch.object(QInputDialog, "getText",
-                              staticmethod(lambda *a, **k: (self.answers.pop(0), True) if self.answers else ("", False))),
-            mock.patch.object(QMessageBox, "information", staticmethod(lambda *a, **k: None)),
-            mock.patch.object(QMessageBox, "warning", staticmethod(lambda *a, **k: self.warnings.append(a[2]))),
-            mock.patch.object(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)),
+            # 대화상자는 띄우지 않고 대역으로 답합니다: 한 줄 입력은 answers 에서 꺼내고, 확인 묻기는 '예',
+            # 암호 입력(여러 칸)은 answers 에서 칸 수만큼 꺼내며, 경고 토스트와 입력 오류는 warnings 에 모읍니다.
+            mock.patch.object(themed_dialog, "ask_text",
+                              lambda *a, **k: (self.answers.pop(0), True) if self.answers else ("", False)),
+            mock.patch.object(themed_dialog, "confirm", lambda *a, **k: self.confirm_answer),
+            mock.patch.object(themed_dialog, "toast", spy_toast),
+            mock.patch.object(lock_overlay, "ask", fake_form),
+            # 잠긴 메모의 암호 칸에 커서를 두는 대신, 위의 대역으로 암호를 묻게 합니다.
+            mock.patch.object(lock_overlay.LockOverlay, "focus_inline", lambda overlay: False),
         ]
         for p in patches:
             p.start()
@@ -468,13 +494,49 @@ class RolledStackTest(UiTestCase):
         a.toggle_rollup()
         self.assertEqual(a.x(), 0)                                # 쌓인 줄이 아니면 제자리에서 펼침
 
-    def test_moved_after_opening_rolls_up_where_it_is(self) -> None:
+    def test_rolling_up_always_returns_to_the_rolled_spot(self) -> None:
         a = self.rolled("memo-0000", 0, 700)
         self.rolled("memo-0001", 0, 700 + a.height())
+        slot = (a.x(), a.y(), a.width())
         a.toggle_rollup()
-        a.move(800, 200)                                          # 펼친 뒤 다른 곳으로 옮김
+        a.move(800, 200)                                          # 펼친 뒤 다른 곳으로 옮기고 크기도 바꿈
+        a.resize(520, 410)
         a.toggle_rollup()
-        self.assertGreater(a.x(), 400)                            # 쌓인 줄로 돌아가지 않고 옮긴 곳에서 접힘
+        self.assertEqual((a.x(), a.y(), a.width()), slot)         # 접으면 접힌 상태로 기억해 둔 자리와 너비로
+        a.toggle_rollup()
+        self.assertEqual((a.x(), a.y(), a.width(), a.height()), (800, 200, 520, 410))     # 펴면 펼친 상태의 자리와 크기로
+
+    def test_rolled_and_unrolled_sizes_do_not_affect_each_other(self) -> None:
+        a = self.open_window("memo-0000")
+        a.setGeometry(500, 300, 400, 320)
+        a.toggle_rollup()
+        a.resize(250, a.height())                                 # 접은 메모의 너비를 줄임
+        a.move(900, 600)
+        a.toggle_rollup()
+        self.assertEqual((a.x(), a.y(), a.width(), a.height()), (500, 300, 400, 320))     # 펼친 크기는 그대로
+        a.resize(640, 480)                                        # 펼친 메모를 키워도
+        a.toggle_rollup()
+        self.assertEqual((a.x(), a.y(), a.width()), (900, 600, 250))                      # 접은 메모의 너비와 자리는 그대로
+        saved = a.memo_data
+        self.assertEqual((saved["rolled_position_x"], saved["rolled_position_y"], saved["rolled_width"]), (900, 600, 250))
+        self.assertEqual((saved["position_x"], saved["position_y"], saved["unrolled_width"], saved["unrolled_height"]),
+                         (500, 300, 640, 480))
+
+    def test_geometry_survives_closing_and_reopening(self) -> None:
+        a = self.open_window("memo-0000")
+        a.setGeometry(500, 300, 400, 320)
+        a.toggle_rollup()
+        a.resize(260, a.height())
+        a.move(900, 600)
+        a.close()
+        saved = self.disk("memo-0000")
+        self.assertEqual((saved["rolled_position_x"], saved["rolled_position_y"], saved["rolled_width"]), (900, 600, 260))
+        self.assertEqual((saved["position_x"], saved["position_y"], saved["unrolled_width"], saved["unrolled_height"]),
+                         (500, 300, 400, 320))
+        b = self.open_window("memo-0000")
+        self.assertEqual((b._is_rolled_up, b.x(), b.y(), b.width()), (True, 900, 600, 260))
+        b.toggle_rollup()
+        self.assertEqual((b.x(), b.y(), b.width(), b.height()), (500, 300, 400, 320))
 
 
 class ScreenBoundsTest(UiTestCase):
@@ -926,7 +988,9 @@ class FolderTest(UiTestCase):
 
         self.ex.folder_list.itemClicked.emit(rows[3])
         self.assertEqual(self.ids(), ["memo-0001"])
-        self.assertEqual(self.ex.btn_folder.text().strip(), "업무/프로젝트A")   # 버튼에 지금 폴더 이름
+        # 버튼에 지금 폴더 이름. 자리가 모자라면 줄여(…) 보여 주고, 온전한 이름은 풍선 도움말에 둡니다.
+        self.assertTrue(self.ex.btn_folder.toolTip().startswith("업무/프로젝트A"))
+        self.assertTrue(self.ex.btn_folder.text().strip().startswith("업무"))
         self.assertEqual(self.ex.folder_list.currentItem().data(Qt.ItemDataRole.UserRole), "업무/프로젝트A")
 
         self.ex.btn_folder.click()                                                # 목록 닫기

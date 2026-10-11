@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Iterator
 
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QFontMetrics, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QPushButton
 
 from ui.themes import app_palette
@@ -26,9 +26,13 @@ DANGER = "#FF453A"
 DEFAULT_STYLE = "modern"
 
 # 메모 창에서 테두리 상자 모양으로 그리는 컨트롤
-MEMO_BOX_CONTROLS = ("btn_code_theme", "code_lang_box", "btn_format_code", "font_box", "size_box", "btn_toggle_sub_fmt")
+MEMO_BOX_CONTROLS = ("btn_code_theme", "code_lang_box", "btn_format_code", "font_box", "size_box", "btn_toggle_sub_fmt",
+                     "btn_font_drop", "btn_size_drop")
+# 적는 칸과 목록 여는 버튼을 따로 두는 상자 (칸 안의 기본 화살표는 숨기고, 옆의 ▾ 버튼으로 목록을 엽니다)
+MEMO_EDIT_BOXES = ("font_box", "size_box")
+NO_BOX_ARROW = " QComboBox::drop-down { width: 0px; border: none; } QComboBox::down-arrow { image: none; width: 0px; height: 0px; }"
 # 켜짐/꺼짐이 표시되는 서식 버튼과, 표시 없이 동작만 하는 버튼(목록·들여쓰기)
-MEMO_TOGGLE_BUTTONS = ("btn_bold", "btn_italic", "btn_underline")
+MEMO_TOGGLE_BUTTONS = ("btn_bold", "btn_italic", "btn_underline", "btn_strike")
 MEMO_ACTION_BUTTONS = ("btn_bullet", "btn_num", "btn_check", "btn_indent", "btn_outdent")
 
 
@@ -168,15 +172,57 @@ def popup_qss(settings: Dict[str, Any]) -> str:
     """
 
 
+def checkbox_icon(color: str, size: int = 16) -> QIcon:
+    """체크리스트 버튼에 쓰는 아이콘. 본문에 그려지는 체크 상자와 같은 모양(네모 안의 체크)입니다."""
+    scale = 3                                            # 크게 그려 두어 배율이 높은 화면에서도 또렷하게
+    pixmap = QPixmap(size * scale, size * scale)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    side = size * scale
+    inset = side * 0.16
+    box = side - 2 * inset
+    painter.setPen(QPen(QColor(color), side * 0.085, Qt.PenStyle.SolidLine, Qt.PenCapStyle.SquareCap, Qt.PenJoinStyle.MiterJoin))
+    painter.drawRect(int(inset), int(inset), int(box), int(box))
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(QPen(QColor(color), side * 0.10, Qt.PenStyle.SolidLine, Qt.PenCapStyle.SquareCap, Qt.PenJoinStyle.MiterJoin))
+    painter.drawPolyline(QPolygonF([QPointF(inset + box * 0.22, inset + box * 0.52), QPointF(inset + box * 0.43, inset + box * 0.73),
+                                    QPointF(inset + box * 0.80, inset + box * 0.28)]))
+    painter.end()
+    return QIcon(pixmap)
+
+
 def dialog_qss(settings: Dict[str, Any]) -> str:
-    """알림 설정·이전 내용처럼 메모나 탐색기 위에 뜨는 대화상자. (부모 창의 색이 아니라 앱 색 테마를 따름)"""
+    """확인·입력처럼 탐색기 위에 뜨는 화면과 대화상자. (앱 색 테마를 따름)"""
     pal, is_dark = app_palette(settings)
-    neo = is_neo(settings)
+    return _form_qss(pal, is_dark, is_neo(settings), pal['input'] if is_dark else pal['bg'])
+
+
+def memo_form_qss(w: Any) -> str:
+    """메모 옆에 붙는 패널 안의 입력 화면. 앱 색 테마가 아니라 그 메모의 바탕색과 글자색을 따릅니다."""
+    base, is_dark, bg_color = memo_tone(w)
+    ink = base['text']
+    pal = dict(base, card=bg_color, bg=bg_color, border=_rgba(ink, 0.30))
+    settings = w.memo_window_get_settings()
+    field = "rgba(0,0,0,0.26)" if is_dark else "rgba(255,255,255,0.72)"
+    return _form_qss(pal, is_dark, is_neo(settings), field) + f"""
+        QPushButton#PanelClose {{ border: none; padding: 0; background: transparent; font-size: 10.5pt; font-weight: 500; }}
+        QPushButton#PanelClose:hover {{ background: {DANGER}; color: white; }}
+    """
+
+
+def _form_qss(pal: Dict[str, Any], is_dark: bool, neo: bool, field: str) -> str:
+    """입력 화면(글자 칸·버튼·고르는 단추·달력 등)의 모양. pal 의 색으로 그립니다."""
     on_bg, on_text = (pal['text'], pal['bg']) if neo else (pal['accent'], "white")
     soft = _tint(is_dark, 0.08) if neo else _rgba(pal['accent'], 0.16)
-    field = pal['input'] if is_dark else pal['bg']
     return f"""
         QDialog {{ background: {pal['card']}; }}
+        QDialog#ThemedDialog {{ border: 1px solid {pal['text'] if neo else pal['border']}; }}
+        QWidget#DialogTitleBar {{ background: {pal['bg']}; border-bottom: 1px solid {pal['border']}; }}
+        QLabel#DialogTitle {{ font-weight: 700; font-size: 10.5pt; }}
+        QPushButton#DialogClose {{ border: none; padding: 0; background: transparent; font-size: 10.5pt; font-weight: 500; }}
+        QPushButton#DialogClose:hover {{ background: {DANGER}; color: white; }}
+        QLabel[role="title"] {{ font-weight: 700; font-size: 11pt; }}
+        QLabel[role="error"] {{ color: {DANGER}; font-weight: 600; }}
         QLabel {{ color: {pal['text']}; background: transparent; font-family: {UI_FONT}; font-size: 10pt; }}
         QLineEdit, QDateTimeEdit, QComboBox, QTextEdit, QListWidget {{
             border: 1px solid {pal['border']}; border-radius: 0px; background: {field}; color: {pal['text']};
@@ -192,24 +238,49 @@ def dialog_qss(settings: Dict[str, Any]) -> str:
         QListWidget {{ outline: none; }}
         QListWidget::item {{ padding: 6px 8px; border-left: 3px solid transparent; }}
         QListWidget::item:selected {{ background: {soft}; color: {pal['text']}; border-left: 3px solid {on_bg}; }}
+        QListWidget::indicator {{ width: 13px; height: 13px; border: 1px solid {pal['text']}; background: {field}; }}
+        QListWidget::indicator:checked {{ background: {on_bg}; border: 1px solid {on_bg}; }}
         QTextEdit {{ padding: 8px; }}
         QPushButton {{
             padding: 6px 12px; border: 1px solid {pal['border']}; border-radius: 0px; background: transparent;
             color: {pal['text']}; font-size: 9.5pt; font-weight: 600; font-family: {UI_FONT};
         }}
         QPushButton:hover {{ border-color: {on_bg}; }}
-        QPushButton:default {{ background: {on_bg}; border-color: {on_bg}; color: {on_text}; }}
+        QPushButton:default, QPushButton[role="primary"] {{ background: {on_bg}; border-color: {on_bg}; color: {on_text}; }}
+        QPushButton[role="danger"] {{ background: {DANGER}; border-color: {DANGER}; color: white; }}
         QPushButton:disabled {{ color: {_muted(is_dark)}; background: transparent; border-color: {pal['border']}; }}
+        QPushButton[role="pick"] {{ padding: 6px 0; min-width: 30px; font-weight: 500; }}
+        QPushButton[role="quick"] {{ padding: 6px 4px; font-weight: 500; }}
+        QPushButton[role="pick"]:checked {{ background: {on_bg}; border-color: {on_bg}; color: {on_text}; font-weight: 700; }}
+        QPushButton[role="example"] {{
+            text-align: left; padding: 5px 10px; font-family: {MONO_FONT}; font-size: 9.5pt; font-weight: 500;
+            border-color: transparent; background: {soft};
+        }}
+        QPushButton[role="example"]:hover {{ border-color: {on_bg}; }}
+        QLabel[role="hint"] {{ color: {_muted(is_dark)}; font-size: 9pt; }}
+        QComboBox:disabled {{ color: {_muted(is_dark)}; }}
+        QCheckBox {{ color: {pal['text']}; font-family: {UI_FONT}; font-size: 10pt; font-weight: 600; spacing: 7px; }}
+        QCheckBox::indicator {{ width: 14px; height: 14px; border: 1px solid {pal['text']}; background: {field}; }}
+        QCheckBox::indicator:checked {{ background: {on_bg}; border: 3px solid {field}; outline: 1px solid {on_bg}; }}
         QSplitter::handle {{ background: transparent; }}
+        QLineEdit[role="time"] {{ padding: 6px 2px; font-size: 12pt; font-weight: 700; }}
+        QFrame#OverlayCard {{ background: {pal['card']}; }}
+        QScrollArea#OverlayCardScroll {{ background: {pal['card']}; border: 1px solid {pal['text'] if neo else pal['border']}; }}
+        QCalendarWidget QWidget {{ background: {pal['card']}; color: {pal['text']}; alternate-background-color: {pal['bg']}; }}
+        QCalendarWidget QToolButton {{
+            background: transparent; color: {pal['text']}; border: none; padding: 5px 8px; font-weight: 700;
+            font-family: {UI_FONT}; font-size: 10pt;
+        }}
+        QCalendarWidget QToolButton:hover {{ background: {soft}; }}
+        QCalendarWidget QToolButton::menu-indicator {{ image: none; }}
+        QCalendarWidget QSpinBox {{ background: {field}; color: {pal['text']}; border: 1px solid {pal['border']}; }}
+        QCalendarWidget QAbstractItemView {{
+            background: {pal['card']}; color: {pal['text']}; outline: none; font-family: {UI_FONT}; font-size: 9.5pt;
+            selection-background-color: {on_bg}; selection-color: {on_text};
+        }}
+        QCalendarWidget QAbstractItemView:disabled {{ color: {_muted(is_dark)}; }}
         {scrollbars(is_dark)}
     """
-
-
-def style_dialog(dialog: Any, parent: Any) -> None:
-    """parent(메모 창·탐색기)가 쓰는 설정을 찾아 대화상자에 앱 색 테마를 입힙니다."""
-    settings = getattr(getattr(getattr(parent, 'ui_manager', None), 'sync_manager', None), 'settings', None)
-    if settings is not None:
-        dialog.setStyleSheet(dialog_qss(settings))
 
 
 def _flat_button(ink: str, fill: str = "transparent") -> str:
@@ -587,6 +658,8 @@ def apply_memo(w: Any) -> None:
            f"QPushButton:hover, QComboBox:hover {{ background: {_rgba(ink, 0.14)}; }} QComboBox::drop-down {{ border: none; }}")
     for name in MEMO_BOX_CONTROLS:
         getattr(w, name).setStyleSheet(box)
+    for name in MEMO_EDIT_BOXES:
+        getattr(w, name).setStyleSheet(box + NO_BOX_ARROW)
     swatch = (f"QPushButton {{ font-size: 9pt; font-weight: 700; padding: 0; border: 1px solid {_rgba(ink, 0.2)}; "
               f"border-radius: 0px; background: {_rgba(ink, 0.06)}; color: {ink}; }} "
               f"QPushButton:hover {{ background: {_rgba(ink, 0.14)}; }}")
@@ -603,7 +676,7 @@ def apply_memo(w: Any) -> None:
 
 @_styled
 def apply_memo_toolbar(w: Any) -> None:
-    """서식 버튼. 굵게·기울임·밑줄만 켜진 상태를 강조색으로 표시하고, 목록·들여쓰기 버튼은 칠하지 않습니다."""
+    """서식 버튼. 굵게·기울임·밑줄·취소선만 켜진 상태를 강조색으로 표시하고, 목록·들여쓰기 버튼은 칠하지 않습니다."""
     pal = w._memo_theme_palette()
     ink = pal['text']
     off = (f"QPushButton {{ border: none; color: {ink}; font-size: 10pt; background: transparent; font-weight: bold; border-radius: 0px; }} "
@@ -612,6 +685,8 @@ def apply_memo_toolbar(w: Any) -> None:
     for name in MEMO_TOGGLE_BUTTONS:
         btn = getattr(w, name)
         btn.setStyleSheet(on if btn.isChecked() else off)
+    # 취소선 버튼은 글자 'S'에 줄을 그어 보여 줍니다.
+    w.btn_strike.setStyleSheet(w.btn_strike.styleSheet() + " QPushButton { text-decoration: line-through; }")
     for name in MEMO_ACTION_BUTTONS:
         getattr(w, name).setStyleSheet(off)
     # 알림이 걸려 있을 때 서식 줄 오른쪽에 보이는 알림 시각

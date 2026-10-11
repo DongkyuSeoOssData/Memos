@@ -10,7 +10,7 @@
 from typing import Any
 
 from ui.modern_style import (
-    DANGER, MEMO_ACTION_BUTTONS, MEMO_BOX_CONTROLS, MEMO_TOGGLE_BUTTONS, MONO_FONT, UI_FONT,
+    DANGER, MEMO_ACTION_BUTTONS, MEMO_BOX_CONTROLS, MEMO_EDIT_BOXES, MEMO_TOGGLE_BUTTONS, MONO_FONT, NO_BOX_ARROW, UI_FONT,
     _arrow_icon, _check_icon, _flat_button, _muted, _rgba, _settings_of, _tint,
     explorer_rows, memo_tone, scrollbars, set_save_icon, style_window_buttons,
 )
@@ -331,6 +331,8 @@ def apply_memo(w: Any) -> None:
            f"QPushButton:hover, QComboBox:hover {{ border-color: {ink}; }} QComboBox::drop-down {{ border: none; }}")
     for name in MEMO_BOX_CONTROLS:
         getattr(w, name).setStyleSheet(box)
+    for name in MEMO_EDIT_BOXES:
+        getattr(w, name).setStyleSheet(box + NO_BOX_ARROW)
     swatch = (f"QPushButton {{ font-size: 9pt; font-weight: 600; padding: 0; border: 1px solid {_rgba(ink, 0.25)}; "
               f"border-radius: 0px; background: transparent; color: {ink}; }} "
               f"QPushButton:hover {{ border-color: {ink}; }}")
@@ -346,7 +348,7 @@ def apply_memo(w: Any) -> None:
 
 
 def apply_memo_toolbar(w: Any) -> None:
-    """서식 버튼. 굵게·기울임·밑줄만 켜진 상태를 잉크색으로 채우고, 목록·들여쓰기 버튼은 칠하지 않습니다."""
+    """서식 버튼. 굵게·기울임·밑줄·취소선만 켜진 상태를 잉크색으로 채우고, 목록·들여쓰기 버튼은 칠하지 않습니다."""
     pal, _, bg_color = memo_tone(w)
     ink = pal['text']
     off = (f"QPushButton {{ border: none; color: {ink}; font-size: 10pt; background: transparent; font-weight: 600; border-radius: 0px; }} "
@@ -355,6 +357,8 @@ def apply_memo_toolbar(w: Any) -> None:
     for name in MEMO_TOGGLE_BUTTONS:
         btn = getattr(w, name)
         btn.setStyleSheet(on if btn.isChecked() else off)
+    # 취소선 버튼은 글자 'S'에 줄을 그어 보여 줍니다.
+    w.btn_strike.setStyleSheet(w.btn_strike.styleSheet() + " QPushButton { text-decoration: line-through; }")
     for name in MEMO_ACTION_BUTTONS:
         getattr(w, name).setStyleSheet(off)
     # 알림이 걸려 있을 때 서식 줄 오른쪽에 보이는 알림 시각

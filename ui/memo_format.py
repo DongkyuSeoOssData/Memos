@@ -3,9 +3,9 @@ from typing import Any
 
 from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtGui import QColor, QFont, QTextCharFormat, QTextCursor, QTextListFormat
-from PyQt6.QtWidgets import QColorDialog, QMenu
+from PyQt6.QtWidgets import QMenu
 
-from ui import checklist, modern_style
+from ui import checklist, modern_style, themed_dialog
 
 
 class MemoFormatMixin:
@@ -18,6 +18,7 @@ class MemoFormatMixin:
         self.btn_bold.setChecked(fmt.fontWeight() == QFont.Weight.Bold)
         self.btn_italic.setChecked(fmt.fontItalic())
         self.btn_underline.setChecked(fmt.fontUnderline())
+        self.btn_strike.setChecked(fmt.fontStrikeOut())
         modern_style.apply_memo_toolbar(self)
 
     def show_bg_color_menu(self) -> None:
@@ -37,14 +38,43 @@ class MemoFormatMixin:
             menu.addAction(name).triggered.connect(lambda checked, c=hex_code: self.set_text_bg_color(QColor(c)))
 
         menu.addSeparator()
-        menu.addAction("사용자 지정 RGB 색상...").triggered.connect(self.choose_bg_color)
+        menu.addAction("사용자 지정 색…").triggered.connect(self.choose_bg_color)
         menu.exec(self.btn_bg_color.mapToGlobal(QPoint(0, self.btn_bg_color.height())))
 
     def set_text_bg_color(self, color: QColor) -> None:
-        fmt = self.text_edit.currentCharFormat()
+        fmt = QTextCharFormat()
         fmt.setBackground(color)
         self.text_edit.mergeCurrentCharFormat(fmt)
         self._mark_edited()
+
+    def pick_font_family(self, family: str) -> None:
+        """글꼴 칸에서 고르거나 적은 글꼴을 적용합니다. 목록에 없는 이름이면 지금 글꼴로 되돌립니다."""
+        box = self.font_box
+        index = box.findText(family.strip(), Qt.MatchFlag.MatchFixedString)
+        if index < 0:
+            index = box.findText(family.strip(), Qt.MatchFlag.MatchContains) if family.strip() else -1
+        current = self.memo_data.get('font_family') or self.text_edit.font().family()
+        if index < 0:
+            box.setEditText(current)
+            return
+        chosen = box.itemText(index)
+        box.blockSignals(True)
+        box.setCurrentIndex(index)
+        box.blockSignals(False)
+        if chosen != current or self.text_edit.textCursor().hasSelection():
+            self.change_font_family(QFont(chosen))
+        self.text_edit.setFocus()
+
+    def pick_font_size(self, text: str) -> None:
+        """크기 칸에서 고르거나 적은 크기를 적용합니다. 6~72 가 아니면 지금 크기로 되돌립니다."""
+        text = str(text).strip()
+        current = str(self.memo_data.get('font_size', 11))
+        if not text.isdigit() or not 6 <= int(text) <= 72:
+            self.size_box.setEditText(current)
+            return
+        if text != current:
+            self.change_font_size(text)
+        self.text_edit.setFocus()
 
     def toggle_bold(self) -> None:
         fmt = self.text_edit.currentCharFormat()
@@ -64,6 +94,14 @@ class MemoFormatMixin:
     def toggle_underline(self) -> None:
         fmt = self.text_edit.currentCharFormat()
         fmt.setFontUnderline(not fmt.fontUnderline())
+        self.text_edit.mergeCurrentCharFormat(fmt)
+        self.update_toolbar_button_states()
+        self._mark_edited()
+
+    def toggle_strike(self) -> None:
+        """선택한 글자에 취소선을 긋거나 지웁니다. (선택이 없으면 이제부터 치는 글자에 적용)"""
+        fmt = self.text_edit.currentCharFormat()
+        fmt.setFontStrikeOut(not fmt.fontStrikeOut())
         self.text_edit.mergeCurrentCharFormat(fmt)
         self.update_toolbar_button_states()
         self._mark_edited()
@@ -103,8 +141,8 @@ class MemoFormatMixin:
         self._schedule_auto_save()
 
     def choose_fg_color(self) -> None:
-        color = QColorDialog.getColor(Qt.GlobalColor.black, self, "글씨색 선택")
-        if color.isValid():
+        color = themed_dialog.pick_color(self, "글씨색 선택", self.text_edit.currentCharFormat().foreground().color())
+        if color is not None and color.isValid():
             cursor = self.text_edit.textCursor()
             fmt = QTextCharFormat()
             fmt.setForeground(color)
@@ -116,15 +154,11 @@ class MemoFormatMixin:
             self._mark_edited()
 
     def choose_bg_color(self) -> None:
-        colors = ["#FFFF00", "#00FF00", "#00FFFF", "#FF00FF", "transparent"]
-        cur = getattr(self, '_current_bg_idx', -1)
-        cur = (cur + 1) % len(colors)
-        self._current_bg_idx = cur
-        if colors[cur] == "transparent":
-            color = QColor(0, 0, 0, 0)
-        else:
-            color = QColor(colors[cur])
-        self.set_text_bg_color(color)
+        """형광펜 색을 직접 고릅니다."""
+        current = self.text_edit.currentCharFormat().background().color()
+        color = themed_dialog.pick_color(self, "형광펜 색 선택", current if current.alpha() > 0 else "#FFFF00")
+        if color is not None and color.isValid():
+            self.set_text_bg_color(color)
 
     def current_content(self) -> str:
         """저장할 본문. 코드 메모와 서식 없는 메모는 순수 텍스트, 서식이 있는 메모만 HTML 입니다."""
