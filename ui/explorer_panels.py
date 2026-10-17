@@ -15,6 +15,7 @@ class ExplorerPanelsMixin:
     """탐색기의 창 크기와 옆 패널."""
 
     MIN_WIDTH, MIN_HEIGHT = 580, 440     # 탐색기 본래 영역의 최소 크기 (옆에 덧붙는 영역은 따로 더함)
+    DEFAULT_SIZE = (666, 961)            # 처음 열 때의 크기 (목록 10개와 미리보기가 다 보이는 크기)
     SIDEBAR_WIDTH = 176                  # 폴더 사이드바의 너비
     SIDEBAR_GAP = 12                     # 덧붙는 영역과 본래 영역 사이의 간격
     SETTINGS_WIDTH = 540                 # 환경설정 패널의 너비
@@ -28,6 +29,7 @@ class ExplorerPanelsMixin:
         fixed = self.is_size_fixed()
         if fixed and self.isMaximized():
             self.showNormal()
+        self._fit_table()                                # 목록 칸 높이(화면이 작으면 줄임)부터 정해야 최소 크기가 맞음
         self._apply_minimum_size()
         self.setMaximumSize(16777215, 16777215)
         if geom and len(geom) == 4 and not self.isMaximized():
@@ -42,6 +44,7 @@ class ExplorerPanelsMixin:
         """창이 화면보다 커지거나 화면 밖에 놓이지 않게 합니다. (크기 고정 상태에서는 크기는 그대로, 위치만)"""
         if self.isMaximized():
             return
+        self._fit_table()                                # 화면이 작으면 목록 칸부터 줄여 창이 들어가게 함
         limit = screen_bounds.max_inner_size(self, inset=self.EDGE_MARGIN)
         if limit is None:
             return
@@ -56,6 +59,10 @@ class ExplorerPanelsMixin:
         """창의 최소 크기. 폴더 탭 줄처럼 화면에 놓인 것이 늘어나면 그만큼 더 필요하므로, 배치가 요구하는 크기보다 작아지지 않게 합니다."""
         # 너비는 내용에 따라 늘리지 않습니다. (긴 폴더 이름은 줄여 보여 주고, 많은 탭은 < > 로 넘겨 봄)
         self._fit_header()
+        for holder in (self.bg, self):                   # 목록 칸 높이 등이 막 바뀌었으면 그것을 반영한 크기로 견줌
+            if holder.layout():
+                holder.layout().invalidate()
+                holder.layout().activate()
         self.setMinimumSize(self.MIN_WIDTH + self._sidebar_extra + self._settings_extra,
                             max(self.MIN_HEIGHT, self.minimumSizeHint().height()))
 
@@ -120,6 +127,25 @@ class ExplorerPanelsMixin:
         self._apply_minimum_size()
         if fixed:
             self.setFixedSize(self.size())
+        self._limit_to_screen()
+
+    def _grow_down(self, delta: int) -> None:
+        """창을 아래로 delta 만큼 늘립니다(음수면 줄임). 미리보기를 접고 펼 때 그만큼만 창 높이를 바꿉니다."""
+        if delta == 0 or self.isMaximized():
+            return
+        fixed = self.is_size_fixed()
+        for holder in (self.bg, self):
+            if holder.layout():
+                holder.layout().activate()
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        self.resize(self.width(), self.height() + delta)
+        self._apply_minimum_size()
+        if fixed:
+            self.setFixedSize(self.size())
+            geom = self.ui_manager.sync_manager.settings.get('explorer_geom')
+            if geom and len(geom) == 4:                  # 크기 고정이면 고정 크기도 그만큼 바꿔 둠
+                self.ui_manager.sync_manager.settings['explorer_geom'] = [geom[0], geom[1], geom[2], self.height()]
         self._limit_to_screen()
 
     def _set_sidebar_extra(self, extra: int) -> None:

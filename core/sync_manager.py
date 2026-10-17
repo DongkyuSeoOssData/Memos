@@ -86,6 +86,10 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, MemoIndex
         "sync_interval_index": 0,
         "auto_start": False,
         "default_memo_color": "#E0F2FE",
+        "ui_style": "neo",                      # 처음 켤 때의 디자인: Neo + Mono 색 테마
+        "light_theme_mode": "mono",
+        "dark_theme_mode": "mono",
+        "app_font_family": "D2Coding",          # 앱 화면 전체의 글꼴 (이 PC에만 둠: 공유 설정 목록에 없음)
         "default_font_family": "D2Coding",
         "default_code_font_family": "D2Coding",
         "default_code_lang": "JSON",
@@ -225,6 +229,8 @@ class SyncManager(MemoPasswordMixin, MemoHistoryMixin, MemoTrashMixin, MemoIndex
             try:
                 with open(self.settings_path, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
+                    # 처음 켤 때의 기본 디자인은 Neo 지만, 예전부터 쓰던 PC(설정 파일에 이 값이 없음)는 그동안 보던 모양을 그대로 둡니다.
+                    loaded = {"ui_style": "modern", "light_theme_mode": "white", "dark_theme_mode": "dark", **loaded}
                     loaded_shortcuts = loaded.get("shortcuts", {})
                     merged_shortcuts = {**defaults.get("shortcuts", {}), **loaded_shortcuts}
                     return {**defaults, **loaded, "shortcuts": merged_shortcuts}

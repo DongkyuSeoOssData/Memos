@@ -197,78 +197,78 @@ class ExplorerPreviewTest(support.UiTestCase):
         ex.on_cell_click(row, 2)
         return row
 
-    # ── 3. 미리보기에서 체크해도 서식이 남음 ──
-    def test_checking_a_box_in_the_preview_keeps_formatting(self) -> None:
+    def test_preview_is_read_only(self) -> None:
         memo_id = self.rich_memo()
         ex = self.explorer()
         self.select(ex, memo_id)
+        self.assertTrue(ex.pv.isReadOnly())
         self.assertEqual(ex.pv.toPlainText().splitlines()[-2:], ["☐ first", "☐ second"])
+        before = self.raw(memo_id)
         block = ex.pv.document().findBlockByNumber(ex.pv.document().blockCount() - 1)
         box = ex.pv.check_marks.box_rect(block, 0)
         QTest.mouseClick(ex.pv.viewport(), Qt.MouseButton.LeftButton, pos=box.center())
-        ex._flush_preview_save()
-        saved = self.disk(memo_id)["content"]
-        self.assertRegex(saved, r"font-weight:\s*(700|600|bold)")                      # 굵게 서식이 그대로
-        self.assertIn("☑ second", saved)
-        self.assertIn("☐ first", saved)                              # 누른 줄만 바뀜
-        self.assertTrue(ex.pv.toPlainText().endswith("☑ second"))
-        self.assertEqual(self.warnings, [])
+        self.assertTrue(ex.pv.toPlainText().endswith("☐ second"))       # 눌러도 체크되지 않음
+        ex.pv.setFocus()
+        QTest.keyClicks(ex.pv, "typed")
+        self.assertNotIn("typed", ex.pv.toPlainText())                     # 글자도 들어가지 않음
+        self.assertEqual(self.raw(memo_id), before)                        # 메모는 그대로
 
-    def test_typing_in_the_preview_of_a_formatted_memo_warns(self) -> None:
-        memo_id = self.rich_memo()
-        ex = self.explorer()
-        self.select(ex, memo_id)
-        ex.pv.setPlainText(ex.pv.toPlainText() + " more")
-        self.assertTrue(ex.toast.text().startswith("⚠") and "서식" in ex.toast.text())
-        ex._flush_preview_save()
-        self.assertNotIn("<html>", self.disk(memo_id)["content"])     # 글자만 저장된다는 점은 예전과 같음
-
-    def test_plain_memo_preview_still_toggles_normally(self) -> None:
-        w = self.open_window("memo-0001")
-        w.text_edit.setPlainText("☐ a")
-        w.text_edit.document().setModified(True)
-        w.flush_auto_save()
-        w.execute_auto_save()
+    def test_preview_menu_only_copies(self) -> None:
         ex = self.explorer()
         self.select(ex, "memo-0001")
-        box = ex.pv.check_marks.box_rect(ex.pv.document().firstBlock(), 0)
-        QTest.mouseClick(ex.pv.viewport(), Qt.MouseButton.LeftButton, pos=box.center())
-        ex._flush_preview_save()
-        self.assertEqual(self.disk("memo-0001")["content"], "☑ a")
+        actions = {text: (run, enabled) for text, run, enabled in ex.preview_menu_actions()}
+        self.assertEqual(list(actions), ["복사", "전체 내용 복사"])
+        self.assertFalse(actions["복사"][1])                               # 고른 글자가 없으면 못 누름
+        ex.pv.selectAll()
+        self.assertTrue(dict((t, e) for t, _, e in ex.preview_menu_actions())["복사"])
+        support.app.clipboard().setText("")
+        actions["전체 내용 복사"][0]()
+        self.assertIn("body 1", support.app.clipboard().text())
 
-    def test_preview_edit_keeps_the_date_format(self) -> None:
-        ex = self.explorer()
-        row = self.row_of(ex, "memo-0001")
-        ex.table.setCurrentCell(row, 2)
-        ex.on_cell_click(row, 2)
-        ex.pv.setPlainText("edited")
-        text = ex.table.item(ex.table.currentRow(), 3).text()
-        self.assertRegex(text, r"^\d\d\.\d\d\.\d\d \d\d:\d\d$")
-
-    def test_preview_menu(self) -> None:
-        ex = self.explorer()
-        row = self.row_of(ex, "memo-0001")
-        ex.table.setCurrentCell(row, 2)
-        ex.on_cell_click(row, 2)
-        labels = [text for text, _, _ in ex.preview_menu_actions() if text]
-        self.assertEqual(labels, ["메모 열기", "체크리스트 켜기/끄기", "복사", "붙여넣기", "모두 선택", "전체 내용 복사",
-                                  "⏰ 알림 설정…", "이전 내용 보기…"])
-        actions = {text: (run, enabled) for text, run, enabled in ex.preview_menu_actions() if text}
-        self.assertFalse(actions["복사"][1])                         # 고른 글자가 없으면 못 누름
-        actions["체크리스트 켜기/끄기"][0]()
-        self.assertTrue(ex.pv.toPlainText().startswith("☐ "))
-        actions["메모 열기"][0]()
-        self.assertIn("memo-0001", self.ui.memo_windows)
-
-        w = self.ui.memo_windows["memo-0001"]
+        w = self.open_window("memo-0001")
         self.answers[:] = ["pw12", "pw12"]
         w.set_memo_password()
         w.lock_now()
+        self.select(ex, "memo-0001")
+        actions = {text: enabled for text, _, enabled in ex.preview_menu_actions()}
+        self.assertFalse(actions["전체 내용 복사"])                         # 암호 메모는 복사 못 함
+
+    def test_copy_button_beside_the_preview_title(self) -> None:
+        ex = self.explorer()
+        self.assertFalse(ex.btn_preview_copy.icon().isNull())
+        ex.resize(ex.width(), ex.height() + 120)
+        support.app.processEvents()
+        btn, pv = ex.btn_preview_copy, ex.pv
+        self.assertIs(btn.parent(), pv)                                    # 미리보기 칸 안의
+        self.assertLess(btn.y(), 25)                                       # 위쪽
+        self.assertLess(pv.width() - (btn.x() + btn.width()), 30)          # 오른쪽 구석
+        support.app.clipboard().setText("")
+        ex.btn_preview_copy.click()                                        # 고른 메모가 없으면 알리기만
+        self.assertEqual(support.app.clipboard().text(), "")
+        self.select(ex, "memo-0002")
+        ex.btn_preview_copy.click()
+        self.assertEqual(support.app.clipboard().text(), "body 2 #tag2")
+        for i in range(3, 25):                                             # 쪽을 넘겨도 보이는 메모를 복사
+            self.sm.save_memo_locally({"id": f"memo-{i:04d}", "title": f"t{i}", "content": f"page {i}",
+                                       "updated_at": "2026-02-01T00:00:00", "is_visible": False})
         ex.refresh()
-        row = self.row_of(ex, "memo-0001")
-        ex.table.setCurrentCell(row, 2)
-        ex.on_cell_click(row, 2)
-        self.assertEqual([text for text, _, _ in ex.preview_menu_actions()], ["🔓 잠금 해제 (암호 입력)"])
+        self.select(ex, "memo-0003")
+        ex.btn_last_page.click()
+        support.app.clipboard().setText("")
+        ex.btn_preview_copy.click()
+        self.assertEqual(support.app.clipboard().text(), "page 3")
+        ex.pv.clear()                                                      # 미리보기를 비우면 복사할 것이 없음
+        self.assertIsNone(ex._preview_memo())
+
+    def test_window_typing_shows_up_in_the_preview(self) -> None:
+        w = self.open_window("memo-0001")
+        w.text_edit.setPlainText("typed in the window")
+        w.text_edit.document().setModified(True)
+        w._schedule_auto_save()
+        ex = self.explorer()
+        self.select(ex, "memo-0001")
+        self.assertIn("typed in the window", ex.pv.toPlainText())         # 창에서 쓰던 글을 저장하고 보여 줌
+        self.assertIn("typed in the window", self.disk("memo-0001")["content"])
 
 
 if __name__ == "__main__":

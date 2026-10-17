@@ -1,4 +1,4 @@
-"""알림 창을 띄울 자리(모니터와 모서리)와, 미리보기에서 고친 내용의 저장 실패 알림."""
+"""알림 창을 띄울 자리(모니터와 모서리)."""
 import unittest
 from unittest import mock
 
@@ -149,28 +149,6 @@ class PopupSettingTest(support.UiTestCase):
         shared = support.smm.shared_settings.SHARED_KEYS
         self.assertNotIn("reminder_popup_screen", shared)
         self.assertNotIn("reminder_popup_corner", shared)
-
-
-class PreviewSaveFailureTest(support.UiTestCase):
-    def test_failed_preview_save_is_reported_and_retried(self) -> None:
-        ex = self.explorer()
-        row = self.row_of(ex, "memo-0000")
-        ex.table.selectRow(row)
-        ex.on_cell_click(row, 2)
-        ex.pv.setPlainText("edited in the preview")
-        self.assertIsNotNone(ex._pending_preview_memo)
-        self.warnings.clear()
-        told = []
-        ex.show_toast = lambda text, warn=False: told.append((text, warn))
-        with mock.patch.object(self.sm, "save_memo_locally", return_value=False):
-            ex._flush_preview_save()
-        self.assertEqual(len(told), 1)
-        self.assertTrue(told[0][1])
-        self.assertIn("저장하지 못했습니다", told[0][0])
-        self.assertTrue(ex._preview_save_timer.isActive())            # 조금 뒤에 다시 시도
-        ex._flush_preview_save()
-        self.assertEqual(len(told), 1)
-        self.assertIn("edited in the preview", self.disk("memo-0000")["content"])
 
 
 if __name__ == "__main__":

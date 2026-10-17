@@ -68,11 +68,18 @@ class MemoMenuMixin:
 
         menu.addSeparator()
         menu.addAction(_fmt_sc("메모 탐색기 열기", "open_explorer", "Ctrl+E")).triggered.connect(self.ui_manager.open_memo_explorer)
+        menu.addAction(_fmt_sc("제목 바꾸기", "rename", "F2")).triggered.connect(self.enable_rename)
         menu.addAction(_fmt_sc("저장", "save", "Ctrl+S")).triggered.connect(self.manual_save)
         menu.addAction(_fmt_sc("검색", "search", "Ctrl+F")).triggered.connect(self.show_search_only)
         menu.addAction(_fmt_sc("바꾸기", "replace", "Ctrl+H")).triggered.connect(self.show_search_and_replace)
         menu.addAction(_fmt_sc("화면 고정 토글", "toggle_pin", "Ctrl+P")).triggered.connect(self.toggle_pin)
-        menu.addAction(_fmt_sc("메모 창 접기", "toggle_rollup", "Ctrl+M")).triggered.connect(self.toggle_rollup)
+        menu.addAction(_fmt_sc("메모 창 펼치기" if self._is_rolled_up else "메모 창 접기", "toggle_rollup", "Alt+M")).triggered.connect(self.toggle_rollup)
+        state = "접은" if self._is_rolled_up else "펼친"
+        if self.has_position_pin():
+            menu.addAction(f"📌 {state} 위치를 지금 자리로 다시 고정").triggered.connect(self.pin_position)
+            menu.addAction(_fmt_sc(f"{state} 위치 고정 풀기", "pin_position", "Alt+Shift+P")).triggered.connect(self.unpin_position)
+        else:
+            menu.addAction(_fmt_sc(f"📌 {state} 위치 고정", "pin_position", "Alt+Shift+P")).triggered.connect(self.pin_position)
 
         ln_action = menu.addAction("행번호 표시")
         ln_action.setCheckable(True)

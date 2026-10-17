@@ -15,15 +15,56 @@ from datetime import datetime
 from typing import Any, Callable, Dict, Iterator
 
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import QPushButton
 
 from ui.themes import app_palette
 
-UI_FONT = "'Pretendard', 'Segoe UI', 'Malgun Gothic', sans-serif"
-MONO_FONT = "'D2Coding', 'Consolas', monospace"
+# ── 앱 글꼴 ─────────────────────────────────────────────────────────────────────
+# 앱의 모든 화면이 쓰는 글꼴입니다. 환경설정(테마 탭)의 '앱 글꼴'로 바꾸며, 이 PC에만 둡니다. (PC마다 설치된 글꼴이 다름)
+# 그 글꼴이 없거나 한글이 없으면 맑은 고딕으로 그립니다. 한글이 없는 글꼴(Segoe UI 등)을 맑은 고딕보다 앞에 두면,
+# Qt 가 글자 칸의 높이를 그 글꼴로 정한 채 한글만 맑은 고딕으로 빌려 그려서 '트'의 'ㅡ'처럼 아래쪽이 잘립니다.
+DEFAULT_APP_FONT = "D2Coding"
+HANGUL_FALLBACK = "Malgun Gothic"
+
+
+def font_stack(family: str) -> str:
+    """스타일시트의 font-family 값. 고른 글꼴 다음에 한글이 있는 글꼴을 둡니다."""
+    family = str(family or DEFAULT_APP_FONT).replace("'", "")
+    return f"'{family}', '{HANGUL_FALLBACK}', sans-serif"
+
+
+_app_font = DEFAULT_APP_FONT
+UI_FONT = MONO_FONT = font_stack(DEFAULT_APP_FONT)     # 스타일시트를 만들 때마다 읽으므로, 바꾸면 다음에 그릴 때부터 적용
+
+
+def set_app_font(family: str) -> None:
+    """앱 글꼴을 바꿉니다. 이미 그려진 창은 모양(스타일)을 다시 입힐 때 바뀝니다."""
+    global _app_font, UI_FONT, MONO_FONT
+    _app_font = str(family or DEFAULT_APP_FONT)
+    UI_FONT = MONO_FONT = font_stack(_app_font)
+
+
+def app_font() -> str:
+    return _app_font
+
+
+def app_qfont(point_size: float, bold: bool = False) -> QFont:
+    """앱 글꼴로 된 QFont. 그 글꼴이 없거나 한글이 없으면 맑은 고딕으로 그립니다."""
+    font = QFont()
+    font.setFamilies([_app_font, HANGUL_FALLBACK])
+    font.setPointSizeF(float(point_size))
+    font.setBold(bold)
+    return font
+
+
+def font_installed(family: str) -> bool:
+    from PyQt6.QtGui import QFontDatabase
+    return str(family) in QFontDatabase.families()
+
+
 DANGER = "#FF453A"
-DEFAULT_STYLE = "modern"
+DEFAULT_STYLE = "modern"         # 값이 없거나 모르는 값일 때의 모양. (처음 켤 때의 기본은 설정 기본값의 "neo")
 
 # 메모 창에서 테두리 상자 모양으로 그리는 컨트롤
 MEMO_BOX_CONTROLS = ("btn_code_theme", "code_lang_box", "btn_format_code", "font_box", "size_box", "btn_toggle_sub_fmt",
@@ -481,6 +522,8 @@ def apply_explorer(ex: Any) -> None:
     """
     ex.p_b.setStyleSheet(pager)
     ex.n_b.setStyleSheet(pager)
+    ex.btn_first_page.setStyleSheet(pager)
+    ex.btn_last_page.setStyleSheet(pager)
     ex.p_l.setStyleSheet(f"font-weight: 600; margin: 0 14px; font-size: {small}pt; color: {muted}; font-family: {UI_FONT};")
     ex.stat_label.setStyleSheet(f"font-size: {small}pt; font-weight: 500; color: {muted}; font-family: {UI_FONT};")
     ex.toast.setStyleSheet(

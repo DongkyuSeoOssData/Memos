@@ -99,6 +99,7 @@ class MemoWindow(MemoLayoutMixin, MemoApplyMixin, MemoDragMixin, MemoCodeMixin, 
 
         QShortcut(QKeySequence(s_cfg.get("toggle_pin", "Alt+P")), self).activated.connect(self.toggle_pin)
         QShortcut(QKeySequence(s_cfg.get("toggle_rollup", "Alt+M")), self).activated.connect(self.toggle_rollup)
+        QShortcut(QKeySequence(s_cfg.get("pin_position", "Alt+Shift+P")), self).activated.connect(self.toggle_position_pin)
         QShortcut(QKeySequence(s_cfg.get("delete_memo", "Alt+D")), self).activated.connect(self.request_delete)
         QShortcut(QKeySequence(s_cfg.get("toggle_code_theme", "Alt+L")), self).activated.connect(self.toggle_code_theme)
         QShortcut(QKeySequence(s_cfg.get("toggle_line_numbers", "Alt+G")), self).activated.connect(self.toggle_line_numbers)

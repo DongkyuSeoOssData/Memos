@@ -291,6 +291,7 @@ class ExplorerFoldersMixin:
         for memo in targets.values():
             self._move_to_folder(memo, path)
         self.show_toast(f"메모 {len(targets)}개를 '{path or '미분류'}'(으)로 옮겼습니다")
+        self.clear_checks()
         self.refresh()
 
     def _add_folder_menu(self, menu: Any, m: Dict[str, Any]) -> None:

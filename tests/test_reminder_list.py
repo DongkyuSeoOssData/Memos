@@ -172,14 +172,18 @@ class ReminderListTest(support.UiTestCase):
         # 왼쪽 끝에 환경설정, 가운데에 제목, 오른쪽 끝에 예약된 알림
         ex.resize(720, 640)
         support.app.processEvents()
-        title = next(label for label in ex.findChildren(QLabel) if label.text() == "미리보기")
+        title = ex.btn_preview_fold                                    # 제목 '미리보기 ▾' 가 접기 버튼
         self.assertEqual(ex.btn_settings.x(), ex.pv.x())
         self.assertEqual(ex.btn_reminders.x() + ex.btn_reminders.width(), ex.pv.x() + ex.pv.width())
         self.assertLessEqual(abs(title.geometry().center().x() - ex.pv.geometry().center().x()), 2)
-        ex.show_toast("저장됨")                                             # 토스트는 환경설정 버튼 옆에
+        title_x = title.x()
+        ex.show_toast("본문 내용이 클립보드에 복사되었습니다.")                  # 토스트는 '총 n개 메모' 줄을 잠깐 덮음
         support.app.processEvents()
-        self.assertGreater(ex.toast.x(), ex.btn_settings.x())
-        self.assertLess(ex.toast.x() + ex.toast.width(), title.x())
+        self.assertIs(ex.toast.parent(), ex.stat_box)
+        self.assertTrue(ex.toast.isVisible() and ex.stat_label.isHidden())
+        self.assertEqual(title.x(), title_x)                               # 미리보기 제목은 밀리지 않음
+        ex.hide_toast()
+        self.assertTrue(ex.toast.isHidden() and ex.stat_label.isVisible())
         self.ui.change_reminder("memo-0000", None)
         support.app.processEvents()
         self.assertEqual(ex.btn_reminders.text().strip(), "2")

@@ -4,17 +4,21 @@
 메모 창(MemoWindow)은 지금 상태를 넘겨주고 여기서 돌려준 자리에 창을 놓기만 합니다.
 
 규칙
- - 접힌 상태와 펼친 상태는 위치와 크기를 서로 따로 기억합니다.
-     접힘: rolled_position_x / rolled_position_y / rolled_width / rolled_height
-     펼침: position_x / position_y / unrolled_width / unrolled_height (width / height 도 같은 값)
-   한쪽 상태에서 옮기거나 크기를 바꿔도 다른 쪽 상태의 값은 달라지지 않습니다.
+ - 접힌 상태와 펼친 상태의 크기는 서로 따로 기억합니다.
+     접힘: rolled_width / rolled_height        펼침: unrolled_width / unrolled_height (width / height 도 같은 값)
+   마지막 자리(앱을 다시 켜거나 숨겼다 보일 때 쓰는 자리)도 상태마다 적어 둡니다.
+     접힘: rolled_position_x / rolled_position_y        펼침: position_x / position_y
+ - 접거나 펼 때(위치 고정이 없으면): 메모의 왼쪽 아래 모서리를 그대로 두고 위·오른쪽으로 커지거나 줄어듭니다.
+   위쪽으로 커질 자리가 모니터 밖이면 윗변을 두고 아래로, 오른쪽으로 커질 자리가 모니터 밖이면 오른쪽 변을 두고 왼쪽으로 커집니다.
+ - 위치 고정: 펼친 상태와 접은 상태마다 자리를 하나씩 고정해 둘 수 있습니다. (unrolled_pin / rolled_pin)
+   고정해 둔 상태로 바뀔 때는 그 자리로 갑니다. 고정할 때의 모니터 배치(그 모니터의 위치와 크기)도 함께 적어 두어,
+   모니터가 바뀌었으면(다른 PC, 모니터를 떼거나 해상도를 바꿈) 고정을 쓰지 않고 위의 기본 규칙을 따릅니다.
+   이 PC에만 두는 값이라 동기화하지 않습니다. (sync_worker 의 DEVICE_ONLY_PREFIXES: rolled_ / unrolled_)
  - 잠긴 암호 메모는 펼쳤을 때 암호 입력용 크기(LOCKED_SIZE)로 뜹니다. 그 크기는 메모의 크기로 기억하지 않고,
-   접을 자리와 너비를 정할 때도 메모 본래의 크기를 기준으로 삼습니다.
- - 처음 접는 메모(접힌 자리를 기억한 적 없는 메모)는 화면 가장자리에 가까운 모서리를 고정점으로 삼아 접습니다.
- - 펼칠 자리가 한 줄로 쌓아 둔 다른 접은 메모를 가리면, 쌓인 줄의 바깥쪽에 폅니다.
- - 기억해 둔 자리가 다른 모니터에 있으면 그 모니터를 기준으로 화면 안에 둡니다.
+   접을 너비를 정할 때도 메모 본래의 크기를 기준으로 삼습니다.
+ - 어느 경우든 마지막에 모니터 안으로 당깁니다.
 """
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 LOCKED_SIZE = (340, 290)        # 잠긴 암호 메모를 펼쳤을 때의 크기. 암호 칸이 가운데에 넉넉히 들어가는 크기입니다.
 MIN_UNROLLED = (200, 150)       # 이보다 작게 기억된 펼친 크기는 잘못된 값으로 보고 쓰지 않습니다.
@@ -75,62 +79,91 @@ def own_size(data: Dict[str, Any], rolled: bool, box: Box, default_height: int =
     return saved_unrolled_size(data, default_height) if is_locked_compact(data, rolled) else (box[2], box[3])
 
 
-def _anchor(box_xy: Tuple[int, int], size: Tuple[int, int], area: Any) -> Tuple[bool, bool, int, int]:
-    """화면 가장자리에 가까운 모서리. → (위쪽에 가까운지, 오른쪽에 가까운지, 고정점 x, 고정점 y)"""
-    x, y = box_xy
-    w, h = size
-    near_top = (y + h / 2) < area.top() + area.height() / 3
-    near_right = (x + w / 2) > area.left() + area.width() / 2
-    return near_top, near_right, (x + w if near_right else x), (y if near_top else y + h)
+def grow_from_corner(box: Box, size: Tuple[int, int], area: Any) -> Tuple[int, int]:
+    """box 자리의 창을 size 로 바꿀 때의 새 왼쪽 위 좌표. (위치 고정이 없을 때의 기본 규칙)
+
+    왼쪽 아래 모서리를 그대로 두고 위·오른쪽으로 커지거나 줄어듭니다. 위로 커질 자리가 모니터 밖이면 윗변을 두고 아래로,
+    오른쪽으로 커질 자리가 모니터 밖이면 오른쪽 변을 두고 왼쪽으로 커집니다. 그래도 넘치면 모니터 안으로 당깁니다.
+    """
+    x, y, w, h = box
+    new_w, new_h = size
+    new_x, new_y = x, y + h - new_h
+    if new_y < area.top():
+        new_y = y
+    if new_x + new_w - 1 > area.right():
+        new_x = x + w - new_w
+    return clamp(area, new_x, new_y, new_w, new_h)
 
 
+# ── 위치 고정 ──────────────────────────────────────────────────────────────────
+def pin_key(rolled: bool) -> str:
+    return 'rolled_pin' if rolled else 'unrolled_pin'
+
+
+def has_pin(data: Dict[str, Any], rolled: bool) -> bool:
+    return isinstance(data.get(pin_key(rolled)), dict)
+
+
+def set_pin(data: Dict[str, Any], rolled: bool, xy: Tuple[int, int], screen: Box) -> None:
+    """지금 상태의 자리를 고정합니다. screen 은 그 자리가 있는 모니터의 (x, y, 너비, 높이)."""
+    data[pin_key(rolled)] = {"x": int(xy[0]), "y": int(xy[1]), "screen": [int(v) for v in screen]}
+
+
+def clear_pin(data: Dict[str, Any], rolled: bool) -> None:
+    data.pop(pin_key(rolled), None)
+
+
+def pinned_spot(data: Dict[str, Any], rolled: bool, screens: Iterable[Box]) -> Optional[Tuple[int, int]]:
+    """고정해 둔 자리. 고정하지 않았거나, 고정할 때의 모니터가 지금 없으면(배치·해상도가 바뀜) None."""
+    pin = data.get(pin_key(rolled))
+    if not isinstance(pin, dict):
+        return None
+    try:
+        spot, screen = (int(pin["x"]), int(pin["y"])), [int(v) for v in pin["screen"]]
+    except (KeyError, TypeError, ValueError):
+        return None
+    return spot if any(list(geom) == screen for geom in screens) else None
+
+
+# ── 접기 · 펴기 ────────────────────────────────────────────────────────────────
 def fold_target(data: Dict[str, Any], box: Box, rolled_height: int, area: Any,
-                default_height: int = FALLBACK_SIZE) -> Box:
+                pinned: Optional[Tuple[int, int]] = None, default_height: int = FALLBACK_SIZE) -> Box:
     """펼친 메모를 접을 때 놓을 자리. box 는 지금 창, area 는 지금 창이 있는 모니터의 작업 영역.
 
-    접힌 상태로 기억해 둔 자리와 너비가 있으면 그대로, 처음 접는 메모는 가장자리에 가까운 모서리를 고정점으로 삼습니다.
+    접은 위치를 고정해 두었으면(pinned) 그 자리, 아니면 지금 창의 왼쪽 아래 모서리를 그대로 둡니다.
+    너비는 접은 너비로 기억해 둔 것, 없으면 메모 본래의 너비입니다.
     """
-    size = own_size(data, False, box, default_height)
-    width = data.get('rolled_width', size[0])
-    if 'rolled_position_x' in data and 'rolled_position_y' in data:
-        return data['rolled_position_x'], data['rolled_position_y'], width, rolled_height
-    near_top, near_right, anchor_x, anchor_y = _anchor((box[0], box[1]), size, area)
-    return (anchor_x - width if near_right else anchor_x), (anchor_y if near_top else anchor_y - rolled_height), width, rolled_height
+    width = data.get('rolled_width', own_size(data, False, box, default_height)[0])
+    if pinned is not None:
+        return pinned[0], pinned[1], width, rolled_height
+    return (*grow_from_corner(box, (width, rolled_height), area), width, rolled_height)
 
 
-def unfold_target(data: Dict[str, Any], box: Box, area: Any, area_for: Callable[[Box], Any],
-                  stack: Optional[Tuple[int, int]] = None, covers: Optional[Callable[[Box], bool]] = None,
-                  default_height: int = FALLBACK_SIZE) -> Box:
+def unfold_target(data: Dict[str, Any], box: Box, area: Any,
+                  pinned: Optional[Tuple[int, int]] = None, default_height: int = FALLBACK_SIZE) -> Box:
     """접은 메모를 펼 때 놓을 자리. box 는 지금(접힌) 창, area 는 지금 창이 있는 모니터의 작업 영역.
 
-    area_for(자리) 는 그 자리가 속한 모니터의 작업 영역을 돌려줍니다. stack 은 이 메모가 다른 접은 메모들과 쌓여 있는
-    줄의 (왼쪽 끝, 오른쪽 끝)이고, covers(자리) 는 그 자리에 펼치면 다른 접은 메모를 가리는지 알려 줍니다.
+    펼친 위치를 고정해 두었으면(pinned) 그 자리, 아니면 지금 창의 왼쪽 아래 모서리에서 위·오른쪽으로 폅니다.
     """
     width, height = unrolled_size(data, default_height)
-    x, y = data.get('position_x', box[0]), data.get('position_y', box[1])
-    x, y = clamp(area_for((x, y, width, height)), x, y, width, height)
-    if stack is not None and covers is not None and covers((x, y, width, height)):
-        near_top, near_right, _, anchor_y = _anchor((box[0], box[1]), (box[2], box[3]), area)
-        beside = stack[0] - width if near_right else stack[1]
-        if area.left() <= beside and beside + width <= area.left() + area.width():
-            x = beside
-            y = anchor_y if near_top else anchor_y - height
-    return x, y, width, height
+    if pinned is not None:
+        return pinned[0], pinned[1], width, height
+    return (*grow_from_corner(box, (width, height), area), width, height)
 
 
-def show_target(data: Dict[str, Any], rolled: bool, was_rolled: bool, visible: bool, position: Tuple[int, int],
-                rolled_height: int, default_height: int = FALLBACK_SIZE) -> Box:
+def show_target(data: Dict[str, Any], rolled: bool, visible: bool, position: Tuple[int, int],
+                rolled_height: int, pinned: Optional[Tuple[int, int]] = None,
+                default_height: int = FALLBACK_SIZE) -> Box:
     """메모를 화면에 올리거나 다시 맞출 때 놓을 자리. (앱을 켤 때, 탐색기에서 열 때, 내용이 바뀌어 창을 다시 맞출 때)
 
-    이미 보이는 창은 지금 자리를 지키고, 숨어 있던 창은 기억해 둔 자리로 갑니다.
+    이미 보이는 창은 지금 자리를 지킵니다. 숨어 있던 창은 그 상태의 위치를 고정해 두었으면(pinned) 그 자리로,
+    아니면 마지막에 있던 자리로 갑니다.
     """
-    here_x, here_y = position
     if rolled:
-        width = data.get('rolled_width', saved_unrolled_size(data, default_height)[0])
-        x = here_x if visible else data.get('rolled_position_x', data.get('position_x', 100))
-        y = here_y if visible else data.get('rolled_position_y', 100)
-        return x, y, width, rolled_height
-    width, height = unrolled_size(data, default_height)
-    x = here_x if visible else data.get('position_x', 100)
-    y = here_y if (visible and not was_rolled) else data.get('position_y', 100)
-    return x, y, width, height
+        size = (data.get('rolled_width', saved_unrolled_size(data, default_height)[0]), rolled_height)
+        remembered = (data.get('rolled_position_x', data.get('position_x', 100)), data.get('rolled_position_y', 100))
+    else:
+        size = unrolled_size(data, default_height)
+        remembered = (data.get('position_x', 100), data.get('position_y', 100))
+    x, y = position if visible else (pinned or remembered)
+    return x, y, size[0], size[1]

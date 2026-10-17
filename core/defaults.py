@@ -1,7 +1,7 @@
 from typing import Dict
 
 # 앱 버전. (오류 보고 메일의 제목에 들어갑니다. README 의 제목과 같이 올립니다)
-APP_VERSION = "3.7.3"
+APP_VERSION = "3.8.0"
 
 # 단축키 기본값의 단일 출처. SyncManager(신규 설치 기본값)와 SettingsWindow(초기화 버튼/표시)가 함께 사용합니다.
 DEFAULT_SHORTCUTS: Dict[str, str] = {
@@ -17,6 +17,7 @@ DEFAULT_SHORTCUTS: Dict[str, str] = {
     "rename":              "F2",          # 제목 수정
     "toggle_rollup":       "Alt+M",       # 메모 창 접기/펼치기
     "toggle_pin":          "Alt+P",       # 항상 위에 고정
+    "pin_position":        "Alt+Shift+P", # 지금 상태(접힘/펼침)의 위치 고정 / 풀기
     "delete_memo":         "Alt+D",       # 메모 삭제
     "toggle_line_numbers": "Alt+G",       # 행번호 표시 토글
     "toggle_line_bg":      "Alt+B",       # 줄노트 배경 토글

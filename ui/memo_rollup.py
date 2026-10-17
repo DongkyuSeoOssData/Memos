@@ -1,6 +1,6 @@
 """메모 창의 접기·펴기와 자리 잡기.
 
-접힌 모습과 펼친 모습 바꾸기, 그때의 위치와 크기 기억하기, 화면 밖으로 나가지 않게 하기를 맡습니다.
+접힌 모습과 펼친 모습 바꾸기, 그때의 위치와 크기 기억하기, 위치 고정, 화면 밖으로 나가지 않게 하기를 맡습니다.
 어디에 놓을지의 규칙(계산)은 ui/memo_geometry.py 에 있고, 여기서는 지금 창의 상태를 넘겨 돌려받은 자리에 창을 놓습니다.
 (MemoWindow 에 섞어 쓰는 부분)
 """
@@ -119,30 +119,40 @@ class MemoRollupMixin:
         """지금 상태(접힘/펼침)의 위치와 크기를 그 상태의 것으로 기억합니다."""
         memo_geometry.remember(self.memo_data, self._is_rolled_up, self._box())
 
-    def _covers_rolled_memo(self, rect: QRect) -> bool:
-        """rect 에 펼치면 다른 접은 메모를 가리게 되는지."""
-        manager = getattr(self, 'ui_manager', None)
-        if not manager:
-            return False
-        return any(other is not self and other.isVisible() and other._is_rolled_up and rect.intersects(other.geometry())
-                   for other in manager.memo_windows.values())
+    # ── 위치 고정 ────────────────────────────────────────────────────────────
+    @staticmethod
+    def _screen_layout() -> list:
+        """지금 연결된 모니터들의 (x, y, 너비, 높이). 고정해 둔 자리를 아직 쓸 수 있는지 견줄 때 씁니다."""
+        return [screen.geometry().getRect() for screen in QApplication.screens()]
 
-    def _rolled_stack_span(self) -> Optional[tuple]:
-        """이 접은 메모가 다른 접은 메모들과 한 줄로 쌓여 있으면 그 줄의 (왼쪽 끝, 오른쪽 끝)을, 아니면 None 을 돌려줍니다."""
-        manager = getattr(self, 'ui_manager', None)
-        if not manager:
-            return None
-        left, right, found = self.x(), self.x() + self.width(), False
-        for other in manager.memo_windows.values():
-            if other is self or not other.isVisible() or not other._is_rolled_up:
-                continue
-            overlap = min(right, other.x() + other.width()) - max(left, other.x())
-            if overlap >= min(self.width(), other.width()) / 2:      # 가로로 절반 넘게 겹치면 같은 줄
-                left, right, found = min(left, other.x()), max(right, other.x() + other.width()), True
-        return (left, right) if found else None
+    def _pinned(self, rolled: bool) -> Optional[tuple]:
+        return memo_geometry.pinned_spot(self.memo_data, rolled, self._screen_layout())
+
+    def has_position_pin(self) -> bool:
+        """지금 상태(접힘/펼침)의 위치를 고정해 두었는지."""
+        return memo_geometry.has_pin(self.memo_data, self._is_rolled_up)
+
+    def pin_position(self) -> None:
+        """지금 상태의 자리를 고정합니다. 앞으로 이 상태로 바뀔 때마다 이 자리로 갑니다."""
+        screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
+        memo_geometry.set_pin(self.memo_data, self._is_rolled_up, (self.x(), self.y()), screen.geometry().getRect())
+        self.save_callback(self.memo_data)
+        self.show_toast(f"📌 {'접은' if self._is_rolled_up else '펼친'} 위치를 고정했습니다")
+
+    def unpin_position(self) -> None:
+        memo_geometry.clear_pin(self.memo_data, self._is_rolled_up)
+        self.save_callback(self.memo_data)
+        self.show_toast(f"{'접은' if self._is_rolled_up else '펼친'} 위치 고정을 풀었습니다")
+
+    def toggle_position_pin(self) -> None:
+        """단축키: 지금 상태의 위치를 고정하거나, 고정해 두었으면 풉니다."""
+        self.unpin_position() if self.has_position_pin() else self.pin_position()
 
     def toggle_rollup(self) -> None:
-        """접거나 폅니다. 접힌 상태와 펼친 상태는 저마다 기억해 둔 위치와 크기로 돌아갑니다."""
+        """접거나 폅니다.
+
+        바뀔 상태의 위치를 고정해 두었으면 그 자리로, 아니면 왼쪽 아래 모서리를 고정점으로 접히고 펼쳐집니다. (memo_geometry)
+        """
         screen = QApplication.screenAt(self.geometry().center()) or QApplication.primaryScreen()
         scr_geom = screen.availableGeometry()
         data = self.memo_data
@@ -153,14 +163,10 @@ class MemoRollupMixin:
             self._normal_height = memo_geometry.own_size(data, False, self._box(), default_height)[1]
             data['rolled_height'] = self._get_rolled_height()
             new_left_x, new_top_y, target_w, target_h = memo_geometry.fold_target(
-                data, self._box(), data['rolled_height'], scr_geom, default_height)
+                data, self._box(), data['rolled_height'], scr_geom, self._pinned(True), default_height)
         else:
             new_left_x, new_top_y, target_w, target_h = memo_geometry.unfold_target(
-                data, self._box(), scr_geom,
-                area_for=lambda box: self._screen_area_for(*box),
-                stack=self._rolled_stack_span(),
-                covers=lambda box: self._covers_rolled_memo(QRect(*box)),
-                default_height=default_height)
+                data, self._box(), scr_geom, self._pinned(False), default_height)
         new_left_x, new_top_y = self._clamp_to_screen(
             self._screen_area_for(new_left_x, new_top_y, target_w, target_h), new_left_x, new_top_y, target_w, target_h)
         self._apply_fold_state(not self._is_rolled_up, new_left_x, new_top_y, target_w, target_h)

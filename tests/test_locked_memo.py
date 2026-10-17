@@ -188,16 +188,14 @@ class LockedFirstFoldTest(support.UiTestCase):
         self.unlock(w)
         self.assertEqual((w.width(), w.height()), (500, 400))
         w.toggle_rollup()
-        self.assertEqual((w.x(), w.y(), w.width()), spot)            # 암호를 푼 뒤에도 같은 자리·같은 너비
+        self.assertEqual(w.width(), 500)                             # 암호를 푼 뒤에도 같은 너비
         self.assertEqual(w.memo_data["rolled_width"], 500)
 
-    def test_first_fold_lands_where_an_unlocked_memo_would(self) -> None:
-        plain = self.open_window("memo-0001")
-        plain.setGeometry(100, 100, 500, 400)
-        plain.toggle_rollup()
+    def test_first_fold_keeps_the_bottom_left_corner_of_the_password_box(self) -> None:
         locked = self.locked("memo-0000")
+        corner = (locked.x(), locked.y() + locked.height())          # 보이는 창(암호 입력용 크기)의 왼쪽 아래
         locked.toggle_rollup()
-        self.assertEqual((locked.x(), locked.y(), locked.width()), (plain.x(), plain.y(), plain.width()))
+        self.assertEqual((locked.x(), locked.y() + locked.height(), locked.width()), (*corner, 500))
 
     def test_reopening_a_rolled_locked_memo_keeps_its_width(self) -> None:
         w = self.locked("memo-0000")
@@ -363,9 +361,7 @@ class LockedMemoInExplorerTest(support.UiTestCase):
         self.show_preview(ex)
         self.assertNotIn("secret", ex.pv.toPlainText())
         self.assertIn(self.MESSAGE, ex.pv.toPlainText())
-        self.show_preview(ex)
-        ex._flush_preview_save()                                         # 안내 글이 본문으로 저장되는 일도 없음
-        self.assertNotIn(self.MESSAGE, self.raw("memo-0001"))
+        self.assertNotIn(self.MESSAGE, self.raw("memo-0001"))            # 안내 글이 본문으로 저장되는 일도 없음
 
     def test_closing_the_window_makes_the_explorer_forget_the_body(self) -> None:
         w = self.unlocked()
@@ -424,7 +420,6 @@ class LockedMemoInExplorerTest(support.UiTestCase):
         ex.table.setCurrentCell(row, 2)
         ex.on_cell_click(row, 2)
         self.assertIn("body 0", ex.pv.toPlainText())
-        self.assertFalse(ex.pv.isReadOnly())
 
 
 if __name__ == "__main__":

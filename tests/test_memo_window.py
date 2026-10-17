@@ -68,26 +68,25 @@ class MemoFontBoxTest(support.UiTestCase):
 
 
 class MemoMonitorTest(support.UiTestCase):
-    """접은 메모를 펴면 기억해 둔 모니터의 자리로 돌아갑니다."""
+    """펼친 위치를 다른 모니터에 고정해 두면, 접은 메모를 어느 모니터에서 펴든 그 자리로 갑니다."""
 
-    # ── 4. 다른 모니터에 기억해 둔 자리 ──
-    def test_unrolling_goes_back_to_the_other_monitor(self) -> None:
+    def test_pin_on_the_other_monitor(self) -> None:
         from PyQt6.QtCore import QRect
         left, right = QRect(0, 0, 1600, 900), QRect(1600, 0, 1600, 900)
 
         def screen_at(point):
             area = left if point.x() < 1600 else right
-            return mock.Mock(availableGeometry=lambda: QRect(area))
+            return mock.Mock(availableGeometry=lambda: QRect(area), geometry=lambda: QRect(area))
 
         w = self.open_window("memo-0000")
-        with mock.patch("ui.memo_drag.QApplication.screenAt", side_effect=screen_at):
+        with mock.patch("ui.memo_drag.QApplication.screenAt", side_effect=screen_at), \
+                mock.patch("ui.memo_rollup.MemoRollupMixin._screen_layout", return_value=[left.getRect(), right.getRect()]):
             w.setGeometry(2000, 200, 400, 300)                       # 펼친 자리는 오른쪽 모니터
+            w.pin_position()
             w.toggle_rollup()
             w.move(100, 700)                                         # 접은 메모는 왼쪽 모니터로 옮겨 둠
             w.toggle_rollup()
             self.assertEqual((w.x(), w.y(), w.width(), w.height()), (2000, 200, 400, 300))
-            w.toggle_rollup()
-            self.assertEqual((w.x(), w.y()), (100, 700))
 
 
 if __name__ == "__main__":

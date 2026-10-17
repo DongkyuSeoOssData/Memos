@@ -23,7 +23,8 @@ from ui import modern_style
 from core.defaults import DEFAULT_SHORTCUTS
 from core import folders, guide, reminders
 from ui.quick_search import QuickSearch
-from ui import live_settings
+from ui import live_settings, themed_dialog
+from ui.dialogs import ask_folder_to_open
 from ui.reminder_ui import POPUP_GAP, ReminderPopup
 from utils.text_utils import clean_plain_text
 
@@ -44,6 +45,7 @@ class UIManager:
         # (아이콘 파일, 색, 화면 배율) → 그려 둔 아이콘. 같은 아이콘을 쓸 때마다 SVG를 다시 읽고 그리지 않습니다.
         self._icon_cache: Dict[tuple, QIcon] = {}
         live_settings.use(lambda: self.sync_manager.settings, self._save_dialog_settings)
+        self.apply_app_font()                   # 창을 만들기 전에 앱 글꼴부터
         reminders.set_ampm(not self.sync_manager.settings.get("time_24h", False))
         self.quick_search: Optional[QuickSearch] = None
         # 알림: 가장 가까운 알림 시각에 맞춰 한 번만 깨어나는 타이머 (주기적으로 훑지 않음)
@@ -68,8 +70,6 @@ class UIManager:
                 w.flush_auto_save()
             except Exception as e:
                 self.sync_manager.log_error(f"종료 시 메모 저장 실패: {e}", e)
-        if self.explorer_window:
-            self.explorer_window._flush_preview_save()
         self._hotkeys.unregister_all()
         self.sync_manager.save_index_now()      # 다음에 켤 때 메모 파일을 다시 읽지 않도록 색인을 남김
 
@@ -201,9 +201,18 @@ class UIManager:
         self.tray_icon.setContextMenu(self._tray_menu)
         self.register_global_hotkeys()
 
+    def apply_app_font(self) -> None:
+        """환경설정의 앱 글꼴을 앱 전체에 적용합니다. (스타일시트가 없는 메뉴·풍선 도움말 등은 QApplication 글꼴을 따름)"""
+        modern_style.set_app_font(self.sync_manager.settings.get("app_font_family", modern_style.DEFAULT_APP_FONT))
+        app = QApplication.instance()
+        if app is not None:
+            size = app.font().pointSizeF()
+            app.setFont(modern_style.app_qfont(size if size > 0 else 9))
+
     def apply_settings_to_windows(self, reload_settings_window: bool = False) -> None:
         """설정이 바뀐 뒤(환경설정 저장, 다른 기기에서 받은 공유 설정) 열려 있는 모든 창에 바로 반영합니다."""
         settings = self.sync_manager.settings
+        self.apply_app_font()
         self.update_tray_menu()                 # 트레이 메뉴의 단축키 표시와 전역 단축키 재등록
 
         if self.settings_window and self.settings_window.isVisible():
@@ -579,19 +588,43 @@ class UIManager:
         self.toggle_action.setText("모두 보이기" if self._all_visible else "모두 숨기기")
         self._all_visible = not self._all_visible
 
+    OPEN_BATCH = 100                     # '메모 열기'로 한 번에 여는 메모 수의 상한
+
     def open_all_memos(self) -> None:
-        """모든 메모를 저장된 위치에 켭니다."""
-        memos = self.sync_manager.load_local_memos()
-        for m in memos:
-            if not m.get('is_deleted', False):
-                memo_id = m['id']
-                if memo_id in self.memo_windows:
-                    w = self.memo_windows[memo_id]
-                    w.memo_data['is_visible'] = True
-                    w.show()
-                else:
-                    m['is_visible'] = True
-                    self.create_new_memo(m, show_on_create=True)
+        """'메모 열기' 단축키: 폴더를 골라 그 폴더(하위 폴더 포함)의 메모를 저장된 자리에 엽니다. '전체'는 모든 메모.
+
+        한 번에 OPEN_BATCH(100)개까지 엽니다. 그보다 많으면 최신 것부터 열지, 오래된 것부터 열지 묻습니다.
+        """
+        parent = QApplication.activeWindow()
+        memos = [m for m in self.sync_manager.load_local_memos() if not m.get('is_deleted', False)]
+        counts = folders.counts(memos)
+        names = folders.all_folders(self.sync_manager.settings.get('folders', []), memos)
+        entries = [(folders.ALL, "전체", counts.get(folders.ALL, 0)), (folders.UNFILED, "미분류", counts.get(folders.UNFILED, 0))]
+        entries += [(p, "　" * folders.depth(p) + folders.leaf(p), counts.get(p, 0)) for p in names]
+        path = ask_folder_to_open(parent, entries)
+        if path is None:
+            return
+        picked = [m for m in memos if folders.contains(path, folders.folder_of(m))]
+        if not picked:
+            return
+        picked.sort(key=lambda m: str(m.get('updated_at', '')), reverse=True)      # 최신 것부터
+        if len(picked) > self.OPEN_BATCH:
+            order = themed_dialog.choose(
+                parent, "메모 열기",
+                f"메모가 {len(picked)}개입니다. 한 번에 {self.OPEN_BATCH}개까지 엽니다. 어느 쪽부터 열까요?",
+                [(f"최신 {self.OPEN_BATCH}개", "newest", "primary"), (f"오래된 {self.OPEN_BATCH}개", "oldest", ""), ("취소", None, "")])
+            if order is None:
+                return
+            picked = (picked if order == "newest" else picked[::-1])[:self.OPEN_BATCH]
+        for m in picked:
+            memo_id = m['id']
+            if memo_id in self.memo_windows:
+                w = self.memo_windows[memo_id]
+                w.memo_data['is_visible'] = True
+                w.show()
+            else:
+                m['is_visible'] = True
+                self.create_new_memo(m, show_on_create=True)
         self.enforce_z_order_layering()
 
     def toggle_explorer(self) -> None:

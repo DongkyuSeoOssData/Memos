@@ -69,7 +69,7 @@ class SettingsWindow(GeneralTabMixin, SyncTabMixin, ThemeTabMixin, ShortcutTabMi
 
     def _apply_font_scale(self) -> None:
         """현재 ui_font_pt 기준으로 폰트 및 행 높이를 전체 적용합니다."""
-        base_font = QFont(self.sm.settings.get("default_font_family", "D2Coding"), self.ui_font_pt)
+        base_font = modern_style.app_qfont(self.ui_font_pt)
         self.setFont(base_font)
         self.tabs.setFont(base_font)
         self.shortcut_table.setFont(base_font)
@@ -77,10 +77,10 @@ class SettingsWindow(GeneralTabMixin, SyncTabMixin, ThemeTabMixin, ShortcutTabMi
         self.shortcut_table.horizontalHeader().setMinimumHeight(max(30, int(self.ui_font_pt * 2.6)))
         key_width = QFontMetrics(base_font).horizontalAdvance("Ctrl+Shift+Alt+W") + 44
         self.shortcut_table.setColumnWidth(1, max(160, key_width))
-        self.shortcut_table.horizontalHeader().setFont(QFont(base_font.family(), max(8, self.ui_font_pt - 1)))
+        self.shortcut_table.horizontalHeader().setFont(modern_style.app_qfont(max(8, self.ui_font_pt - 1)))
         # 저장 버튼 폰트도 갱신
         if hasattr(self, 'sb'):
-            self.sb.setFont(QFont(base_font.family(), self.ui_font_pt + 1))
+            self.sb.setFont(modern_style.app_qfont(self.ui_font_pt + 1))
 
     def _calc_font_pt_from_size(self) -> int:
         """현재 창 크기를 기반으로 ui_font_pt를 동적으로 계산합니다.
@@ -470,6 +470,7 @@ class SettingsWindow(GeneralTabMixin, SyncTabMixin, ThemeTabMixin, ShortcutTabMi
             "auto_start": auto_start_now,
             "reminder_quick_minutes": [spin.value() for spin in self.quick_minute_spins],
             "default_memo_color": list(self.colors.values())[self.default_color_combo.currentIndex()],
+            "app_font_family": self.app_font_box.currentFont().family(),
             "default_font_family": self.default_font_box.currentFont().family(),
             "default_code_font_family": self.default_code_font_box.currentFont().family(),
             "default_code_lang": self.default_code_lang_box.currentText(),
@@ -542,6 +543,9 @@ class SettingsWindow(GeneralTabMixin, SyncTabMixin, ThemeTabMixin, ShortcutTabMi
         def_code_font = s.get("default_code_font_family", "D2Coding")
 
         self.default_font_box.setCurrentFont(QFont(def_font))
+        app_font = s.get("app_font_family", modern_style.DEFAULT_APP_FONT)
+        self.app_font_box.setCurrentFont(QFont(app_font))
+        self.app_font_note.setVisible(not modern_style.font_installed(app_font))
         self.default_code_font_box.setCurrentFont(QFont(def_code_font))
 
         self.default_code_lang_box.setCurrentText(s.get("default_code_lang", "JSON"))

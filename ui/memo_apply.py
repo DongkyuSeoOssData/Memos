@@ -27,7 +27,7 @@ class MemoApplyMixin:
         """본문 편집기의 글자색·글꼴·스크롤바."""
         is_dark_bg = self.is_dark_bg()
         text_color = "#F2F2F7" if is_dark_bg else "#1C1C1E"
-        font_fam = "'D2Coding'" if self.memo_data.get('is_code_memo', False) else modern_style.MONO_FONT
+        font_fam = modern_style.MONO_FONT                 # 앱 글꼴
         self.text_edit.setStyleSheet(
             f"QTextEdit {{ border:none; background: transparent; color:{text_color}; "
             f"font-family: {font_fam}; font-size: {self.memo_data.get('font_size', 11)}pt; }}"
@@ -207,9 +207,9 @@ class MemoApplyMixin:
         rolled_h = self._get_rolled_height()            # settings의 default_rolled_height를 우선 적용
         if is_rolled:
             self.memo_data['rolled_height'] = rolled_h
-        # 이미 보이는 창은 지금 자리를 지키고, 숨어 있던 창은 기억해 둔 자리로 갑니다. (잠긴 메모는 암호 입력용 크기로)
+        # 이미 보이는 창은 지금 자리를 지키고, 숨어 있던 창은 고정해 둔 자리나 마지막 자리로 갑니다. (잠긴 메모는 암호 입력용 크기로)
         x, y, target_w, target_h = memo_geometry.show_target(
-            self.memo_data, is_rolled, was_rolled, self.isVisible(), (self.x(), self.y()), rolled_h,
+            self.memo_data, is_rolled, self.isVisible(), (self.x(), self.y()), rolled_h, self._pinned(is_rolled),
             getattr(self, '_normal_height', 300))
         x, y = self._clamp_to_screen(self._screen_area_for(x, y, target_w, target_h), x, y, target_w, target_h)
         self._apply_fold_state(is_rolled, x, y, target_w, target_h)

@@ -302,3 +302,34 @@ def pick_history(parent, title: str, entries: List[dict], reveal=None, check=Non
     if dialog.exec() and dialog.chosen_index is not None:
         return dialog.chosen_index, dialog.chosen_password
     return None
+
+
+class FolderOpenDialog(ThemedDialog):
+    """'메모 열기' 단축키: 열 폴더를 고르는 창. 전체·미분류·폴더마다 메모 개수가 보입니다. 더블클릭이나 '열기'로 고릅니다."""
+
+    def __init__(self, parent, entries: List[tuple]) -> None:
+        super().__init__(parent, "메모 열기")
+        self.chosen = None
+        self.body.addWidget(QLabel("어느 폴더의 메모를 열까요? (하위 폴더 포함)"))
+        self.list = QListWidget()
+        self.list.setMinimumSize(320, 300)
+        for path, label, count in entries:              # (폴더 경로, 보여 줄 이름, 메모 수)
+            item = QListWidgetItem(f"{label}  ({count}개)")
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            self.list.addItem(item)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+        self.list.itemDoubleClicked.connect(lambda item: self.accept())
+        self.body.addWidget(self.list, 1)
+        self.add_buttons("열기", "취소")
+
+    def accept(self) -> None:
+        item = self.list.currentItem()
+        self.chosen = item.data(Qt.ItemDataRole.UserRole) if item else None
+        super().accept()
+
+
+def ask_folder_to_open(parent, entries: List[tuple]):
+    """열 폴더를 고릅니다. 폴더 경로(전체는 folders.ALL), 취소면 None."""
+    dialog = FolderOpenDialog(parent, entries)
+    return dialog.chosen if dialog.exec() else None

@@ -16,7 +16,7 @@ class SettingsPanelTest(support.UiTestCase):
     def test_settings_opens_as_a_panel_inside_the_explorer(self) -> None:
         ex = self.explorer()
         ex.move(300, 200)
-        ex.resize(700, 600)
+        ex.resize(700, 1200)
         support.app.processEvents()
         before = ex.geometry()
         content = ex.content_width()
@@ -43,7 +43,7 @@ class SettingsPanelTest(support.UiTestCase):
 
     def test_settings_panel_goes_left_when_there_is_no_room_on_the_right(self) -> None:
         ex = self.explorer()
-        ex.resize(700, 600)
+        ex.resize(700, 1200)
         ex.move(4000 - ex.width(), 200)
         support.app.processEvents()
         right_edge = ex.x() + ex.width()
@@ -61,14 +61,14 @@ class SettingsPanelTest(support.UiTestCase):
     def test_settings_panel_closes_with_the_explorer_and_is_not_saved_into_its_size(self) -> None:
         ex = self.explorer()
         ex.move(300, 200)
-        ex.resize(700, 600)
+        ex.resize(700, 1200)
         support.app.processEvents()
         self.ui.open_settings()
         ex.close()
         support.app.processEvents()
         self.assertIsNone(ex.settings_panel)
         self.assertIsNone(self.ui.settings_window)
-        self.assertEqual(self.sm.settings["explorer_geom"][2:], [700, 600])     # 패널 너비가 탐색기 크기로 저장되지 않음
+        self.assertEqual(self.sm.settings["explorer_geom"][2:], [700, 1200])     # 패널 너비가 탐색기 크기로 저장되지 않음
         ex.show()
         self.assertEqual(ex.width(), 700)
 
@@ -85,7 +85,7 @@ class SettingsPanelTest(support.UiTestCase):
 
     def test_saving_in_the_panel_keeps_it_open_and_the_size_right(self) -> None:
         ex = self.explorer()
-        ex.resize(700, 600)
+        ex.resize(700, 1200)
         support.app.processEvents()
         self.ui.open_settings()
         panel = ex.settings_panel
@@ -126,7 +126,7 @@ class SettingsPanelTest(support.UiTestCase):
     def test_settings_button_sits_left_of_the_title_and_toggles(self) -> None:
         ex = self.explorer()
         support.app.processEvents()
-        title = next(label for label in ex.findChildren(QLabel) if label.text() == "미리보기")
+        title = ex.btn_preview_fold                                    # 제목 '미리보기 ▾' 가 접기 버튼
         self.assertLess(ex.btn_settings.mapTo(ex, QPoint(0, 0)).x(), title.mapTo(ex, QPoint(0, 0)).x())
         ex.btn_settings.click()
         self.assertTrue(ex.settings_open())

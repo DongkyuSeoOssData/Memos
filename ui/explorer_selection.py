@@ -46,6 +46,13 @@ class ExplorerSelectionMixin:
             else:
                 self._checked_ids.discard(memo['id'])
 
+    def clear_checks(self) -> None:
+        """체크를 모두 풉니다. (옮기기·지우기·복원처럼 체크한 메모에 할 일을 마친 뒤)"""
+        self._checked_ids.clear()
+        for r in range(self.table.rowCount()):
+            if self.table.item(r, 0):
+                self.table.item(r, 0).setCheckState(Qt.CheckState.Unchecked)
+
     def picked_memos(self) -> List[Dict[str, Any]]:
         """여러 개를 한꺼번에 다룰 때의 대상. 체크한 메모들이며, 체크한 것이 없으면 선택한 줄의 메모입니다. (목록 순서대로)"""
         checked = [r for r in range(self.table.rowCount())
@@ -85,6 +92,7 @@ class ExplorerSelectionMixin:
                     self.ui_manager.sync_manager.delete_memo_locally(memo_id, title=m.get('title'))
                     deleted_ids.append(memo_id)
             self.ui_manager.sync_manager.delete_memos_cloud(deleted_ids)
+            self.clear_checks()
             self.pv.clear()
             self.refresh()
 
@@ -101,6 +109,7 @@ class ExplorerSelectionMixin:
                                           else memo.get('content', ''))
                     if not ex or ConflictDialog(title, shown(ex), shown(m), self).exec() == QDialog.DialogCode.Accepted:
                         self.ui_manager.sync_manager.restore_memo_locally(memo_id)
+        self.clear_checks()
         self.pv.clear()
         self.refresh()
 
@@ -113,12 +122,14 @@ class ExplorerSelectionMixin:
             self.ui_manager.close_memo_window_by_id(memo_id, is_deleting=True)
             self.ui_manager.sync_manager.delete_memo_locally(memo_id, title=memo.get('title'))
             self.ui_manager.sync_manager.delete_memos_cloud([memo_id])
+            self.clear_checks()
             self.pv.clear()
             self.refresh()
 
     def empty_trash(self) -> None:
         if themed_dialog.confirm(self, "휴지통 비우기", "휴지통의 모든 메모를 영구 삭제할까요? (복구 불가)", ok_text="휴지통 비우기", danger=True):
             cnt = self.ui_manager.sync_manager.empty_trash_locally()
+            self.clear_checks()
             self.pv.clear()
             self.refresh()
             self.show_toast(f"🧹 휴지통의 메모 {cnt}개가 영구 삭제되었습니다.")

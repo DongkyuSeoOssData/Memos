@@ -8,8 +8,32 @@ from ui import modern_style
 from ui.tab_strip import TabStrip
 from typing import List, Any
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel, QComboBox, QTableWidget, QHeaderView, QSizePolicy, QGridLayout
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer
 from PyQt6.QtGui import QIcon
+
+
+
+class CornerPin(QObject):
+    """widget 을 host 안의 오른쪽 위 구석에 붙여 둡니다. host 의 크기가 바뀌거나 세로 스크롤 막대가 생겨도 따라갑니다."""
+
+    MARGIN = 6
+
+    def __init__(self, host: Any, widget: Any) -> None:
+        super().__init__(host)
+        self.host, self.widget = host, widget
+        host.installEventFilter(self)
+        self.place()
+
+    def place(self) -> None:
+        bar = self.host.verticalScrollBar()
+        right = self.host.width() - self.host.frameWidth() - (bar.width() if bar.isVisible() else 0)
+        self.widget.move(right - self.widget.width() - self.MARGIN, self.host.frameWidth() + self.MARGIN)
+        self.widget.raise_()
+
+    def eventFilter(self, obj: Any, event: Any) -> bool:
+        if obj is self.host and event.type() in (QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.LayoutRequest):
+            self.place()
+        return False
 
 
 class ExplorerLayoutMixin:
@@ -52,12 +76,12 @@ class ExplorerLayoutMixin:
         self.btn_app_theme.clicked.connect(self.toggle_app_theme)
         center.addWidget(self.btn_app_theme)
 
-        # 알림(토스트)은 미리보기 제목 줄의 환경설정 버튼 옆에 표시합니다.
+        # 알림(토스트)은 아래쪽 '총 n개 메모' 줄 자리에 잠깐 덮어 보입니다. (그 줄은 보여 주기만 하는 줄이라 잠깐 가려도 됨)
         self.toast = QLabel("")
         self.toast.hide()
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
-        self._toast_timer.timeout.connect(self.toast.hide)
+        self._toast_timer.timeout.connect(self.hide_toast)
 
         # 윈도우 스타일 우상단 제어 버튼 (📌 고정 / ─ 최소화 / □ 최대화 / ✕ 닫기)
         self.btn_win_pin   = QPushButton("")
@@ -198,6 +222,15 @@ class ExplorerLayoutMixin:
     def _build_pager(self, bg_l: Any) -> None:
         """쪽 넘기기 줄."""
         pg_l = QHBoxLayout()
+        # |< 첫 쪽 · ‹ 앞 쪽 · 쪽 번호 · 다음 쪽 › · 마지막 쪽 >|
+        self.btn_first_page = QPushButton("|‹")
+        self.btn_first_page.setFixedSize(30, 30)
+        self.btn_first_page.setToolTip("첫 쪽")
+        self.btn_first_page.clicked.connect(self.go_first)
+        self.btn_last_page = QPushButton("›|")
+        self.btn_last_page.setFixedSize(30, 30)
+        self.btn_last_page.setToolTip("마지막 쪽")
+        self.btn_last_page.clicked.connect(self.go_last)
         self.p_b = QPushButton("‹")
         self.p_b.setFixedSize(30, 30)
         self.p_b.clicked.connect(self.go_prev)
@@ -209,14 +242,16 @@ class ExplorerLayoutMixin:
         self.n_b.clicked.connect(self.go_next)
 
         pg_l.addStretch()
+        pg_l.addWidget(self.btn_first_page)
         pg_l.addWidget(self.p_b)
         pg_l.addWidget(self.p_l)
         pg_l.addWidget(self.n_b)
+        pg_l.addWidget(self.btn_last_page)
         pg_l.addStretch()
         bg_l.addLayout(pg_l)
 
     def _build_preview(self, bg_l: Any) -> None:
-        """미리보기: 제목 줄(왼쪽 환경설정 버튼과 알림(토스트) · 가운데 제목 · 오른쪽 예약된 알림 버튼), 그 아래 본문 칸."""
+        """미리보기: 제목 줄(왼쪽 환경설정 버튼과 알림(토스트) · 가운데 제목과 접기 버튼 · 오른쪽 예약된 알림 버튼), 그 아래 본문 칸."""
         pv_head = QHBoxLayout()
         pv_head.setSpacing(10)
         # 양옆 묶음이 남는 너비를 똑같이 나눠 가져, 제목이 줄의 가운데에 옵니다.
@@ -229,10 +264,7 @@ class ExplorerLayoutMixin:
         self.btn_settings.setToolTip("환경설정 열기/닫기")
         self.btn_settings.clicked.connect(self.ui_manager.toggle_settings)
         pv_left.addWidget(self.btn_settings)
-        pv_left.addWidget(self.toast)
         pv_left.addStretch()
-        pv_title = QLabel("미리보기")
-        pv_title.setMinimumHeight(24)
         # 예약된 알림 버튼: 알림이 걸린 메모를 빨리 울리는 순으로 보여 주고, 거기서 미루거나 해제합니다. (옆의 숫자는 예약된 개수)
         self.btn_reminders = QPushButton("")
         self.btn_reminders.setFixedHeight(24)
@@ -243,20 +275,60 @@ class ExplorerLayoutMixin:
         self.update_reminder_button()
         pv_right.addStretch()
         pv_right.addWidget(self.btn_reminders)
+        # 가운데 제목 '미리보기 ▾' 가 곧 접기·펼치기 버튼입니다. 접으면 본문 칸이 사라지고 그만큼 탐색기가 줄어듭니다. (PC마다 기억)
+        self.btn_preview_fold = QPushButton("")
+        self.btn_preview_fold.setFixedHeight(24)
+        self.btn_preview_fold.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_preview_fold.clicked.connect(self.toggle_preview)
         pv_head.addLayout(pv_left, 1)
-        pv_head.addWidget(pv_title)
+        pv_head.addWidget(self.btn_preview_fold)
         pv_head.addLayout(pv_right, 1)
         bg_l.addLayout(pv_head)
-        # 미리보기에서도 체크 상자를 네모로 그리고, 눌러서 체크할 수 있습니다.
+        # 미리보기는 읽기만 합니다. (체크 상자는 네모로 그려 보여 주기만 하고, 고치기는 메모 창에서)
+        # 목록 칸의 높이는 고정이라, 창을 키우고 줄이면 미리보기 칸이 그만큼 커지고 작아집니다.
         self.pv = CheckEdit(self._preview_check_colors)
-        self.pv.installEventFilter(self)                 # 미리보기에 들어올 때를 알기 위해 (_save_window_typing_first)
-        self.pv.setFixedHeight(100)
-        self.pv.setReadOnly(False)
-        bg_l.addWidget(self.pv)
-        self.pv.textChanged.connect(self.on_preview_changed)
-        self.pv.check_marks.intercept = self._toggle_preview_box_keeping_format
+        self.pv.setMinimumHeight(self.PREVIEW_MIN_HEIGHT)
+        self.pv.setReadOnly(True)
+        bg_l.addWidget(self.pv, 1)
+        # 미리보기를 접었을 때만 보이는 빈 칸: 창을 최대화했을 때처럼 줄일 수 없는 남는 높이를 받습니다.
+        self._pv_filler = QWidget()
+        self._pv_filler.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        self._pv_filler.hide()
+        bg_l.addWidget(self._pv_filler, 1)
         self.pv.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.pv.customContextMenuRequested.connect(self.show_preview_menu)
+        # 복사 버튼: 코드 블록처럼 미리보기 칸 안의 오른쪽 위에 둡니다. 누르면 보이는 메모의 본문 전체가 클립보드로.
+        self.btn_preview_copy = QPushButton("", self.pv)
+        self.btn_preview_copy.setFixedSize(28, 28)
+        self.btn_preview_copy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_preview_copy.setToolTip("본문 복사")
+        self.btn_preview_copy.clicked.connect(self.copy_preview)
+        self._preview_corner = CornerPin(self.pv, self.btn_preview_copy)
+        self._show_preview(bool(self.ui_manager.sync_manager.settings.get('explorer_preview_open', True)))
+
+    def preview_open(self) -> bool:
+        return not self.pv.isHidden()
+
+    PREVIEW_MIN_HEIGHT = 100
+
+    def toggle_preview(self) -> None:
+        """미리보기 본문 칸을 접거나 폅니다. 접으면 그 높이만큼 창이 줄고, 펴면 다시 늘어납니다."""
+        opening = not self.preview_open()
+        # 접으면 미리보기 자리에 높이 0 인 빈 칸이 들어가므로, 창은 미리보기 높이만큼만 줄이고 늘립니다.
+        if opening:
+            delta = getattr(self, '_folded_preview_height', self.PREVIEW_MIN_HEIGHT)
+        else:
+            self._folded_preview_height = self.pv.height()
+            delta = -self.pv.height()
+        self._show_preview(opening)
+        self.ui_manager.sync_manager.save_settings({'explorer_preview_open': opening})
+        self._grow_down(delta)
+
+    def _show_preview(self, opening: bool) -> None:
+        self.pv.setVisible(opening)
+        self._pv_filler.setVisible(not opening)
+        self.btn_preview_fold.setText("미리보기 ▾" if opening else "미리보기 ▸")
+        self.btn_preview_fold.setToolTip("미리보기 접기" if opening else "미리보기 펼치기")
 
     def _build_status_row(self, bg_l: Any) -> None:
         """메모 개수를 보여 주는 줄."""
@@ -273,6 +345,7 @@ class ExplorerLayoutMixin:
 
         stat_layout.addWidget(self.stat_icon)
         stat_layout.addWidget(self.stat_label)
+        stat_layout.addWidget(self.toast)                # 토스트가 뜨는 동안에는 개수 대신 토스트
         stat_layout.addStretch()
         bg_l.addWidget(self.stat_box)
 
@@ -364,6 +437,9 @@ class ExplorerLayoutMixin:
         self.n_b.setText("")
         self.p_b.setIcon(self.ui_manager.get_theme_icon("arrow left.svg", is_dark))
         self.n_b.setIcon(self.ui_manager.get_theme_icon("arrow right.svg", is_dark))
+        for btn, icon in ((self.btn_first_page, "page first.svg"), (self.btn_last_page, "page last.svg")):
+            btn.setText("")
+            btn.setIcon(self.ui_manager.get_theme_icon(icon, is_dark))
         self.b_new_code.setIcon(self.ui_manager.get_theme_icon("codememo.svg", is_dark))
         self.b_ref.setIcon(self.ui_manager.get_theme_icon("restart-icon.svg", is_dark))
         self.b_sync.setIcon(self.ui_manager.get_theme_icon("cloude.svg", is_dark))
@@ -372,6 +448,15 @@ class ExplorerLayoutMixin:
         self.btn_settings.setStyleSheet(f"QPushButton {{ border: none; background: transparent; border-radius: 0px; }} "
                                         f"QPushButton:hover {{ background: {hover}; }}")
         ink = modern_style.app_palette(self.ui_manager.sync_manager.settings)[0]['text']
+        self.btn_preview_copy.setIcon(self.ui_manager.get_theme_icon("copy.svg", is_dark))
+        pal = modern_style.app_palette(self.ui_manager.sync_manager.settings)[0]
+        # 본문 글자 위에 떠 있으므로 바탕을 칠하고 가는 테두리를 둡니다. (코드 블록의 복사 버튼처럼)
+        self.btn_preview_copy.setStyleSheet(
+            f"QPushButton {{ border: 1px solid {pal['border']}; background: {pal['card']}; border-radius: 0px; padding: 0; }} "
+            f"QPushButton:hover {{ border-color: {ink}; }}")
+        self.btn_preview_fold.setStyleSheet(
+            f"QPushButton {{ border: none; background: transparent; border-radius: 0px; padding: 0 8px; color: {ink}; }} "
+            f"QPushButton:hover {{ background: {hover}; }}")
         self.btn_reminders.setIcon(self.ui_manager.get_theme_icon("alarm.svg", is_dark))
         self.btn_reminders.setStyleSheet(
             f"QPushButton {{ border: none; background: transparent; border-radius: 0px; padding: 0 5px; color: {ink}; "

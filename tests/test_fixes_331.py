@@ -141,26 +141,5 @@ class ErrorNoticeTest(SyncManagerTestCase):
             reporter.handle(type(e), e, e.__traceback__)
 
 
-class PreviewAndWindowTest(support.UiTestCase):
-    def test_entering_the_preview_saves_what_was_typed_in_the_window(self) -> None:
-        ex = self.explorer()
-        w = self.open_window("memo-0000")
-        row = next(r for r in range(ex.table.rowCount())
-                   if ex.table.item(r, 2).data(support.Qt.ItemDataRole.UserRole)["id"] == "memo-0000")
-        ex.table.selectRow(row)
-        ex.on_cell_click(row, 2)
-        w.text_edit.setPlainText("typed in the window")
-        w.text_edit.document().setModified(True)
-        w._schedule_auto_save()
-        self.assertTrue(w._auto_save_timer.isActive())
-
-        support.app.sendEvent(ex.pv, QFocusEvent(QEvent.Type.FocusIn))
-        support.app.processEvents()
-        self.assertFalse(w._auto_save_timer.isActive())
-        saved = next(m for m in self.sm.load_local_memos() if m["id"] == "memo-0000")
-        self.assertIn("typed in the window", saved["content"])
-        self.assertIn("typed in the window", ex.pv.toPlainText())    # 미리보기도 방금 쓴 글로 바뀜
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,7 @@ from ui import screen_bounds
 from typing import List, Dict, Any, Optional
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QApplication, QFrame, QSizeGrip, QListWidget
 from PyQt6.QtCore import Qt, QPoint, QSize, QTimer
-from PyQt6.QtGui import QGuiApplication, QShortcut, QKeySequence, QFont
+from PyQt6.QtGui import QGuiApplication, QShortcut, QKeySequence
 from ui.explorer_folders import ExplorerFoldersMixin
 from ui.explorer_panels import ExplorerPanelsMixin
 from ui.explorer_preview import ExplorerPreviewMixin
@@ -45,55 +45,40 @@ class MemoExplorerWindow(ExplorerLayoutMixin, ExplorerListMixin, ExplorerActions
         self._settings_extra: int = 0
         self._settings_side: str = "right"
         self._old_pos: Optional[QPoint] = None
-        self._is_loading_preview: bool = False
         # 검색어 입력이 멈춘 뒤에만 목록을 다시 읽습니다. (글자마다 전체 재로딩 방지)
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(300)
         self._search_timer.timeout.connect(self.on_search)
-        # 미리보기 편집도 입력이 멈춘 뒤 한 번만 암호화·저장합니다.
-        self._pending_preview_memo: Optional[Dict[str, Any]] = None
-        self._preview_save_timer = QTimer(self)
-        self._preview_save_timer.setSingleShot(True)
-        self._preview_save_timer.setInterval(500)
-        self._preview_save_timer.timeout.connect(self._flush_preview_save)
         self.init_ui()
         self.apply_theme_style()
         self.bind_global_shortcuts()
+        self._fit_table()                                # 화면이 다 갖춰진 뒤의 크기로 목록 칸 높이를 다시 맞춤
 
     def _apply_initial_window_size(self) -> None:
-        """멀티모니터 환경에서 가장 작은 모니터 해상도의 1/6 크기로 창을 초기화합니다."""
-        screens = QGuiApplication.screens()
-        if not screens:
+        """처음 여는 탐색기: 기본 크기(DEFAULT_SIZE)로 주 모니터 가운데에 둡니다. 모니터가 작으면 그 안에 들어가게 줄입니다."""
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
             return
-        # 가장 작은 모니터 탐색 (너비 × 높이 면적 기준)
-        smallest = min(screens, key=lambda s: s.geometry().width() * s.geometry().height())
-        geom = smallest.availableGeometry()
-        # 1/6 크기 = 가로 1/3, 세로 1/3
-        base_w = int(geom.width() / 3)
-        base_h = int(geom.height() / 3)
-        target_w = max(base_w, 620)
-        target_h = max(base_h, 480)
-        target_w = min(target_w, int(geom.width() * 0.8))
-        target_h = min(target_h, int(geom.height() * 0.8))
-        cx = geom.center().x() - target_w // 2
-        cy = geom.center().y() - target_h // 2
-        self.setGeometry(cx, cy, target_w, target_h)
+        geom = screen.availableGeometry()
+        target_w = min(self.DEFAULT_SIZE[0], geom.width())
+        target_h = min(self.DEFAULT_SIZE[1], geom.height())
+        self.setGeometry(geom.center().x() - target_w // 2, geom.center().y() - target_h // 2, target_w, target_h)
 
     def _apply_font_scale(self) -> None:
         """현재 ui_font_pt 기준으로 창 전체의 폰트와 행 높이를 적용합니다."""
-        base_font = QFont("D2Coding", self.ui_font_pt)
+        base_font = modern_style.app_qfont(self.ui_font_pt)
         self.setFont(base_font)
         self.bg.setFont(base_font)
         self.table.setFont(base_font)
-        self.pv.setFont(QFont("D2Coding", max(9, self.ui_font_pt)))
+        self.pv.setFont(modern_style.app_qfont(max(9, self.ui_font_pt)))
 
         # 상단 제어·필터 버튼 아이콘: 폰트 1.4배
         ctrl_icon_sz = max(14, int(self.ui_font_pt * 1.4))
         for btn in [self.btn_win_pin, self.btn_win_min, self.btn_win_max, self.btn_win_close,
                     self.btn_filter_all, self.btn_filter_gen, self.btn_filter_code,
                     self.btn_arrange_rolled, self.btn_arrange_memos, self.t_btn,
-                    self.p_b, self.n_b]:
+                    self.p_b, self.n_b, self.btn_first_page, self.btn_last_page]:
             btn.setIconSize(QSize(ctrl_icon_sz, ctrl_icon_sz))
 
         # 하단 액션 버튼 아이콘: 폰트와 동일 크기 (텍스트와 나란히 보이도록 작게)
@@ -115,11 +100,32 @@ class MemoExplorerWindow(ExplorerLayoutMixin, ExplorerListMixin, ExplorerActions
         pt = 9 + max(0, (w - 440) // 60)
         return max(9, min(16, pt))
 
+    PAGE_SIZE = 10                       # 목록 한 쪽에 보이는 메모 수
+
     def shortcut_font_refresh(self) -> None:
         row_h = max(38, int(self.ui_font_pt * 3.2))
         self.table.verticalHeader().setDefaultSectionSize(row_h)
         for row in range(self.table.rowCount()):
             self.table.setRowHeight(row, row_h)
+        self._fit_table()
+
+    def _fit_table(self) -> None:
+        row_h = self.table.verticalHeader().defaultSectionSize()
+        # 목록 칸은 한 쪽의 메모 10개가 스크롤 없이 다 보이는 높이로 고정합니다. 창을 키우거나 줄이면 미리보기가 달라집니다.
+        # 모니터가 작아 그 높이로는 탐색기가 화면에 들어가지 않으면, 들어가는 만큼만 보이고 목록 안에서 스크롤합니다.
+        header = max(self.table.horizontalHeader().height(), self.table.horizontalHeader().sizeHint().height())
+        chrome = header + 2 * self.table.frameWidth()
+        rows = self.PAGE_SIZE
+        limit = screen_bounds.max_inner_size(self, inset=self.EDGE_MARGIN)
+        if limit is not None:
+            others = self.minimumSizeHint().height() - self.table.minimumHeight()     # 목록 칸을 뺀 나머지가 차지하는 높이
+            rows = max(3, min(self.PAGE_SIZE, (limit[1] - others - chrome) // row_h))
+        if self.table.minimumHeight() != chrome + rows * row_h:
+            self.table.setFixedHeight(chrome + rows * row_h)
+            if hasattr(self, 'bg') and self.bg.layout() is not None:
+                self.bg.layout().invalidate()
+                if not self.is_size_fixed() and not self.isMaximized():
+                    self._apply_minimum_size()           # 창의 최소 높이도 목록 칸에 맞춤
 
     def bind_global_shortcuts(self) -> None:
         s_cfg = self.ui_manager.sync_manager.settings.get("shortcuts", {})
@@ -131,6 +137,12 @@ class MemoExplorerWindow(ExplorerLayoutMixin, ExplorerListMixin, ExplorerActions
             self._delete_key.setContext(Qt.ShortcutContext.WidgetShortcut)
             # 휴지통을 보는 중에는 동작하지 않습니다. (휴지통의 메모는 복원·비우기 버튼으로 다룸)
             self._delete_key.activated.connect(lambda: None if self.is_trash_mode else self.del_checked())
+        # 목록에서 F2(제목 수정 단축키): 고른 메모의 제목 바꾸기. 단축키를 바꾸면 다시 걸 때 새 키로 바뀝니다.
+        if getattr(self, '_rename_key', None) is None:
+            self._rename_key = QShortcut(self.table)
+            self._rename_key.setContext(Qt.ShortcutContext.WidgetShortcut)
+            self._rename_key.activated.connect(self.rename_current)
+        self._rename_key.setKey(QKeySequence(s_cfg.get("rename", "F2")))
         QShortcut(QKeySequence(s_cfg.get("toggle_memo_lock", "Ctrl+L")), self).activated.connect(
             lambda: self._lock_action_on_current("toggle_memo_lock"))
         QShortcut(QKeySequence(s_cfg.get("set_memo_password", "Ctrl+Shift+L")), self).activated.connect(
@@ -278,6 +290,7 @@ class MemoExplorerWindow(ExplorerLayoutMixin, ExplorerListMixin, ExplorerActions
         is_dark = self.ui_manager.sync_manager.settings.get('app_theme', 'white') == "dark"
         self.btn_app_theme.setText(" 라이트" if is_dark else " 다크")
         self.update_icons()
+        self._apply_font_scale()                         # 앱 글꼴이 바뀌었을 수 있음
         modern_style.apply_explorer(self)
 
 
@@ -307,7 +320,9 @@ class MemoExplorerWindow(ExplorerLayoutMixin, ExplorerListMixin, ExplorerActions
             area = screen_bounds.grown(area, self.EDGE_MARGIN)
             over_w = self.x() + self.width() - (area.left() + area.width())
             over_h = self.y() + self.height() - (area.top() + area.height())
-            if over_w > 0 or over_h > 0:
+            # 창이 화면 안에서 시작할 때만 크기로 맞춥니다. 창 자체가 화면 밖에 있으면 줄일 일이 아니라 옮길 일입니다. (_limit_to_screen)
+            starts_inside = self.x() < area.left() + area.width() and self.y() < area.top() + area.height()
+            if starts_inside and (over_w > 0 or over_h > 0):
                 fit_w = max(self.minimumWidth(), self.width() - max(0, over_w))
                 fit_h = max(self.minimumHeight(), self.height() - max(0, over_h))
                 if (fit_w, fit_h) != (self.width(), self.height()):
@@ -338,8 +353,15 @@ class MemoExplorerWindow(ExplorerLayoutMixin, ExplorerListMixin, ExplorerActions
 
     def show_toast(self, m: str, warn: bool = False) -> None:
         self.toast.setText(("⚠ " if warn else "✓ ") + m)
+        self.stat_icon.hide()
+        self.stat_label.hide()
         self.toast.show()
         self._toast_timer.start(3500)
+
+    def hide_toast(self) -> None:
+        self.toast.hide()
+        self.stat_icon.show()
+        self.stat_label.show()
 
     def mousePressEvent(self, e: Any) -> None:
         if e.button() == Qt.MouseButton.LeftButton:
@@ -382,7 +404,6 @@ class MemoExplorerWindow(ExplorerLayoutMixin, ExplorerListMixin, ExplorerActions
 
 
     def hideEvent(self, event: Any) -> None:
-        self._flush_preview_save()
         if not event.spontaneous():                      # 최소화가 아니라 숨기거나 닫을 때: 환경설정 패널도 닫음
             self.close_settings_panel()
         super().hideEvent(event)

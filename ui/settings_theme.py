@@ -60,6 +60,18 @@ class ThemeTabMixin:
         g3_l.setContentsMargins(14, 22, 14, 14)
         g3_l.setSpacing(8)
 
+        g3_l.addWidget(QLabel("앱 글꼴 (탐색기·환경설정·대화상자 등 앱 화면 전체):"))
+        self.app_font_box = QFontComboBox()
+        self.app_font_box.setFixedHeight(36)
+        self.app_font_box.setToolTip("이 PC에만 적용됩니다. (PC마다 설치된 글꼴이 다르므로)")
+        g3_l.addWidget(self.app_font_box)
+        # 저장된 글꼴이 이 PC에 없으면 맑은 고딕으로 대신 그린다는 것을 알립니다. (목록에는 설치된 글꼴만 나옴)
+        self.app_font_note = QLabel("⚠ 저장된 앱 글꼴이 이 PC에 없어 맑은 고딕으로 그리고 있습니다. 이 PC에 있는 글꼴을 고르거나 그 글꼴을 설치하세요.")
+        self.app_font_note.setWordWrap(True)
+        self.app_font_note.setProperty("role", "hint")
+        self.app_font_note.hide()
+        g3_l.addWidget(self.app_font_note)
+
         g3_l.addWidget(QLabel("기본 메모 폰트:"))
         self.default_font_box = QFontComboBox()
         self.default_font_box.setFixedHeight(36)
@@ -293,7 +305,7 @@ class ThemeTabMixin:
         geom = self.sm.settings.get("explorer_geom")
         if geom and len(geom) == 4:
             return int(geom[2]), int(geom[3])
-        return 620, 480
+        return explorer.DEFAULT_SIZE if explorer else (666, 961)
 
     def _explorer_geom_from_inputs(self) -> list:
         """입력한 가로·세로에 현재 탐색기 위치를 합쳐 explorer_geom 형식으로 돌려줍니다."""

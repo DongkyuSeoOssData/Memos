@@ -55,7 +55,7 @@ class ChecklistProgressTest(support.UiTestCase):
         QTest.keyClick(w.text_edit, Qt.Key.Key_Backspace)
         self.assertEqual(w.text_edit.toPlainText(), "mlk\n  eggs")
 
-    def test_preview_draws_boxes_and_lets_you_check_them(self) -> None:
+    def test_preview_draws_boxes_but_does_not_check_them(self) -> None:
         w = self.open_window("memo-0001")
         w.text_edit.setPlainText("☐ a\n☐ b")
         w.text_edit.document().setModified(True)
@@ -70,10 +70,7 @@ class ChecklistProgressTest(support.UiTestCase):
         self.assertEqual(len(hidden), 2)                             # 글자 대신 네모로 그림
         box = ex.pv.check_marks.box_rect(ex.pv.document().findBlockByNumber(1), 0)
         QTest.mouseClick(ex.pv.viewport(), Qt.MouseButton.LeftButton, pos=box.center())
-        self.assertEqual(ex.pv.toPlainText(), "☐ a\n☑ b")
-        ex._flush_preview_save()
-        self.assertIn("☑ b", self.raw("memo-0001"))
-        self.assertEqual(w.text_edit.toPlainText(), "☐ a\n☑ b")       # 열려 있는 메모 창에도 반영
+        self.assertEqual(ex.pv.toPlainText(), "☐ a\n☐ b")             # 미리보기는 보여 주기만 함 (체크는 메모 창에서)
         ex.pv.viewport().grab()
 
     def test_progress_rule(self) -> None:

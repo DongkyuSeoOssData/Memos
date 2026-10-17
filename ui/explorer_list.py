@@ -10,7 +10,7 @@ import datetime
 from typing import Any, Dict, List
 from PyQt6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QTableWidgetItem
 from PyQt6.QtCore import Qt, QSize, pyqtSlot
-from PyQt6.QtGui import QFont
+
 from utils.text_utils import clean_plain_text, extract_hashtags
 
 
@@ -63,6 +63,19 @@ class ExplorerListMixin:
         self.current_page = 1
         self.refresh()
 
+    def page_count(self) -> int:
+        return max(1, (len(self.filtered_memos) + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
+
+    def go_first(self) -> None:
+        if self.current_page != 1:
+            self.current_page = 1
+            self.update_table()
+
+    def go_last(self) -> None:
+        if self.current_page != self.page_count():
+            self.current_page = self.page_count()
+            self.update_table()
+
     def go_prev(self) -> None:
         if self.current_page > 1:
             self.current_page -= 1
@@ -76,7 +89,6 @@ class ExplorerListMixin:
 
     @pyqtSlot()
     def refresh(self) -> None:
-        self._flush_preview_save()
         q = self.s_in.text().lower()
         sb = self.s_type.currentIndex() == 1
         all_m = self.ui_manager.sync_manager.load_trash_memos() if self.is_trash_mode else self.ui_manager.sync_manager.load_local_memos()
@@ -263,7 +275,7 @@ class ExplorerListMixin:
         t.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
 
         if is_code:
-            t.setFont(QFont("D2Coding", 10, QFont.Weight.Bold))
+            t.setFont(modern_style.app_qfont(10, bold=True))
         return t
 
     @staticmethod

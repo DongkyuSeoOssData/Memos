@@ -160,14 +160,16 @@ class AutoSaveTest(UiTestCase):
 
 
 class ExplorerTest(UiTestCase):
-    def test_toast_sits_next_to_preview_title(self) -> None:
+    def test_toast_covers_the_memo_count_line_for_a_moment(self) -> None:
         ex = self.explorer()
         _app.processEvents()
         ex.show_toast("hello")
         _app.processEvents()
         self.assertTrue(ex.toast.isVisible())
-        gap = ex.pv.mapTo(ex, QPoint(0, 0)).y() - ex.toast.mapTo(ex, QPoint(0, 0)).y()
-        self.assertTrue(0 < gap < 60, gap)
+        self.assertEqual(ex.toast.mapTo(ex, QPoint(0, 0)).y(), ex.stat_label.mapTo(ex, QPoint(0, 0)).y())   # 개수 줄 자리
+        self.assertGreater(ex.toast.mapTo(ex, QPoint(0, 0)).y(), ex.pv.mapTo(ex, QPoint(0, 0)).y())         # 미리보기 아래
+        ex._toast_timer.timeout.emit()                                       # 잠깐 뒤 사라지면 개수가 다시 보임
+        self.assertTrue(ex.toast.isHidden() and not ex.stat_label.isHidden())
 
     def test_search_is_debounced(self) -> None:
         ex = self.explorer()
@@ -209,11 +211,11 @@ class ExplorerTest(UiTestCase):
     def test_fixed_size_option(self) -> None:
         ex = self.explorer()
         self.sm.settings["explorer_fixed_size"] = True
-        self.sm.settings["explorer_geom"] = [10, 10, 800, 600]
+        self.sm.settings["explorer_geom"] = [10, 10, 800, 1300]
         ex.apply_size_settings()
-        ex.resize(1200, 900)
+        ex.resize(1200, 1500)
         _app.processEvents()
-        self.assertEqual((ex.width(), ex.height()), (800, 600))
+        self.assertEqual((ex.width(), ex.height()), (800, 1300))
         self.assertFalse(ex.grip.isVisible())
 
 
@@ -299,17 +301,10 @@ class ModifiedTimeTest(UiTestCase):
         ex.change_memo_color(memo(), "#DCFCE7")
         ex.move_memos_to_folder(memo(), "업무")
         ex.on_cell_click(self.row_of(ex, "memo-0001"), 2)        # 미리보기에 띄우기만 함
-        ex._flush_preview_save()
         saved = self.disk("memo-0001")
         self.assertEqual(saved["updated_at"], before)
         self.assertEqual((saved["is_favorite"], saved["bg_color"], saved["folder"]), (True, "#DCFCE7", "업무"))
         self.assertGreater(saved["meta_updated_at"], before)
-
-        ex.table.setCurrentCell(self.row_of(ex, "memo-0001"), 2)
-        ex.on_cell_click(self.row_of(ex, "memo-0001"), 2)
-        ex.pv.setPlainText(ex.pv.toPlainText() + " edited in preview")
-        ex._flush_preview_save()
-        self.assertGreater(self.disk("memo-0001")["updated_at"], before)
 
     def test_renaming_updates_modified_time(self) -> None:
         w = self.open_window("memo-0000")
@@ -321,92 +316,119 @@ class ModifiedTimeTest(UiTestCase):
         self.assertGreater(saved["updated_at"], before)
 
 
-class RolledStackTest(UiTestCase):
-    """접은 메모가 한 줄로 쌓여 있을 때 그중 하나를 펴면, 나머지를 가리지 않게 쌓인 줄 옆에 펼쳐집니다."""
+class FoldPlacementTest(UiTestCase):
+    """접기·펴기의 자리: 기본은 왼쪽 아래 모서리를 두고, 위치를 고정해 둔 상태는 그 자리로."""
 
     AREA = QRect(0, 0, 1600, 900)
 
     def setUp(self) -> None:
         super().setUp()
-        screen = mock.Mock(availableGeometry=lambda: QRect(self.AREA))
-        patcher = mock.patch("ui.memo_drag.QApplication.screenAt", return_value=screen)
+        screen = mock.Mock(availableGeometry=lambda: QRect(self.AREA), geometry=lambda: QRect(self.AREA))
+        for target in ("ui.memo_drag.QApplication.screenAt",):
+            patcher = mock.patch(target, return_value=screen)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.layout = [self.AREA.getRect()]
+        patcher = mock.patch("ui.memo_rollup.MemoRollupMixin._screen_layout", side_effect=lambda: list(self.layout))
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def rolled(self, memo_id: str, x: int, y: int):
-        w = self.open_window(memo_id)
-        w.setGeometry(x, y, 300, 300)
-        w.toggle_rollup()
-        w.move(x, y)
-        self.assertTrue(w._is_rolled_up)
-        return w
+    def window(self, x: int, y: int, w: int = 400, h: int = 320):
+        win = self.open_window("memo-0000")
+        win.setGeometry(x, y, w, h)
+        return win
 
-    def test_stacked_on_the_left_opens_to_the_right_and_returns(self) -> None:
-        a = self.rolled("memo-0000", 0, 700)
-        b = self.rolled("memo-0001", 0, 700 + a.height())
-        slot = (a.x(), a.y())
-        a.toggle_rollup()                                         # 펴기
-        self.assertFalse(a._is_rolled_up)
-        self.assertEqual(a.x(), b.x() + b.width())                # 쌓인 줄의 오른쪽에 펼쳐짐
-        self.assertFalse(a.geometry().intersects(b.geometry()))   # 남은 접은 메모를 가리지 않음
-        a.toggle_rollup()                                         # 옮기지 않고 다시 접으면
-        self.assertEqual((a.x(), a.y()), slot)                    # 원래 쌓여 있던 자리로
+    def box(self, win) -> tuple:
+        return win.x(), win.y(), win.width(), win.height()
 
-    def test_stacked_on_the_right_opens_to_the_left(self) -> None:
-        a = self.rolled("memo-0000", 1300, 700)
-        b = self.rolled("memo-0001", 1300, 700 + a.height())
+    def test_fold_and_unfold_keep_the_bottom_left_corner(self) -> None:
+        a = self.window(500, 300)
+        rolled_h = a._get_rolled_height()
         a.toggle_rollup()
-        self.assertEqual(a.x() + a.width(), b.x())
-        self.assertFalse(a.geometry().intersects(b.geometry()))
+        self.assertEqual(self.box(a), (500, 300 + 320 - rolled_h, 400, rolled_h))
+        a.move(100, 700)                                          # 접은 메모를 옮겨 두면
+        a.toggle_rollup()
+        self.assertEqual(self.box(a), (100, 700 + rolled_h - 320, 400, 320))      # 거기서 위·오른쪽으로 펼쳐짐
 
-    def test_single_rolled_memo_opens_in_place(self) -> None:
-        a = self.rolled("memo-0000", 0, 700)
+    def test_unfold_near_the_top_grows_down_and_near_the_right_grows_left(self) -> None:
+        a = self.window(500, 300)
         a.toggle_rollup()
-        self.assertEqual(a.x(), 0)                                # 쌓인 줄이 아니면 제자리에서 펼침
+        a.move(500, 10)
+        a.toggle_rollup()
+        self.assertEqual((a.x(), a.y()), (500, 10))               # 위로는 자리가 없어 아래로
+        a.toggle_rollup()
+        a.resize(150, a.height())
+        a.move(1400, 600)
+        rolled_bottom = a.y() + a.height()
+        a.toggle_rollup()
+        self.assertEqual((a.x() + a.width(), a.y() + a.height()), (1550, rolled_bottom))   # 오른쪽 변과 아래 변을 맞춰 왼쪽 위로
 
-    def test_rolling_up_always_returns_to_the_rolled_spot(self) -> None:
-        a = self.rolled("memo-0000", 0, 700)
-        self.rolled("memo-0001", 0, 700 + a.height())
-        slot = (a.x(), a.y(), a.width())
+    def test_pinned_places_are_used_for_each_state(self) -> None:
+        a = self.window(100, 100)
+        a.pin_position()                                          # 펼친 위치 고정
+        self.assertTrue(a.has_position_pin())
         a.toggle_rollup()
-        a.move(800, 200)                                          # 펼친 뒤 다른 곳으로 옮기고 크기도 바꿈
-        a.resize(520, 410)
+        self.assertFalse(a.has_position_pin())                    # 접은 상태는 아직 고정 안 함
+        a.move(50, 800)
+        a.pin_position()                                          # 접은 위치 고정
+        a.move(900, 500)                                          # 고정과 다른 곳으로 옮겨도
         a.toggle_rollup()
-        self.assertEqual((a.x(), a.y(), a.width()), slot)         # 접으면 접힌 상태로 기억해 둔 자리와 너비로
+        self.assertEqual((a.x(), a.y()), (100, 100))              # 펼치면 펼친 고정 자리로
+        a.move(700, 200)
         a.toggle_rollup()
-        self.assertEqual((a.x(), a.y(), a.width(), a.height()), (800, 200, 520, 410))     # 펴면 펼친 상태의 자리와 크기로
+        self.assertEqual((a.x(), a.y()), (50, 800))               # 접으면 접은 고정 자리로
+        a.toggle_position_pin()                                   # 단축키: 고정돼 있으면 풂
+        self.assertFalse(a.has_position_pin())
+        self.assertIn("unrolled_pin", self.disk("memo-0000"))
+        self.assertNotIn("rolled_pin", self.disk("memo-0000"))
 
-    def test_rolled_and_unrolled_sizes_do_not_affect_each_other(self) -> None:
-        a = self.open_window("memo-0000")
-        a.setGeometry(500, 300, 400, 320)
+    def test_pin_is_ignored_when_the_monitors_change(self) -> None:
+        a = self.window(100, 100)
+        a.pin_position()
         a.toggle_rollup()
-        a.resize(250, a.height())                                 # 접은 메모의 너비를 줄임
-        a.move(900, 600)
+        a.move(600, 700)
+        self.layout = [(0, 0, 1920, 1080)]                        # 다른 해상도의 모니터
         a.toggle_rollup()
-        self.assertEqual((a.x(), a.y(), a.width(), a.height()), (500, 300, 400, 320))     # 펼친 크기는 그대로
-        a.resize(640, 480)                                        # 펼친 메모를 키워도
+        self.assertEqual((a.x(), a.y() + a.height()), (600, 700 + a._get_rolled_height()))   # 기본 규칙으로
+        self.layout = [self.AREA.getRect()]
         a.toggle_rollup()
-        self.assertEqual((a.x(), a.y(), a.width()), (900, 600, 250))                      # 접은 메모의 너비와 자리는 그대로
-        saved = a.memo_data
-        self.assertEqual((saved["rolled_position_x"], saved["rolled_position_y"], saved["rolled_width"]), (900, 600, 250))
-        self.assertEqual((saved["position_x"], saved["position_y"], saved["unrolled_width"], saved["unrolled_height"]),
-                         (500, 300, 640, 480))
+        a.toggle_rollup()
+        self.assertEqual((a.x(), a.y()), (100, 100))              # 모니터가 돌아오면 다시 고정 자리
 
-    def test_geometry_survives_closing_and_reopening(self) -> None:
-        a = self.open_window("memo-0000")
-        a.setGeometry(500, 300, 400, 320)
+    def test_hidden_memo_reopens_at_its_pin(self) -> None:
+        a = self.window(100, 100)
+        a.pin_position()
+        a.move(800, 300)
+        a.close()
+        b = self.open_window("memo-0000")
+        self.assertEqual((b.x(), b.y()), (100, 100))
+
+    def test_sizes_and_last_places_survive_closing_and_reopening(self) -> None:
+        a = self.window(500, 300)
         a.toggle_rollup()
         a.resize(260, a.height())
         a.move(900, 600)
         a.close()
         saved = self.disk("memo-0000")
         self.assertEqual((saved["rolled_position_x"], saved["rolled_position_y"], saved["rolled_width"]), (900, 600, 260))
-        self.assertEqual((saved["position_x"], saved["position_y"], saved["unrolled_width"], saved["unrolled_height"]),
-                         (500, 300, 400, 320))
+        self.assertEqual((saved["unrolled_width"], saved["unrolled_height"]), (400, 320))
         b = self.open_window("memo-0000")
         self.assertEqual((b._is_rolled_up, b.x(), b.y(), b.width()), (True, 900, 600, 260))
         b.toggle_rollup()
-        self.assertEqual((b.x(), b.y(), b.width(), b.height()), (500, 300, 400, 320))
+        self.assertEqual(self.box(b), (900, 600 + b._get_rolled_height() - 320, 400, 320))
+
+    def test_menu_offers_pinning_for_the_current_state(self) -> None:
+        from PyQt6.QtWidgets import QMenu
+        a = self.window(100, 100)
+        texts = []
+        with mock.patch.object(QMenu, "exec", lambda menu, *args: texts.extend(act.text() for act in menu.actions())):
+            a.title_edit.customContextMenuRequested.emit(QPoint(0, 0))     # 제목 줄 우클릭 (접은 메모도 여기서 엶)
+            a.pin_position()
+            a.toggle_rollup()
+            a.title_edit.customContextMenuRequested.emit(QPoint(0, 0))
+        self.assertTrue(any(t.startswith("📌 펼친 위치 고정") for t in texts))
+        self.assertTrue(any(t.startswith("📌 접은 위치 고정") for t in texts))
+        self.assertTrue(any("메모 창 펼치기" in t for t in texts))
 
 
 class ScreenBoundsTest(UiTestCase):
@@ -504,11 +526,11 @@ class ScreenBoundsTest(UiTestCase):
         ex._old_pos = None
 
     def test_fixed_size_explorer_is_still_kept_on_screen(self) -> None:
-        self.sm.save_settings({"explorer_fixed_size": True, "explorer_geom": [3000, 3000, 760, 620]})
+        self.sm.save_settings({"explorer_fixed_size": True, "explorer_geom": [3000, 3000, 760, 720]})
         ex = self.explorer()
         ex.move(3000, 3000)
         ex.apply_size_settings()
-        self.assertEqual((ex.width(), ex.height()), (760, 620))
+        self.assertEqual((ex.width(), ex.height()), (760, 720))
         self.assertTrue(self.inside(ex), ex.geometry())
 
     def test_settings_window_is_frameless_and_snaps_like_the_explorer(self) -> None:
@@ -655,7 +677,7 @@ class FolderTest(UiTestCase):
     def test_sidebar_panel_is_added_on_the_left_without_moving_anything(self) -> None:
         ex = self.ex
         ex.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
-        ex.setGeometry(600, 100, 760, 620)
+        ex.setGeometry(600, 100, 760, 1200)
         ex.show()
         self.sm.save_settings({"folder_ui": "sidebar", "folder_sidebar_open": False})
         ex.refresh()
@@ -698,7 +720,7 @@ class FolderTest(UiTestCase):
 
     def test_sidebar_adds_width_on_the_left_and_keeps_explorer_size(self) -> None:
         ex = self.ex
-        ex.setGeometry(600, 100, 760, 620)
+        ex.setGeometry(600, 100, 760, 1200)
         font_before, content_before = ex.ui_font_pt, ex.content_width()
         self.sm.save_settings({"folder_ui": "sidebar", "folder_sidebar_open": True})
         ex.refresh()
@@ -711,7 +733,7 @@ class FolderTest(UiTestCase):
         self.assertEqual((ex.width(), ex.x(), ex.ui_font_pt), (760, 600, font_before))
         ex.btn_folder.click()
         ex.close()
-        self.assertEqual(self.sm.settings["explorer_geom"], [600, 100, 760, 620]) # 저장되는 크기는 본래 크기
+        self.assertEqual(self.sm.settings["explorer_geom"], [600, 100, 760, 1200]) # 저장되는 크기는 본래 크기
 
     def test_selecting_a_folder_filters_list_tags_and_search(self) -> None:
         self.ex.select_folder("업무")
@@ -955,7 +977,7 @@ class DesignStyleTest(UiTestCase):
         win = sw.SettingsWindow(self.sm)
         self.assertEqual(win.ui_style_box.currentData(), "modern")
         ex = self.explorer()
-        self.assertIn("Segoe UI", ex.bg.styleSheet())
+        self.assertIn("Malgun Gothic", ex.bg.styleSheet())          # 앱 글꼴 다음에 한글 글꼴
 
     def test_switching_between_modern_and_neo(self) -> None:
         from ui.themes import DARK_THEMES, LIGHT_THEMES
@@ -968,7 +990,7 @@ class DesignStyleTest(UiTestCase):
         for sheet in self._sheets(ex, win, w):
             self.assertNotRegex(sheet, r"border-radius: [1-9]")
         self.assertEqual(ex.table.horizontalHeaderItem(3).text(), "수정일시")
-        self.assertIn("Segoe UI", w.title_edit.styleSheet())
+        self.assertIn("Malgun Gothic", w.title_edit.styleSheet())
         modern_sheets = self._sheets(ex, win, w)[:4]
         modern_title = ex.title_label.styleSheet()
 

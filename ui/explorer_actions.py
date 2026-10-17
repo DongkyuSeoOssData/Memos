@@ -6,8 +6,9 @@ from ui.dialogs import HistoryDialog
 from ui.reminder_ui import ask_reminder
 from ui.reminder_list import ask_reminder_list
 from core import reminders
-from ui import modern_style
+from ui import modern_style, themed_dialog
 import datetime
+import re
 from typing import Dict, Any
 from PyQt6.QtWidgets import QMenu, QApplication
 from PyQt6.QtCore import Qt, QPoint
@@ -23,7 +24,6 @@ class ExplorerActionsMixin:
         memo_id = memo.get('id', '')
         if not memo_id or self.is_trash_mode:
             return
-        self._flush_preview_save()
         w = self.ui_manager.memo_windows.get(memo_id)
         if w is None:
             fresh = next((x for x in self.ui_manager.sync_manager.load_local_memos() if x.get('id') == memo_id), None)
@@ -94,10 +94,14 @@ class ExplorerActionsMixin:
             act_open.setIcon(self.ui_manager.get_theme_icon("memo.svg", is_dark))
         act_open.triggered.connect(lambda: self.ui_manager.show_specific_memo(m.get('id')))
 
-        act_open_all = menu.addAction("모든 메모 켜기 (Ctrl+Shift+O)")
+        sc_open = self.ui_manager.sync_manager.settings.get("shortcuts", {}).get("open_all_memos", "")
+        act_open_all = menu.addAction("메모 열기 (폴더 골라서)…" + (f" ({sc_open})" if sc_open else ""))
         if hasattr(self.ui_manager, 'get_theme_icon'):
             act_open_all.setIcon(self.ui_manager.get_theme_icon("memo.svg", is_dark))
         act_open_all.triggered.connect(self.ui_manager.open_all_memos)
+
+        sc_rename = self.ui_manager.sync_manager.settings.get("shortcuts", {}).get("rename", "F2")
+        menu.addAction("제목 바꾸기…" + (f" ({sc_rename})" if sc_rename else "")).triggered.connect(lambda: self.rename_memo(m))
 
         fav_text = "즐겨찾기 해제" if m.get('is_favorite') else "즐겨찾기 등록"
         act_fav = menu.addAction(fav_text)
@@ -138,6 +142,36 @@ class ExplorerActionsMixin:
         act_del.triggered.connect(self.del_checked if several else (lambda: self.delete_single_memo(m)))
 
         menu.exec(self.table.viewport().mapToGlobal(pos))
+
+    def rename_memo(self, memo: Dict[str, Any]) -> None:
+        """메모의 제목을 바꿉니다. 메모 창이 열려 있으면 그 창의 제목 칸으로 바꿔, 창이 들고 있는 데이터와 어긋나지 않게 합니다."""
+        old = str(memo.get('title', ''))
+        text, ok = themed_dialog.ask_text(self, "제목 바꾸기", "새 제목", text=old)
+        new = re.sub(r'[\\/*?:"<>|]', "", str(text).strip()) if ok else ""
+        if not new or new == old:
+            return
+        w = self.ui_manager.memo_windows.get(memo.get('id', ''))
+        if w:
+            w.title_edit.setText(new)
+            w._do_title_save()
+        else:
+            target = next((m for m in self.ui_manager.sync_manager.load_local_memos() if m.get('id') == memo.get('id')), None)
+            if target is None or not self.ui_manager.sync_manager.rename_memo_locally(old, new, target):
+                self.show_toast("제목을 바꾸지 못했습니다.", warn=True)
+                return
+            target['updated_at'] = datetime.datetime.now().isoformat()     # 제목을 고친 것도 수정 (메모 창과 같게)
+            self.ui_manager.sync_manager.save_memo_locally(target)
+        self.show_toast(f"제목을 '{new}'(으)로 바꿨습니다")
+        self.refresh()
+
+    def rename_current(self) -> None:
+        """목록에서 고른 메모의 제목을 바꿉니다. (탐색기에서 F2)"""
+        if self.is_trash_mode or self.table.currentRow() < 0:
+            return
+        item = self.table.item(self.table.currentRow(), 2)
+        memo = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if memo:
+            self.rename_memo(memo)
 
     # ── 알림 · 변경 기록 ─────────────────────────────────────────────────────
     def edit_reminder(self, memo: Dict[str, Any]) -> None:
@@ -181,7 +215,6 @@ class ExplorerActionsMixin:
         w = self.ui_manager.memo_windows.get(memo_id)
         if w:
             w.flush_auto_save()
-        self._flush_preview_save()
         dialog = HistoryDialog(self, str(memo.get('title', '')), sm.list_history(memo_id),
                                reveal=lambda index, password: sm.read_history_text(memo_id, index, password),
                                check=lambda index, password: sm.restore_problem(memo_id, index, password))
