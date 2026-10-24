@@ -43,3 +43,6 @@ secure_vault.py
 
 # [관리자 복구 개인키] 절대 커밋 금지
 *.pem
+
+# [내부 문서] 이 PC에서만 보는 문서는 깃에 올리지 않습니다.
+docs/RELEASE_GUIDE.md
