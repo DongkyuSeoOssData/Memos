@@ -28,6 +28,7 @@
 8. [데이터가 저장되는 곳](#-데이터가-저장되는-곳)
 9. [변경 기록](#-변경-기록)
 10. [개발](#-개발)
+11. [라이선스](#-라이선스)
 
 ---
 
@@ -587,6 +588,8 @@ python tools/mobile_dev_server.py
 📦 Memos
  ┣ 📜 README.md                # 사용법 (이 문서)
  ┣ 📜 CHANGELOG.md             # 버전별 변경 기록
+ ┣ 📜 LICENSE                  # GPL-3.0 라이선스
+ ┣ 📜 THIRD_PARTY_NOTICES.md   # 함께 쓰는 라이브러리의 라이선스
  ┣ 📜 main.py                  # 진입점, 중복 실행 방지
  ┣ 📜 drive_api.py             # Google Apps Script 통신
  ┣ 📜 Memos.spec               # PyInstaller 빌드 설정
@@ -667,3 +670,13 @@ python tools/mobile_dev_server.py
  ┃ ┗ 📜 index_html_check.js    # 모바일 화면의 동기화 흐름을 Code.gs 와 맞물려 돌려 보는 검사 (node)
  ┗ 📂 icons                    # SVG 아이콘
 ```
+
+---
+
+## ⚖ 라이선스
+
+Memos는 [GNU GPL 3.0](LICENSE)입니다. (Copyright (C) 2026 ADER)
+
+- 누구나 쓰고, 고치고, 다시 배포할 수 있습니다. 고친 것을 배포할 때는 그 소스도 같은 GPL-3.0으로 공개해야 합니다.
+- 화면에 쓰는 PyQt6가 GPL-3.0이라, 앱 전체를 같은 라이선스로 맞췄습니다. 실행 파일(`Memos.exe`)도 GPL-3.0으로 배포합니다.
+- 함께 쓰는 라이브러리와 그 라이선스는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)에 있습니다.
