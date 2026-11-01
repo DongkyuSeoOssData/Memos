@@ -10,6 +10,8 @@
      접힘: rolled_position_x / rolled_position_y        펼침: position_x / position_y
  - 접거나 펼 때(위치 고정이 없으면): 메모의 왼쪽 아래 모서리를 그대로 두고 위·오른쪽으로 커지거나 줄어듭니다.
    위쪽으로 커질 자리가 모니터 밖이면 윗변을 두고 아래로, 오른쪽으로 커질 자리가 모니터 밖이면 오른쪽 변을 두고 왼쪽으로 커집니다.
+   접을 때는 펼칠 때 있던 자리로 돌아갑니다. (펼친 뒤 창을 옮기지 않았을 때. unrolled_return) 그래서 어느 방향으로 펼쳤든
+   접은 메모의 자리는 틀어지지 않습니다. 펼친 뒤 옮겼으면 옮긴 자리에서 왼쪽 아래 모서리를 두고 접습니다.
  - 위치 고정: 펼친 상태와 접은 상태마다 자리를 하나씩 고정해 둘 수 있습니다. (unrolled_pin / rolled_pin)
    고정해 둔 상태로 바뀔 때는 그 자리로 갑니다. 고정할 때의 모니터 배치(그 모니터의 위치와 크기)도 함께 적어 두어,
    모니터가 바뀌었으면(다른 PC, 모니터를 떼거나 해상도를 바꿈) 고정을 쓰지 않고 위의 기본 규칙을 따릅니다.
@@ -125,17 +127,43 @@ def pinned_spot(data: Dict[str, Any], rolled: bool, screens: Iterable[Box]) -> O
     return spot if any(list(geom) == screen for geom in screens) else None
 
 
+# ── 접은 자리로 돌아가기 ───────────────────────────────────────────────────────
+def remember_return(data: Dict[str, Any], unrolled_xy: Tuple[int, int], rolled_xy: Tuple[int, int]) -> None:
+    """펼친 자리와 펼치기 전의 접은 자리를 적어 둡니다. 창을 옮기지 않고 접으면 접은 자리로 돌아갑니다."""
+    data['unrolled_return'] = {"from": [int(v) for v in unrolled_xy], "to": [int(v) for v in rolled_xy]}
+
+
+def forget_return(data: Dict[str, Any]) -> None:
+    data.pop('unrolled_return', None)
+
+
+def return_spot(data: Dict[str, Any], box: Box) -> Optional[Tuple[int, int]]:
+    """접을 때 돌아갈 자리. 펼친 뒤 창을 옮겼거나 적어 둔 것이 없으면 None."""
+    saved = data.get('unrolled_return')
+    if not isinstance(saved, dict):
+        return None
+    try:
+        start, spot = [int(v) for v in saved["from"]], [int(v) for v in saved["to"]]
+    except (KeyError, TypeError, ValueError):
+        return None
+    if len(start) != 2 or len(spot) != 2 or start != [box[0], box[1]]:
+        return None
+    return spot[0], spot[1]
+
+
 # ── 접기 · 펴기 ────────────────────────────────────────────────────────────────
 def fold_target(data: Dict[str, Any], box: Box, rolled_height: int, area: Any,
                 pinned: Optional[Tuple[int, int]] = None, default_height: int = FALLBACK_SIZE) -> Box:
     """펼친 메모를 접을 때 놓을 자리. box 는 지금 창, area 는 지금 창이 있는 모니터의 작업 영역.
 
-    접은 위치를 고정해 두었으면(pinned) 그 자리, 아니면 지금 창의 왼쪽 아래 모서리를 그대로 둡니다.
+    접은 위치를 고정해 두었으면(pinned) 그 자리, 펼친 뒤 옮기지 않았으면 펼치기 전의 자리,
+    아니면 지금 창의 왼쪽 아래 모서리를 그대로 둡니다.
     너비는 접은 너비로 기억해 둔 것, 없으면 메모 본래의 너비입니다.
     """
     width = data.get('rolled_width', own_size(data, False, box, default_height)[0])
-    if pinned is not None:
-        return pinned[0], pinned[1], width, rolled_height
+    spot = pinned if pinned is not None else return_spot(data, box)
+    if spot is not None:
+        return spot[0], spot[1], width, rolled_height
     return (*grow_from_corner(box, (width, rolled_height), area), width, rolled_height)
 
 

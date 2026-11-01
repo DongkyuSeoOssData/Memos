@@ -363,6 +363,32 @@ class FoldPlacementTest(UiTestCase):
         a.toggle_rollup()
         self.assertEqual((a.x() + a.width(), a.y() + a.height()), (1550, rolled_bottom))   # 오른쪽 변과 아래 변을 맞춰 왼쪽 위로
 
+    def test_rolled_memo_comes_back_to_its_spot_whichever_way_it_opened(self) -> None:
+        a = self.window(500, 300)
+        a.toggle_rollup()
+        for spot in ((500, 10), (1300, 600), (1300, 5), (20, 800)):          # 위·오른쪽 끝·구석에서 펴도
+            a.resize(260, a.height())
+            a.move(*spot)
+            box = self.box(a)
+            a.toggle_rollup()
+            a.toggle_rollup()
+            self.assertEqual(self.box(a), box)                               # 접으면 제자리
+
+    def test_moved_after_unfolding_folds_where_it_is_and_reopening_keeps_the_spot(self) -> None:
+        a = self.window(500, 300)
+        a.toggle_rollup()
+        a.move(500, 10)
+        a.toggle_rollup()
+        a.move(700, 300)
+        a.toggle_rollup()
+        self.assertEqual((a.x(), a.y() + a.height()), (700, 620))            # 옮겼으면 그 창의 왼쪽 아래
+        a.move(500, 10)
+        a.toggle_rollup()
+        a.close()                                                            # 펼친 채 닫았다 다시 열어도
+        b = self.open_window("memo-0000")
+        b.toggle_rollup()
+        self.assertEqual((b.x(), b.y()), (500, 10))
+
     def test_pinned_places_are_used_for_each_state(self) -> None:
         a = self.window(100, 100)
         a.pin_position()                                          # 펼친 위치 고정

@@ -19,6 +19,8 @@ class CheckMarks:
     on_edit() 는 체크 상태를 바꿨을 때 부릅니다. (저장 예약 등)
     """
 
+    MIN_BOX = 7                 # 체크 상자의 가장 작은 한 변
+
     def __init__(self, editor: QTextEdit, colors: Callable[[], Dict[str, Any]], on_edit: Optional[Callable[[], None]] = None) -> None:
         self.editor = editor
         self.colors = colors
@@ -37,7 +39,8 @@ class CheckMarks:
         probe = QTextCursor(block)
         probe.setPosition(block.position() + index)
         line = self.editor.cursorRect(probe)
-        side = max(9, min(24, int(line.height() * 0.64)))
+        side = max(self.MIN_BOX, int(line.height() * 0.64))         # 글자 크기를 따라감
+        side = max(self.MIN_BOX, min(side, self.glyph_cell(block, index).width() - 1))   # 상자 글자 칸을 넘어 뒤 글자에 겹치지 않게
         return QRect(line.left(), line.center().y() - side // 2 + 1, side, side)
 
     def glyph_cell(self, block: Any, index: int) -> QRect:
@@ -128,7 +131,7 @@ class CheckMarks:
                 # 취소선: 이 줄의 글자(상자 뒤부터)를 가로지르는 선. 줄이 넘어가면 넘어간 줄마다 긋습니다.
                 origin = doc_layout.blockBoundingRect(block).topLeft() - scroll
                 layout = block.layout()
-                painter.setPen(QPen(strike, 1))
+                painter.setPen(QPen(strike, max(1, rect.height() // 16)))
                 for n in range(layout.lineCount()):
                     line = layout.lineAt(n)
                     start = origin.x() + line.x()
@@ -146,7 +149,7 @@ class CheckMarks:
                                                 QPointF(x + side * 0.78, y + side * 0.30)]))
             elif index >= 0:
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-                painter.setPen(QPen(box_outline, 1))
+                painter.setPen(QPen(box_outline, max(1, rect.height() // 16)))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawRect(rect.adjusted(0, 0, -1, -1))
             block = block.next()

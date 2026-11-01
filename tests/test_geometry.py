@@ -89,6 +89,18 @@ class FoldTest(unittest.TestCase):
         data = {"rolled_width": 250}
         self.assertEqual(geo.fold_target(data, (100, 100, 500, 400), ROLLED_H, SCREEN, pinned=(900, 600)), (900, 600, 250, ROLLED_H))
 
+    def test_fold_returns_to_where_it_was_unfolded_unless_moved(self) -> None:
+        data = {"rolled_width": 250}
+        geo.remember_return(data, (500, 10), (500, 10))              # 맨 위에서 아래로 펼침
+        self.assertEqual(geo.fold_target(data, (500, 10, 400, 320), ROLLED_H, SCREEN), (500, 10, 250, ROLLED_H))
+        moved = (600, 300, 400, 320)
+        self.assertEqual(geo.fold_target(data, moved, ROLLED_H, SCREEN), (600, 620 - ROLLED_H, 250, ROLLED_H))     # 옮겼으면 왼쪽 아래
+        self.assertEqual(geo.fold_target(data, (500, 10, 400, 320), ROLLED_H, SCREEN, pinned=(9, 9)), (9, 9, 250, ROLLED_H))
+        geo.forget_return(data)
+        self.assertIsNone(geo.return_spot(data, (500, 10, 400, 320)))
+        for broken in ("x", {"from": [1]}, {"from": ["a", 1], "to": [1, 2]}):
+            self.assertIsNone(geo.return_spot({"unrolled_return": broken}, (1, 2, 3, 4)))
+
     def test_locked_memo_folds_to_its_real_width(self) -> None:
         locked = {"_locked": True, "unrolled_width": 500, "unrolled_height": 400}
         compact = (100, 100, *geo.LOCKED_SIZE)                       # 암호 입력용 크기로 떠 있는 창
@@ -133,6 +145,7 @@ class PinTest(unittest.TestCase):
         from core.sync_worker import is_device_key
         self.assertTrue(is_device_key(geo.pin_key(True)))
         self.assertTrue(is_device_key(geo.pin_key(False)))
+        self.assertTrue(is_device_key("unrolled_return"))
 
 
 class ShowTest(unittest.TestCase):

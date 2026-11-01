@@ -119,6 +119,7 @@ class MemoFormatMixin:
             # 선택 없이 바꾼 경우에만 이 메모의 기본 글꼴로 기억합니다.
             self.text_edit.setFont(font)
             self.memo_data['font_family'] = font.family()
+            self.text_edit.fit_list_indent()
         self._mark_edited()
 
     def change_font_size(self, size_str: str) -> None:
@@ -128,13 +129,8 @@ class MemoFormatMixin:
         font_family = self.memo_data.get('font_family', 'D2Coding')
         f = QFont(font_family, sz)
         self.text_edit.setFont(f)
-        cursor = self.text_edit.textCursor()
-        cursor.select(QTextCursor.SelectionType.Document)
-        fmt = QTextCharFormat()
-        # 크기만 바꿉니다. (글꼴 전체를 덮어쓰면 굵게·기울임·밑줄이 풀림)
-        fmt.setFontPointSize(sz)
-        cursor.mergeCharFormat(fmt)
         self.memo_data['font_size'] = sz
+        self.text_edit.apply_size_to_document(sz)
         # 스타일시트·행번호 동기화
         self.apply_line_bg_style()
         self.text_edit.update_line_number_area()

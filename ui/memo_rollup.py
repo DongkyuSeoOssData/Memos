@@ -158,6 +158,7 @@ class MemoRollupMixin:
         data = self.memo_data
         default_height = getattr(self, '_normal_height', 300)
         self.remember_geometry()                      # 떠나는 상태의 위치·크기를 먼저 기억
+        was_rolled, rolled_xy = self._is_rolled_up, (self.x(), self.y())
 
         if not self._is_rolled_up:
             self._normal_height = memo_geometry.own_size(data, False, self._box(), default_height)[1]
@@ -170,6 +171,10 @@ class MemoRollupMixin:
         new_left_x, new_top_y = self._clamp_to_screen(
             self._screen_area_for(new_left_x, new_top_y, target_w, target_h), new_left_x, new_top_y, target_w, target_h)
         self._apply_fold_state(not self._is_rolled_up, new_left_x, new_top_y, target_w, target_h)
+        if was_rolled:
+            memo_geometry.remember_return(data, (self.x(), self.y()), rolled_xy)    # 다시 접을 때 이 자리로
+        else:
+            memo_geometry.forget_return(data)
 
         if getattr(self, 'ui_manager', None) and hasattr(self.ui_manager, 'get_theme_icon'):
             is_dark_bg = self.is_dark_bg()

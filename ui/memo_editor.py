@@ -87,11 +87,14 @@ class LineNumberArea(QWidget):
         self.editor.line_number_area_paint_event(event)
 
 class MemoTextEdit(QTextEdit):
+    MIN_INDENT_WIDTH = 22
+
     def __init__(self, memo_window: 'MemoWindow') -> None:
         super().__init__()
         self.memo_window = memo_window
         self.document().setDocumentMargin(12)
-        self.document().setIndentWidth(22)
+        self.document().setIndentWidth(self.MIN_INDENT_WIDTH)
+        self.textChanged.connect(self.fit_list_indent)   # 목록을 만들거나, 번호가 두 자리가 되거나, 내용을 불러올 때
         self.extra_cursors: List[QTextCursor] = []
         self.line_number_area = LineNumberArea(self)
         self.document().documentLayout().update.connect(self.update_line_number_area)
@@ -535,6 +538,41 @@ class MemoTextEdit(QTextEdit):
         super().paintEvent(event)
         self.check_marks.paint()
 
+    def apply_size_to_document(self, size: int) -> None:
+        """본문 전체의 글자 크기를 바꿉니다. 크기만 바꾸므로 굵게·기울임·밑줄은 그대로입니다."""
+        cursor = self.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        fmt = QTextCharFormat()
+        fmt.setFontPointSize(size)
+        cursor.mergeCharFormat(fmt)
+        cursor.mergeBlockCharFormat(fmt)                 # 불릿·번호는 글자가 아니라 줄 서식의 크기로 그려짐
+        self.fit_list_indent()
+
+    def fit_list_indent(self) -> None:
+        """불릿·번호가 들어갈 들여쓰기 폭을 글자 크기에 맞춥니다.
+
+        불릿·번호는 들여쓰기 안쪽(글자 왼쪽)에 그려지므로, 폭이 고정이면 글자가 커질수록 왼쪽 밖으로 밀려 잘립니다.
+        가장 긴 번호(자릿수)가 들어갈 만큼만 넓히고, 보통 크기에서는 기본 폭을 그대로 씁니다.
+        """
+        document = self.document()
+        size = float(self.memo_window.memo_data.get('font_size', 11) or 11)
+        items = 0
+        block = document.begin()
+        while block.isValid():
+            text_list = block.textList()
+            if text_list is not None:
+                size = max(size, block.charFormat().fontPointSize())
+                items = max(items, text_list.count())
+            block = block.next()
+        if not items:                                    # 목록이 없으면 들여쓰기 칸은 건드리지 않음
+            return
+        font = QFont(self.font())
+        font.setPointSizeF(size)
+        marker = "0" * len(str(items)) + ". "
+        width = max(self.MIN_INDENT_WIDTH, int(QFontMetricsF(font).horizontalAdvance(marker)) + 1)
+        if document.indentWidth() != width:
+            document.setIndentWidth(width)
+
     def wheelEvent(self, event: Any) -> None:
         modifiers = QApplication.keyboardModifiers()
         delta = event.angleDelta().y()
@@ -544,13 +582,8 @@ class MemoTextEdit(QTextEdit):
             f = self.font()
             f.setPointSize(s)
             self.setFont(f)
-            cursor = self.textCursor()
-            cursor.select(QTextCursor.SelectionType.Document)
-            fmt = QTextCharFormat()
-            # 크기만 바꿉니다. (글꼴 전체를 덮어쓰면 굵게·기울임·밑줄이 풀림)
-            fmt.setFontPointSize(s)
-            cursor.mergeCharFormat(fmt)
             self.memo_window.memo_data['font_size'] = s
+            self.apply_size_to_document(s)
             self.memo_window.apply_line_bg_style()
             self.update_line_number_area()
             # size_box에 신호 차단 후 조용히 동기화

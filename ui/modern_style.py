@@ -348,6 +348,15 @@ def set_save_icon(win: Any, color: str) -> None:
         win.sb.setIcon(ui_manager.get_theme_icon("save.svg", True, override_color=color))
 
 
+def memo_combo_qss(bg_color: str, ink: str) -> str:
+    """메모 창의 고르기 칸과 펼친 목록의 색. 지정하지 않으면 윈도우의 다크/라이트 설정을 따라가,
+    메모 글자색과 어긋나서 글자가 안 보이는 PC가 생깁니다. 바탕과 글자색을 메모 색으로 함께 정합니다."""
+    return (f"QComboBox {{ background-color: {bg_color}; color: {ink}; }} "
+            f"QComboBox QAbstractItemView {{ background-color: {bg_color}; color: {ink}; border: 1px solid {_rgba(ink, 0.3)}; "
+            f"selection-background-color: {_rgba(ink, 0.16)}; selection-color: {ink}; outline: none; }} "
+            f"QComboBox QAbstractItemView::item {{ color: {ink}; }} ")
+
+
 def memo_tone(w: Any) -> tuple:
     """메모 창의 (팔레트, 다크 여부, 바탕색)."""
     pal = w._memo_theme_palette()
@@ -747,6 +756,7 @@ def apply_memo(w: Any) -> None:
     box = (f"QPushButton, QComboBox {{ font-size: 8.5pt; font-weight: 600; padding: 2px 6px; border: 1px solid {_rgba(ink, 0.2)}; "
            f"border-radius: 0px; background: {_rgba(ink, 0.06)}; color: {ink}; font-family: {UI_FONT}; }} "
            f"QPushButton:hover, QComboBox:hover {{ background: {_rgba(ink, 0.14)}; }} QComboBox::drop-down {{ border: none; }}")
+    box = memo_combo_qss(bg_color, ink) + box
     for name in MEMO_BOX_CONTROLS:
         getattr(w, name).setStyleSheet(box)
     for name in MEMO_EDIT_BOXES:

@@ -332,6 +332,7 @@ def apply_memo(w: Any) -> None:
     box = (f"QPushButton, QComboBox {{ font-size: 8.5pt; font-weight: 500; padding: 2px 6px; border: 1px solid {_rgba(ink, 0.25)}; "
            f"border-radius: 0px; background: transparent; color: {ink}; font-family: {_ms.UI_FONT}; }} "
            f"QPushButton:hover, QComboBox:hover {{ border-color: {ink}; }} QComboBox::drop-down {{ border: none; }}")
+    box = box + _ms.memo_combo_qss(bg_color, ink)
     for name in MEMO_BOX_CONTROLS:
         getattr(w, name).setStyleSheet(box)
     for name in MEMO_EDIT_BOXES:
