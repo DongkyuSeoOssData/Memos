@@ -26,9 +26,10 @@
 6. [모바일에서 쓰기](#-모바일에서-쓰기-아이폰아이패드안드로이드)
 7. [환경설정](#-환경설정)
 8. [데이터가 저장되는 곳](#-데이터가-저장되는-곳)
-9. [변경 기록](#-변경-기록)
-10. [개발](#-개발)
-11. [라이선스](#-라이선스)
+9. [Claude로 메모 다루기](#-claude로-메모-다루기)
+10. [변경 기록](#-변경-기록)
+11. [개발](#-개발)
+12. [라이선스](#-라이선스)
 
 ---
 
@@ -559,6 +560,51 @@ python tools/mobile_dev_server.py
 
 ---
 
+## 🤖 Claude로 메모 다루기
+
+[Claude Code](https://claude.com/claude-code)에게 "장보기 메모에 우유 추가해 줘", "할 일 체크해 줘", "내일 9시에 알림 걸어 줘"처럼 말로 메모를 다루게 하는 스킬(`memo-app`)이 들어 있습니다.
+Claude가 앱과 같은 규칙으로 메모 파일을 직접 읽고 씁니다.
+
+### 설치
+
+Claude Code와 파이썬이 있는 PC에서 아래 중 하나를 한 번 실행합니다. GitHub에서 최신 스킬을 받아 `C:\Users\이름\.claude\skills\memo-app`에 넣으므로, 이후 Claude Code를 어느 폴더에서 켜도 쓸 수 있습니다. 스킬이 바뀐 뒤 다시 실행하면 최신판으로 바뀝니다.
+
+- [`tools/install_memo_skill.bat`](tools/install_memo_skill.bat)을 내려받아 더블클릭 ("PC 보호" 창이 뜨면 추가 정보 → 실행)
+- 또는 PowerShell에 붙여넣기:
+
+```powershell
+$d=Join-Path $env:USERPROFILE '.claude\skills\memo-app'; New-Item -ItemType Directory -Force -Path (Join-Path $d 'scripts') | Out-Null; $u='https://raw.githubusercontent.com/DongkyuSeoOssData/Memos/main/.claude/skills/memo-app'; Invoke-WebRequest -UseBasicParsing ($u+'/SKILL.md') -OutFile (Join-Path $d 'SKILL.md'); Invoke-WebRequest -UseBasicParsing ($u+'/scripts/memos.py') -OutFile (Join-Path $d 'scripts\memos.py')
+```
+
+이 저장소 폴더에서 Claude Code를 켜면 설치하지 않아도 바로 쓸 수 있습니다. (`.claude/skills/memo-app`)
+제대로 설치됐는지는 명령 프롬프트에서 확인합니다. 메모 목록이 나오면 됩니다.
+
+```bash
+python "%USERPROFILE%\.claude\skills\memo-app\scripts\memos.py" list
+```
+
+### 할 수 있는 것
+
+- 메모 목록·검색 (폴더, 해시태그, 즐겨찾기, 남은 할 일로 거르기)
+- 새 메모(코드 메모 포함), 덧붙이기, 본문 바꾸기
+- 체크리스트 항목 체크 (`☐` / `☑`)
+- 알림 걸기·풀기 (한 번 / 매일 / 평일 / 매주 / 매월 / 크론식)
+- 제목·폴더·즐겨찾기·삭제 방지·색 바꾸기
+- 휴지통으로 보내기·되살리기, 이전 내용 보기
+
+### 알아 둘 점
+
+- **PC에서 돌아가는 Claude Code에서만** 동작합니다. (터미널의 `claude`, 또는 데스크톱 앱의 Code 탭에서 PC 폴더를 고른 세션) claude.ai·폰 앱의 일반 대화나 클라우드 세션은 PC의 메모 폴더를 볼 수 없습니다.
+- 메모 폴더는 환경설정에서 정한 폴더를 그대로 따릅니다. (`settings.json`의 `local_memo_path`)
+- 본문·제목을 바꾸면 바뀌기 전 내용이 '이전 내용'에 남고, 지운 메모는 휴지통으로 갑니다. 앱에서 그대로 되돌릴 수 있습니다.
+- 암호 메모의 본문, 서식(굵게·색 등)을 쓴 메모의 본문, 삭제 방지가 걸린 메모는 건드리지 않습니다.
+- 앱은 메모 파일의 변경을 실시간으로 감시하지 않습니다. 새 메모는 메모 탐색기를 다시 열면 보입니다.
+  **화면에 열려 있는 메모**는 앱이 자기 사본으로 다시 저장하면서 Claude가 고친 내용을 덮을 수 있으니, 고치기 전에 그 메모 창을 닫아 둡니다.
+- 동기화를 쓰면 Claude가 고친 메모는 앱을 다시 켜거나 수동으로 동기화할 때 드라이브로 올라갑니다.
+- 다른 PC에서도 쓰려면 그 PC에서 설치를 한 번 더 합니다.
+
+---
+
 ## 📜 변경 기록
 
 버전마다 바뀐 내용은 [CHANGELOG.md](CHANGELOG.md)에 모아 두었습니다. 버전별 실행 파일(`Memos.exe`)은 [Releases](https://github.com/DongkyuSeoOssData/Memos/releases)에서 내려받습니다.
@@ -663,7 +709,9 @@ python tools/mobile_dev_server.py
  ┃ ┗ 📜 Index.html             # 모바일 웹 화면
  ┣ 📂 tools
  ┃ ┣ 📜 generate_master_key.py # 관리자 복구 키 만들기
- ┃ ┗ 📜 mobile_dev_server.py   # 모바일 화면을 PC에서 시험하는 서버
+ ┃ ┣ 📜 mobile_dev_server.py   # 모바일 화면을 PC에서 시험하는 서버
+ ┃ ┗ 📜 install_memo_skill.bat # Claude 스킬(memo-app)을 이 PC에 설치
+ ┣ 📂 .claude/skills/memo-app   # Claude 스킬: 메모 읽고 쓰기 (SKILL.md, scripts/memos.py)
  ┣ 📂 tests                    # 자동 테스트 (주제별 파일: test_reminders, test_checklist, test_history, test_settings …)
  ┃ ┣ 📜 support.py             # UI 테스트의 공용 준비 (임시 폴더, 대화상자·자동 실행·전역 단축키 대역)
  ┃ ┣ 📜 code_gs_check.js       # Code.gs 를 가짜 드라이브 위에서 돌려 보는 검사 (node)
